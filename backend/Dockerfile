@@ -7,11 +7,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     UV_LINK_MODE=copy \
     UV_HTTP_TIMEOUT=${UV_HTTP_TIMEOUT} \
+    UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
     PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app/backend
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i "s@http://deb.debian.org@http://mirrors.aliyun.com@g" /etc/apt/sources.list.d/debian.sources \
+    && apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     ca-certificates \

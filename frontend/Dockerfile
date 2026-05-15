@@ -2,6 +2,8 @@ FROM node:20-alpine AS build
 
 WORKDIR /app/frontend
 
+RUN npm config set registry https://registry.npmmirror.com
+
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 
