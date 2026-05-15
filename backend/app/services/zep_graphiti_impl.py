@@ -480,29 +480,51 @@ class GraphitiClient(ZepClientAdapter):
         self._ensure_initialized()
 
         async def _get_nodes():
-            # 尝试多种 label 模式，提高 schema 兼容性
-            # Graphiti 标准使用 :Entity，但也可能有其他 label
-            for label in ["Entity", "EntityNode"]:
-                records, _, _ = await self._driver.execute_query(
-                    f"""
-                    MATCH (n:{label} {{group_id: $group_id}})
-                    RETURN
-                        n.uuid AS uuid,
-                        n.name AS name,
-                        labels(n) AS labels,
-                        n.summary AS summary,
-                        properties(n) AS props,
-                        n.created_at AS created_at
-                    """,
-                    group_id=graph_id,
-                )
-                if records:
-                    return records
+            # 优先读取 Graphiti 标准 Entity 节点。
+            records, _, _ = await self._driver.execute_query(
+                """
+                MATCH (n:Entity {group_id: $group_id})
+                RETURN
+                    n.uuid AS uuid,
+                    n.name AS name,
+                    labels(n) AS labels,
+                    n.summary AS summary,
+                    properties(n) AS props,
+                    n.created_at AS created_at
+                """,
+                group_id=graph_id,
+            )
+            if records:
+                return records
 
-            # 所有 label 都没找到，记录警告并返回空
+            # fallback: 按 group_id 宽匹配，排除 Episodic 等过程节点。
+            records, _, _ = await self._driver.execute_query(
+                """
+                MATCH (n {group_id: $group_id})
+                WHERE NOT 'Episodic' IN labels(n)
+                  AND n.uuid IS NOT NULL
+                  AND n.name IS NOT NULL
+                RETURN DISTINCT
+                    n.uuid AS uuid,
+                    n.name AS name,
+                    labels(n) AS labels,
+                    n.summary AS summary,
+                    properties(n) AS props,
+                    n.created_at AS created_at
+                """,
+                group_id=graph_id,
+            )
+            if records:
+                logger.info(
+                    "get_all_nodes: graph_id=%s 使用宽匹配 schema fallback，返回 %s 个节点",
+                    graph_id,
+                    len(records),
+                )
+                return records
+
             logger.warning(
                 f"get_all_nodes: 未找到 group_id={graph_id} 的节点。"
-                f"可能的原因：1) 图谱为空 2) Graphiti schema 不匹配（尝试过 Entity, EntityNode）"
+                f"可能的原因：1) 图谱为空 2) Graphiti schema 与读取查询不匹配"
             )
             return []
 
@@ -617,34 +639,61 @@ class GraphitiClient(ZepClientAdapter):
         self._ensure_initialized()
 
         async def _get_edges():
-            # 通过节点的 group_id 过滤边，使用 DISTINCT 避免重复
-            # 注意：边本身可能没有 group_id，所以通过连接的节点过滤
-            # 优先用 r.name（实际关系名），fallback 到 type(r)（关系类型）
-            for label in ["Entity", "EntityNode"]:
-                records, _, _ = await self._driver.execute_query(
-                    f"""
-                    MATCH (n:{label} {{group_id: $group_id}})-[r]-(m:{label})
-                    WHERE n.group_id = m.group_id
-                    RETURN DISTINCT
-                        r.uuid AS uuid,
-                        COALESCE(r.name, type(r)) AS name,
-                        r.fact AS fact,
-                        startNode(r).uuid AS source_uuid,
-                        endNode(r).uuid AS target_uuid,
-                        properties(r) AS props,
-                        r.created_at AS created_at,
-                        r.valid_at AS valid_at,
-                        r.invalid_at AS invalid_at,
-                        r.expired_at AS expired_at
-                    """,
-                    group_id=graph_id,
+            # 优先读取标准 Entity -> Entity 关系。
+            records, _, _ = await self._driver.execute_query(
+                """
+                MATCH (n:Entity {group_id: $group_id})-[r]-(m:Entity)
+                WHERE m.group_id = $group_id
+                RETURN DISTINCT
+                    r.uuid AS uuid,
+                    COALESCE(r.name, type(r)) AS name,
+                    r.fact AS fact,
+                    startNode(r).uuid AS source_uuid,
+                    endNode(r).uuid AS target_uuid,
+                    properties(r) AS props,
+                    r.created_at AS created_at,
+                    r.valid_at AS valid_at,
+                    r.invalid_at AS invalid_at,
+                    r.expired_at AS expired_at
+                """,
+                group_id=graph_id,
+            )
+            if records:
+                return records
+
+            # fallback: 按 group_id 宽匹配，排除 Episodic 等非实体节点。
+            records, _, _ = await self._driver.execute_query(
+                """
+                MATCH (n {group_id: $group_id})-[r]-(m {group_id: $group_id})
+                WHERE NOT 'Episodic' IN labels(n)
+                  AND NOT 'Episodic' IN labels(m)
+                  AND n.uuid IS NOT NULL
+                  AND m.uuid IS NOT NULL
+                RETURN DISTINCT
+                    r.uuid AS uuid,
+                    COALESCE(r.name, type(r)) AS name,
+                    r.fact AS fact,
+                    startNode(r).uuid AS source_uuid,
+                    endNode(r).uuid AS target_uuid,
+                    properties(r) AS props,
+                    r.created_at AS created_at,
+                    r.valid_at AS valid_at,
+                    r.invalid_at AS invalid_at,
+                    r.expired_at AS expired_at
+                """,
+                group_id=graph_id,
+            )
+            if records:
+                logger.info(
+                    "get_all_edges: graph_id=%s 使用宽匹配 schema fallback，返回 %s 条边",
+                    graph_id,
+                    len(records),
                 )
-                if records:
-                    return records
+                return records
 
             logger.warning(
                 f"get_all_edges: 未找到 group_id={graph_id} 的边。"
-                f"可能的原因：1) 图谱无边 2) Graphiti schema 不匹配"
+                f"可能的原因：1) 图谱无边 2) Graphiti schema 与读取查询不匹配"
             )
             return []
 

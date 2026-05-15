@@ -189,8 +189,9 @@ docker-compose -f docker-compose.local.yml ps
 ### 3. 安装依赖
 
 ```bash
-# 一键安装所有依赖（根目录 + 前端 + 后端）
-npm run setup:all
+# Graphiti 本地模式推荐：安装前端依赖 + 后端 Graphiti 依赖
+npm run setup
+npm run setup:backend:graphiti
 ```
 
 或者分步安装：
@@ -199,9 +200,14 @@ npm run setup:all
 # 安装 Node 依赖（根目录 + 前端）
 npm run setup
 
-# 安装 Python 依赖（自动创建虚拟环境）
-npm run setup:backend
+# 安装后端 Graphiti 依赖（自动创建 .venv）
+npm run setup:backend:graphiti
+
+# 安装 OASIS 独立模拟环境（自动创建 backend/.venv-simulation）
+npm run setup:simulation
 ```
+
+> 说明：`graphiti` 和 `oasis` 依赖的 `neo4j` 版本冲突，不能装在同一个虚拟环境里。仓库现在使用主环境 `.venv` 跑后端，使用独立环境 `.venv-simulation` 跑双平台模拟。
 
 ### 4. 启动服务
 
@@ -220,6 +226,32 @@ npm run dev
 npm run backend   # 仅启动后端
 npm run frontend  # 仅启动前端
 ```
+  按顺序直接执行：
+
+  cp .env.local.example .env
+
+  编辑 .env，填好 LLM_API_KEY。
+
+  docker compose -f docker-compose.local.yml up -d
+  docker compose -f docker-compose.local.yml ps
+
+  npm install
+  cd frontend && npm install && cd ..
+
+  cd backend
+  uv sync --extra graphiti
+  sh scripts/setup_simulation_env.sh
+  uv run python run.py
+
+  新终端：
+
+  cd frontend
+  npm run dev
+
+  如果安装模拟环境时网络较慢，可先提高超时再执行：
+
+  UV_HTTP_TIMEOUT=300 npm run setup:simulation
+
 
 ## 💻 硬件需求
 
