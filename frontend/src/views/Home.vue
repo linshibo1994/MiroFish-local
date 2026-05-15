@@ -509,6 +509,9 @@ const startSimulation = () => {
 .hero-logo {
   max-width: 500px; /* 调整logo大小 */
   width: 100%;
+  height: auto;
+  display: block;
+  background: var(--white);
 }
 
 .scroll-down-btn {
