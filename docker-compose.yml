@@ -25,6 +25,7 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      network: host
       args:
         UV_HTTP_TIMEOUT: "${UV_HTTP_TIMEOUT:-300}"
     container_name: mirofish-backend
@@ -52,6 +53,7 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      network: host
       args:
         VITE_API_BASE_URL: /api
     container_name: mirofish-frontend
