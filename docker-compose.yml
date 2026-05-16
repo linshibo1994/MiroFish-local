@@ -41,6 +41,7 @@ services:
       NEO4J_PASSWORD: "${NEO4J_PASSWORD:-password}"
       FLASK_HOST: 0.0.0.0
       FLASK_PORT: 5001
+      FLASK_DEBUG: "False"
       SIMULATION_PYTHON: /app/backend/.venv-simulation/bin/python
     volumes:
       - backend_uploads:/app/backend/uploads

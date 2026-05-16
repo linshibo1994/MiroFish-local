@@ -42,6 +42,60 @@ def optimize_interview_prompt(prompt: str) -> str:
     return f"{INTERVIEW_PROMPT_PREFIX}{prompt}"
 
 
+def _resolve_graph_backend(graph_id: str):
+    """根据 graph_id 解析当前图谱实际使用的 backend。"""
+    project = ProjectManager.get_project_by_graph_id(graph_id)
+    backend = project.graph_backend if project and project.graph_backend else Config.ZEP_BACKEND
+    return backend, project
+
+
+def _resolve_graph_backend_or_404(graph_id: str):
+    """按 graph_id 解析项目与 backend，不允许静默回退到全局 backend。"""
+    project = ProjectManager.get_project_by_graph_id(graph_id)
+    if not project:
+        return None, None, (
+            jsonify({
+                "success": False,
+                "error": f"图谱未绑定到任何项目元数据: {graph_id}"
+            }),
+            404,
+        )
+    backend = project.graph_backend or Config.ZEP_BACKEND
+    return project, backend, None
+
+
+def _ensure_backend_available(backend: str):
+    """校验目标 backend 所需配置是否齐备。"""
+    if backend == 'cloud' and not Config.ZEP_API_KEY:
+        return jsonify({
+            "success": False,
+            "error": "ZEP_API_KEY未配置（cloud模式需要）"
+        }), 500
+    return None
+
+
+def _hydrate_simulation_graph_context(manager: SimulationManager, state):
+    """为旧 simulation state 补全 graph_id/backend，并回写持久化状态。"""
+    changed = False
+    project = ProjectManager.get_project(state.project_id)
+
+    if not state.graph_id and project and project.graph_id:
+        state.graph_id = project.graph_id
+        changed = True
+
+    if state.graph_id and not state.graph_backend:
+        resolved_backend, resolved_project = _resolve_graph_backend(state.graph_id)
+        state.graph_backend = resolved_backend
+        if not project:
+            project = resolved_project
+        changed = True
+
+    if changed:
+        manager._save_simulation_state(state)
+
+    return project
+
+
 # ============== 实体读取接口 ==============
 
 @simulation_bp.route('/entities/<graph_id>', methods=['GET'])
@@ -56,19 +110,22 @@ def get_graph_entities(graph_id: str):
         enrich: 是否获取相关边信息（默认true）
     """
     try:
-        if Config.ZEP_BACKEND == 'cloud' and not Config.ZEP_API_KEY:
-            return jsonify({
-                "success": False,
-                "error": "ZEP_API_KEY未配置（cloud模式需要）"
-            }), 500
+        _, backend, error_response = _resolve_graph_backend_or_404(graph_id)
+        if error_response:
+            return error_response
+        backend_error = _ensure_backend_available(backend)
+        if backend_error:
+            return backend_error
 
         entity_types_str = request.args.get('entity_types', '')
         entity_types = [t.strip() for t in entity_types_str.split(',') if t.strip()] if entity_types_str else None
         enrich = request.args.get('enrich', 'true').lower() == 'true'
         
-        logger.info(f"获取图谱实体: graph_id={graph_id}, entity_types={entity_types}, enrich={enrich}")
-        
-        reader = ZepEntityReader()
+        logger.info(
+            f"获取图谱实体: graph_id={graph_id}, backend={backend}, "
+            f"entity_types={entity_types}, enrich={enrich}"
+        )
+        reader = ZepEntityReader(backend=backend)
         result = reader.filter_defined_entities(
             graph_id=graph_id,
             defined_entity_types=entity_types,
@@ -93,13 +150,14 @@ def get_graph_entities(graph_id: str):
 def get_entity_detail(graph_id: str, entity_uuid: str):
     """获取单个实体的详细信息"""
     try:
-        if Config.ZEP_BACKEND == 'cloud' and not Config.ZEP_API_KEY:
-            return jsonify({
-                "success": False,
-                "error": "ZEP_API_KEY未配置（cloud模式需要）"
-            }), 500
+        _, backend, error_response = _resolve_graph_backend_or_404(graph_id)
+        if error_response:
+            return error_response
+        backend_error = _ensure_backend_available(backend)
+        if backend_error:
+            return backend_error
 
-        reader = ZepEntityReader()
+        reader = ZepEntityReader(backend=backend)
         entity = reader.get_entity_with_context(graph_id, entity_uuid)
         
         if not entity:
@@ -126,15 +184,16 @@ def get_entity_detail(graph_id: str, entity_uuid: str):
 def get_entities_by_type(graph_id: str, entity_type: str):
     """获取指定类型的所有实体"""
     try:
-        if Config.ZEP_BACKEND == 'cloud' and not Config.ZEP_API_KEY:
-            return jsonify({
-                "success": False,
-                "error": "ZEP_API_KEY未配置（cloud模式需要）"
-            }), 500
+        _, backend, error_response = _resolve_graph_backend_or_404(graph_id)
+        if error_response:
+            return error_response
+        backend_error = _ensure_backend_available(backend)
+        if backend_error:
+            return backend_error
 
         enrich = request.args.get('enrich', 'true').lower() == 'true'
         
-        reader = ZepEntityReader()
+        reader = ZepEntityReader(backend=backend)
         entities = reader.get_entities_by_type(
             graph_id=graph_id,
             entity_type=entity_type,
@@ -213,11 +272,29 @@ def create_simulation():
                 "success": False,
                 "error": "项目尚未构建图谱，请先调用 /api/graph/build"
             }), 400
+
+        requested_graph_id = data.get('graph_id')
+        if requested_graph_id:
+            graph_project, resolved_backend, error_response = _resolve_graph_backend_or_404(graph_id)
+            if error_response:
+                return error_response
+            if graph_project.project_id != project_id:
+                return jsonify({
+                    "success": False,
+                    "error": f"graph_id 不属于当前项目: {graph_id}"
+                }), 400
+        else:
+            resolved_backend = project.graph_backend or Config.ZEP_BACKEND
+
+        backend_error = _ensure_backend_available(resolved_backend)
+        if backend_error:
+            return backend_error
         
         manager = SimulationManager()
         state = manager.create_simulation(
             project_id=project_id,
             graph_id=graph_id,
+            graph_backend=resolved_backend,
             enable_twitter=data.get('enable_twitter', True),
             enable_reddit=data.get('enable_reddit', True),
         )
@@ -445,12 +522,23 @@ def prepare_simulation():
                 logger.info(f"模拟 {simulation_id} 未准备完成，将启动准备任务")
         
         # 从项目获取必要信息
-        project = ProjectManager.get_project(state.project_id)
+        project = _hydrate_simulation_graph_context(manager, state)
         if not project:
             return jsonify({
                 "success": False,
                 "error": f"项目不存在: {state.project_id}"
             }), 404
+
+        if not state.graph_id:
+            return jsonify({
+                "success": False,
+                "error": "模拟缺少 graph_id，请先为项目构建图谱"
+            }), 400
+
+        read_backend = state.graph_backend or Config.ZEP_BACKEND
+        backend_error = _ensure_backend_available(read_backend)
+        if backend_error:
+            return backend_error
         
         # 获取模拟需求
         simulation_requirement = project.simulation_requirement or ""
@@ -471,7 +559,7 @@ def prepare_simulation():
         # 这样前端在调用prepare后立即就能获取到预期Agent总数
         try:
             logger.info(f"同步获取实体数量: graph_id={state.graph_id}")
-            reader = ZepEntityReader()
+            reader = ZepEntityReader(backend=read_backend)
             # 快速读取实体（不需要边信息，只统计数量）
             filtered_preview = reader.filter_defined_entities(
                 graph_id=state.graph_id,
@@ -1223,7 +1311,14 @@ def generate_profiles():
         use_llm = data.get('use_llm', True)
         platform = data.get('platform', 'reddit')
         
-        reader = ZepEntityReader()
+        _, backend, error_response = _resolve_graph_backend_or_404(graph_id)
+        if error_response:
+            return error_response
+        backend_error = _ensure_backend_available(backend)
+        if backend_error:
+            return backend_error
+
+        reader = ZepEntityReader(backend=backend)
         filtered = reader.filter_defined_entities(
             graph_id=graph_id,
             defined_entity_types=entity_types,
@@ -1236,7 +1331,10 @@ def generate_profiles():
                 "error": "没有找到符合条件的实体"
             }), 400
         
-        generator = OasisProfileGenerator()
+        generator = OasisProfileGenerator(
+            graph_id=graph_id,
+            graph_backend=backend,
+        )
         profiles = generator.generate_profiles_from_entities(
             entities=filtered.entities,
             use_llm=use_llm
@@ -1357,6 +1455,13 @@ def start_simulation():
                 "error": f"模拟不存在: {simulation_id}"
             }), 404
 
+        project = _hydrate_simulation_graph_context(manager, state)
+        if not project:
+            return jsonify({
+                "success": False,
+                "error": f"项目不存在: {state.project_id}"
+            }), 404
+
         force_restarted = False
         
         # 智能处理状态：如果准备工作已完成，允许重新启动
@@ -1408,11 +1513,6 @@ def start_simulation():
         if enable_graph_memory_update:
             # 从模拟状态或项目中获取 graph_id
             graph_id = state.graph_id
-            if not graph_id:
-                # 尝试从项目中获取
-                project = ProjectManager.get_project(state.project_id)
-                if project:
-                    graph_id = project.graph_id
             
             if not graph_id:
                 return jsonify({
@@ -1423,12 +1523,14 @@ def start_simulation():
             logger.info(f"启用图谱记忆更新: simulation_id={simulation_id}, graph_id={graph_id}")
         
         # 启动模拟
+        graph_backend = state.graph_backend
         run_state = SimulationRunner.start_simulation(
             simulation_id=simulation_id,
             platform=platform,
             max_rounds=max_rounds,
             enable_graph_memory_update=enable_graph_memory_update,
-            graph_id=graph_id
+            graph_id=graph_id,
+            graph_backend=graph_backend,
         )
         
         # 更新模拟状态

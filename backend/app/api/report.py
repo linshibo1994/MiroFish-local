@@ -12,11 +12,52 @@ from . import report_bp
 from ..config import Config
 from ..services.report_agent import ReportAgent, ReportManager, ReportStatus
 from ..services.simulation_manager import SimulationManager
+from ..services.zep_tools import ZepToolsService
 from ..models.project import ProjectManager
 from ..models.task import TaskManager, TaskStatus
 from ..utils.logger import get_logger
 
 logger = get_logger('mirofish.api.report')
+
+
+def _resolve_simulation_graph_context(manager: SimulationManager, state):
+    """解析并回填 simulation 绑定的 graph_id/backend。"""
+    project = ProjectManager.get_project(state.project_id)
+    changed = False
+
+    if not state.graph_id and project and project.graph_id:
+        state.graph_id = project.graph_id
+        changed = True
+
+    if state.graph_id and not state.graph_backend:
+        project_by_graph = ProjectManager.get_project_by_graph_id(state.graph_id)
+        if project_by_graph and project_by_graph.graph_backend:
+            state.graph_backend = project_by_graph.graph_backend
+        elif project and project.graph_backend:
+            state.graph_backend = project.graph_backend
+        else:
+            state.graph_backend = Config.ZEP_BACKEND
+        changed = True
+
+    if changed:
+        manager._save_simulation_state(state)
+
+    return project
+
+
+def _resolve_graph_backend_or_404(graph_id: str):
+    """调试类 graph_id 接口必须绑定到项目元数据，禁止静默回退默认 backend。"""
+    project = ProjectManager.get_project_by_graph_id(graph_id)
+    if not project:
+        return None, None, (
+            jsonify({
+                "success": False,
+                "error": f"图谱未绑定到任何项目元数据: {graph_id}"
+            }),
+            404,
+        )
+    backend = project.graph_backend or Config.ZEP_BACKEND
+    return project, backend, None
 
 
 # ============== 报告生成接口 ==============
@@ -84,14 +125,14 @@ def generate_report():
                 })
         
         # 获取项目信息
-        project = ProjectManager.get_project(state.project_id)
+        project = _resolve_simulation_graph_context(manager, state)
         if not project:
             return jsonify({
                 "success": False,
                 "error": f"项目不存在: {state.project_id}"
             }), 404
         
-        graph_id = state.graph_id or project.graph_id
+        graph_id = state.graph_id
         if not graph_id:
             return jsonify({
                 "success": False,
@@ -134,7 +175,10 @@ def generate_report():
                 agent = ReportAgent(
                     graph_id=graph_id,
                     simulation_id=simulation_id,
-                    simulation_requirement=simulation_requirement
+                    simulation_requirement=simulation_requirement,
+                    zep_tools=ZepToolsService(
+                        backend=state.graph_backend or Config.ZEP_BACKEND
+                    )
                 )
                 
                 # 进度回调
@@ -195,7 +239,7 @@ def generate_report():
         }), 500
 
 
-@report_bp.route('/generate/status', methods=['POST'])
+@report_bp.route('/generate/status', methods=['GET', 'POST'])
 def get_generate_status():
     """
     查询报告生成任务进度
@@ -218,10 +262,20 @@ def get_generate_status():
         }
     """
     try:
-        data = request.get_json() or {}
-        
-        task_id = data.get('task_id')
-        simulation_id = data.get('simulation_id')
+        if request.method == 'GET':
+            task_id = request.args.get('task_id')
+            simulation_id = request.args.get('simulation_id')
+            report_id = request.args.get('report_id')
+        else:
+            data = request.get_json() or {}
+            task_id = data.get('task_id')
+            simulation_id = data.get('simulation_id')
+            report_id = data.get('report_id')
+
+        if report_id and not simulation_id:
+            report = ReportManager.get_report(report_id)
+            if report:
+                simulation_id = report.simulation_id
         
         # 如果提供了simulation_id，先检查是否已有完成的报告
         if simulation_id:
@@ -520,14 +574,14 @@ def chat_with_report_agent():
                 "error": f"模拟不存在: {simulation_id}"
             }), 404
         
-        project = ProjectManager.get_project(state.project_id)
+        project = _resolve_simulation_graph_context(manager, state)
         if not project:
             return jsonify({
                 "success": False,
                 "error": f"项目不存在: {state.project_id}"
             }), 404
         
-        graph_id = state.graph_id or project.graph_id
+        graph_id = state.graph_id
         if not graph_id:
             return jsonify({
                 "success": False,
@@ -540,7 +594,10 @@ def chat_with_report_agent():
         agent = ReportAgent(
             graph_id=graph_id,
             simulation_id=simulation_id,
-            simulation_requirement=simulation_requirement
+            simulation_requirement=simulation_requirement,
+            zep_tools=ZepToolsService(
+                backend=state.graph_backend or Config.ZEP_BACKEND
+            )
         )
         
         result = agent.chat(message=message, chat_history=chat_history)
@@ -953,8 +1010,10 @@ def search_graph_tool():
             }), 400
         
         from ..services.zep_tools import ZepToolsService
-        
-        tools = ZepToolsService()
+        project, backend, error_response = _resolve_graph_backend_or_404(graph_id)
+        if error_response:
+            return error_response
+        tools = ZepToolsService(backend=backend)
         result = tools.search_graph(
             graph_id=graph_id,
             query=query,
@@ -997,8 +1056,10 @@ def get_graph_statistics_tool():
             }), 400
         
         from ..services.zep_tools import ZepToolsService
-        
-        tools = ZepToolsService()
+        project, backend, error_response = _resolve_graph_backend_or_404(graph_id)
+        if error_response:
+            return error_response
+        tools = ZepToolsService(backend=backend)
         result = tools.get_graph_statistics(graph_id)
         
         return jsonify({

@@ -30,6 +30,8 @@ _cleanup_registered = False
 
 # 平台检测
 IS_WINDOWS = sys.platform == 'win32'
+SIMULATION_REQUIRED_MODULES = ("camel", "oasis", "dotenv")
+SIMULATION_ENV_SETUP_HINT = "cd backend && ./scripts/setup_simulation_env.sh"
 
 
 def _get_simulation_python() -> str:
@@ -60,6 +62,105 @@ def _get_simulation_python() -> str:
     # 3. 回退到当前解释器（可能会因依赖冲突失败）
     logger.warning("未找到独立模拟环境，使用当前 Python（可能存在依赖冲突）")
     return sys.executable
+
+
+def _probe_simulation_environment(python_executable: Optional[str] = None) -> Dict[str, Any]:
+    """
+    检查模拟解释器是否具备运行 OASIS 所需依赖。
+
+    返回结构化结果，便于 API 层和日志层复用。
+    """
+    sim_python = python_executable or _get_simulation_python()
+
+    if not os.path.isfile(sim_python):
+        return {
+            "ok": False,
+            "python": sim_python,
+            "missing_modules": list(SIMULATION_REQUIRED_MODULES),
+            "error": f"模拟解释器不存在: {sim_python}",
+        }
+
+    probe_code = """
+import importlib
+import json
+import sys
+
+required_modules = ["camel", "oasis", "dotenv"]
+missing = []
+failures = {}
+
+for module_name in required_modules:
+    try:
+        importlib.import_module(module_name)
+    except ModuleNotFoundError as exc:
+        missing_name = exc.name or module_name
+        missing.append(missing_name)
+        failures[module_name] = f"ModuleNotFoundError: No module named '{missing_name}'"
+    except Exception as exc:
+        failures[module_name] = f"{type(exc).__name__}: {exc}"
+
+print(json.dumps({
+    "missing": missing,
+    "failures": failures,
+}, ensure_ascii=False))
+
+sys.exit(0 if not missing and not failures else 1)
+""".strip()
+
+    try:
+        result = subprocess.run(
+            [sim_python, "-c", probe_code],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+        )
+    except Exception as e:
+        return {
+            "ok": False,
+            "python": sim_python,
+        "missing_modules": list(SIMULATION_REQUIRED_MODULES),
+        "error": f"执行模拟环境预检失败: {e}",
+    }
+
+    payload: Dict[str, Any] = {}
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+
+    if stdout:
+        try:
+            payload = json.loads(stdout.splitlines()[-1])
+        except json.JSONDecodeError:
+            payload = {}
+
+    missing_modules = payload.get("missing") or []
+    failures = payload.get("failures") or {}
+    error_text = stderr or stdout or str(failures) or f"模拟环境预检失败，退出码: {result.returncode}"
+
+    return {
+        "ok": result.returncode == 0 and not missing_modules and not failures,
+        "python": sim_python,
+        "missing_modules": missing_modules,
+        "failures": failures,
+        "error": error_text,
+    }
+
+
+def _ensure_simulation_environment_ready() -> Dict[str, Any]:
+    """在启动模拟前强制校验独立环境依赖。"""
+    status = _probe_simulation_environment()
+    if status.get("ok"):
+        return status
+
+    missing_modules = status.get("missing_modules") or list(SIMULATION_REQUIRED_MODULES)
+    missing_display = ", ".join(missing_modules)
+    raise ValueError(
+        "模拟环境未就绪: "
+        f"python={status.get('python')}, 缺少或无法导入依赖 [{missing_display}]。"
+        " 模拟脚本运行依赖独立环境中的完整依赖集。"
+        f"请先执行 `{SIMULATION_ENV_SETUP_HINT}`。"
+        f" 详情: {status.get('error')}"
+    )
 
 
 class RunnerStatus(str, Enum):
@@ -345,7 +446,8 @@ class SimulationRunner:
         platform: str = "parallel",  # twitter / reddit / parallel
         max_rounds: int = None,  # 最大模拟轮数（可选，用于截断过长的模拟）
         enable_graph_memory_update: bool = False,  # 是否将活动更新到Zep图谱
-        graph_id: str = None  # Zep图谱ID（启用图谱更新时必需）
+        graph_id: str = None,  # Zep图谱ID（启用图谱更新时必需）
+        graph_backend: str = None,
     ) -> SimulationRunState:
         """
         启动模拟
@@ -371,6 +473,12 @@ class SimulationRunner:
         
         if not os.path.exists(config_path):
             raise ValueError(f"模拟配置不存在，请先调用 /prepare 接口")
+
+        env_status = _ensure_simulation_environment_ready()
+        logger.info(
+            "模拟环境预检通过: python=%s",
+            env_status.get("python"),
+        )
         
         with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
@@ -404,7 +512,11 @@ class SimulationRunner:
                 raise ValueError("启用图谱记忆更新时必须提供 graph_id")
             
             try:
-                ZepGraphMemoryManager.create_updater(simulation_id, graph_id)
+                ZepGraphMemoryManager.create_updater(
+                    simulation_id,
+                    graph_id,
+                    backend=graph_backend,
+                )
                 cls._graph_memory_enabled[simulation_id] = True
                 logger.info(f"已启用图谱记忆更新: simulation_id={simulation_id}, graph_id={graph_id}")
             except Exception as e:
@@ -1790,4 +1902,3 @@ class SimulationRunner:
             results = results[:limit]
         
         return results
-

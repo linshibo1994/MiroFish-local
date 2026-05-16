@@ -195,6 +195,14 @@
                 <span class="detail-label">Valid From:</span>
                 <span class="detail-value">{{ formatDateTime(selectedItem.data.valid_at) }}</span>
               </div>
+              <div class="detail-row" v-if="selectedItem.data.invalid_at">
+                <span class="detail-label">Invalid At:</span>
+                <span class="detail-value">{{ formatDateTime(selectedItem.data.invalid_at) }}</span>
+              </div>
+              <div class="detail-row" v-if="selectedItem.data.expired_at">
+                <span class="detail-label">Expired At:</span>
+                <span class="detail-value">{{ formatDateTime(selectedItem.data.expired_at) }}</span>
+              </div>
             </template>
           </div>
         </div>

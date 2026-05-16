@@ -402,10 +402,15 @@ class ZepToolsService:
     MAX_RETRIES = 3
     RETRY_DELAY = 2.0
     
-    def __init__(self, api_key: Optional[str] = None, llm_client: Optional[LLMClient] = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        llm_client: Optional[LLMClient] = None,
+        backend: Optional[str] = None,
+    ):
         """初始化Zep工具服务（使用单例）"""
         # 使用单例获取适配器（避免重复初始化）
-        self.client: ZepClientAdapter = get_zep_client()
+        self.client: ZepClientAdapter = get_zep_client(backend=backend)
         # LLM客户端用于InsightForge生成子问题
         self._llm_client = llm_client
         logger.info("ZepToolsService 初始化完成")
@@ -710,7 +715,7 @@ class ZepToolsService:
 
         try:
             node = self._call_with_retry(
-                func=lambda: self.client.get_node(node_uuid),
+                func=lambda: self.client.get_node(graph_id, node_uuid),
                 operation_name=f"获取节点详情(uuid={node_uuid[:8]}...)"
             )
 

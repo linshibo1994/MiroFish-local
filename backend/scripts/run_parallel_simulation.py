@@ -96,7 +96,6 @@ if os.path.exists(_env_file):
     load_dotenv(_env_file)
     print(f"已加载环境配置: {_env_file}")
 else:
-    # 尝试加载 backend/.env
     _backend_env = os.path.join(_backend_dir, '.env')
     if os.path.exists(_backend_env):
         load_dotenv(_backend_env)
@@ -1208,7 +1207,7 @@ async def run_twitter_simulation(
     
     # 记录 round 0 结束
     if action_logger:
-        action_logger.log_round_end(0, initial_action_count)
+        action_logger.log_round_end(0, initial_action_count, 0)
     
     # 主模拟循环
     time_config = config.get("time_config", {})
@@ -1247,7 +1246,7 @@ async def run_twitter_simulation(
         if not active_agents:
             # 没有活跃agent时也记录round结束（actions_count=0）
             if action_logger:
-                action_logger.log_round_end(round_num + 1, 0)
+                action_logger.log_round_end(round_num + 1, 0, simulated_minutes // 60)
             continue
         
         actions = {agent: LLMAction() for _, agent in active_agents}
@@ -1272,7 +1271,7 @@ async def run_twitter_simulation(
                 round_action_count += 1
         
         if action_logger:
-            action_logger.log_round_end(round_num + 1, round_action_count)
+            action_logger.log_round_end(round_num + 1, round_action_count, simulated_minutes // 60)
         
         if (round_num + 1) % 20 == 0:
             progress = (round_num + 1) / total_rounds * 100
@@ -1407,7 +1406,7 @@ async def run_reddit_simulation(
     
     # 记录 round 0 结束
     if action_logger:
-        action_logger.log_round_end(0, initial_action_count)
+        action_logger.log_round_end(0, initial_action_count, 0)
     
     # 主模拟循环
     time_config = config.get("time_config", {})
@@ -1446,7 +1445,7 @@ async def run_reddit_simulation(
         if not active_agents:
             # 没有活跃agent时也记录round结束（actions_count=0）
             if action_logger:
-                action_logger.log_round_end(round_num + 1, 0)
+                action_logger.log_round_end(round_num + 1, 0, simulated_minutes // 60)
             continue
         
         actions = {agent: LLMAction() for _, agent in active_agents}
@@ -1471,7 +1470,7 @@ async def run_reddit_simulation(
                 round_action_count += 1
         
         if action_logger:
-            action_logger.log_round_end(round_num + 1, round_action_count)
+            action_logger.log_round_end(round_num + 1, round_action_count, simulated_minutes // 60)
         
         if (round_num + 1) % 20 == 0:
             progress = (round_num + 1) / total_rounds * 100

@@ -188,7 +188,8 @@ class OasisProfileGenerator:
         base_url: Optional[str] = None,
         model_name: Optional[str] = None,
         zep_api_key: Optional[str] = None,
-        graph_id: Optional[str] = None
+        graph_id: Optional[str] = None,
+        graph_backend: Optional[str] = None,
     ):
         self.api_key = api_key or Config.LLM_API_KEY
         self.base_url = base_url or Config.LLM_BASE_URL
@@ -205,9 +206,10 @@ class OasisProfileGenerator:
         # Zep客户端用于检索丰富上下文（使用适配器工厂）
         self.zep_client: Optional[ZepClientAdapter] = None
         self.graph_id = graph_id
+        self.graph_backend = graph_backend
 
         try:
-            self.zep_client = get_zep_client()
+            self.zep_client = get_zep_client(backend=graph_backend)
         except Exception as e:
             logger.warning(f"Zep客户端初始化失败: {e}")
     
@@ -1196,4 +1198,3 @@ class OasisProfileGenerator:
         """[已废弃] 请使用 save_profiles() 方法"""
         logger.warning("save_profiles_to_json已废弃，请使用save_profiles方法")
         self.save_profiles(profiles, file_path, platform)
-

@@ -30,6 +30,21 @@ def allowed_file(filename: str) -> bool:
     return ext in Config.ALLOWED_EXTENSIONS
 
 
+def _get_project_backend_or_404(graph_id: str):
+    """按 graph_id 解析项目与 backend，不允许静默回退到全局 backend。"""
+    project = ProjectManager.get_project_by_graph_id(graph_id)
+    if not project:
+        return None, None, (
+            jsonify({
+                "success": False,
+                "error": f"图谱未绑定到任何项目元数据: {graph_id}"
+            }),
+            404,
+        )
+    backend = project.graph_backend or Config.ZEP_BACKEND
+    return project, backend, None
+
+
 # ============== 项目管理接口 ==============
 
 @graph_bp.route('/project/<project_id>', methods=['GET'])
@@ -71,6 +86,14 @@ def delete_project(project_id: str):
     """
     删除项目
     """
+    project = ProjectManager.get_project(project_id)
+    if project and project.graph_id:
+        backend = project.graph_backend or Config.ZEP_BACKEND
+        try:
+            GraphBuilderService(backend=backend).delete_graph(project.graph_id)
+        except Exception as exc:
+            logger.warning(f"删除项目时清理图谱失败: project_id={project_id}, graph_id={project.graph_id}, error={exc}")
+
     success = ProjectManager.delete_project(project_id)
     
     if not success:
@@ -98,6 +121,9 @@ def reset_project(project_id: str):
             "error": f"项目不存在: {project_id}"
         }), 404
     
+    old_graph_id = project.graph_id
+    old_backend = project.graph_backend or Config.ZEP_BACKEND
+
     # 重置到本体已生成状态
     if project.ontology:
         project.status = ProjectStatus.ONTOLOGY_GENERATED
@@ -106,8 +132,17 @@ def reset_project(project_id: str):
     
     project.graph_id = None
     project.graph_build_task_id = None
+    project.graph_backend = None
+    project.graph_provider = None
+    project.graph_schema_version = None
     project.error = None
     ProjectManager.save_project(project)
+
+    if old_graph_id:
+        try:
+            GraphBuilderService(backend=old_backend).delete_graph(old_graph_id)
+        except Exception as exc:
+            logger.warning(f"重置项目时清理旧图谱失败: project_id={project_id}, graph_id={old_graph_id}, error={exc}")
     
     return jsonify({
         "success": True,
@@ -327,10 +362,20 @@ def build_graph():
         
         # 如果强制重建，重置状态
         if force and project.status in [ProjectStatus.GRAPH_BUILDING, ProjectStatus.FAILED, ProjectStatus.GRAPH_COMPLETED]:
+            old_graph_id = project.graph_id
+            old_backend = project.graph_backend or Config.ZEP_BACKEND
             project.status = ProjectStatus.ONTOLOGY_GENERATED
             project.graph_id = None
             project.graph_build_task_id = None
+            project.graph_backend = None
+            project.graph_provider = None
+            project.graph_schema_version = None
             project.error = None
+            if old_graph_id:
+                try:
+                    GraphBuilderService(backend=old_backend).delete_graph(old_graph_id)
+                except Exception as exc:
+                    logger.warning(f"强制重建前清理旧图谱失败: project_id={project_id}, graph_id={old_graph_id}, error={exc}")
         
         # 获取配置
         graph_name = data.get('graph_name', project.name or 'MiroFish Graph')
@@ -379,7 +424,7 @@ def build_graph():
                 )
                 
                 # 创建图谱构建服务
-                builder = GraphBuilderService(api_key=Config.ZEP_API_KEY)
+                builder = GraphBuilderService(api_key=Config.ZEP_API_KEY, backend=Config.ZEP_BACKEND)
                 
                 # 分块
                 task_manager.update_task(
@@ -404,6 +449,9 @@ def build_graph():
                 
                 # 更新项目的graph_id
                 project.graph_id = graph_id
+                project.graph_backend = Config.ZEP_BACKEND
+                project.graph_provider = "graphiti" if Config.ZEP_BACKEND == "graphiti" else "zep"
+                project.graph_schema_version = "v1"
                 ProjectManager.save_project(project)
                 
                 # 设置本体
@@ -564,13 +612,17 @@ def get_graph_data(graph_id: str):
     获取图谱数据（节点和边）
     """
     try:
-        if Config.ZEP_BACKEND == 'cloud' and not Config.ZEP_API_KEY:
+        project, backend, error_response = _get_project_backend_or_404(graph_id)
+        if error_response:
+            return error_response
+
+        if backend == 'cloud' and not Config.ZEP_API_KEY:
             return jsonify({
                 "success": False,
                 "error": "ZEP_API_KEY未配置（cloud模式需要）"
             }), 500
 
-        builder = GraphBuilderService()
+        builder = GraphBuilderService(backend=backend)
         graph_data = builder.get_graph_data(graph_id)
         
         return jsonify({
@@ -592,13 +644,17 @@ def delete_graph(graph_id: str):
     删除Zep图谱
     """
     try:
-        if Config.ZEP_BACKEND == 'cloud' and not Config.ZEP_API_KEY:
+        project, backend, error_response = _get_project_backend_or_404(graph_id)
+        if error_response:
+            return error_response
+
+        if backend == 'cloud' and not Config.ZEP_API_KEY:
             return jsonify({
                 "success": False,
                 "error": "ZEP_API_KEY未配置（cloud模式需要）"
             }), 500
 
-        builder = GraphBuilderService()
+        builder = GraphBuilderService(backend=backend)
         builder.delete_graph(graph_id)
         
         return jsonify({

@@ -6,8 +6,7 @@ Zep 客户端工厂
 """
 
 import logging
-from functools import lru_cache
-from typing import Optional
+from typing import Dict, Optional
 
 from ..config import Config
 from .zep_adapter import ZepClientAdapter
@@ -93,11 +92,11 @@ def _create_graphiti_client(
 
 import threading
 
-_client_instance: Optional[ZepClientAdapter] = None
+_client_instances: Dict[str, ZepClientAdapter] = {}
 _client_lock = threading.Lock()
 
 
-def get_zep_client() -> ZepClientAdapter:
+def get_zep_client(backend: Optional[str] = None) -> ZepClientAdapter:
     """
     获取全局共享的 Zep 客户端实例（线程安全）
 
@@ -108,13 +107,12 @@ def get_zep_client() -> ZepClientAdapter:
 
     注意：如果需要独立实例，请直接调用 create_zep_client()。
     """
-    global _client_instance
-    if _client_instance is None:
+    backend_key = backend or Config.ZEP_BACKEND
+    if backend_key not in _client_instances:
         with _client_lock:
-            # Double-check: 防止多线程同时通过第一次检查
-            if _client_instance is None:
-                _client_instance = create_zep_client()
-    return _client_instance
+            if backend_key not in _client_instances:
+                _client_instances[backend_key] = create_zep_client(backend=backend_key)
+    return _client_instances[backend_key]
 
 
 def reset_zep_client():
@@ -123,14 +121,12 @@ def reset_zep_client():
 
     用于测试或需要重新初始化的场景。
     """
-    global _client_instance
     with _client_lock:
-        if _client_instance is not None:
-            # 尝试关闭连接
-            if hasattr(_client_instance, 'close'):
+        for client in _client_instances.values():
+            if hasattr(client, 'close'):
                 try:
-                    _client_instance.close()
+                    client.close()
                 except Exception:
                     pass
-            _client_instance = None
-            logger.info("全局 Zep 客户端实例已重置")
+        _client_instances.clear()
+        logger.info("全局 Zep 客户端实例已重置")

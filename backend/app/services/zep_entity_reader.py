@@ -81,10 +81,10 @@ class ZepEntityReader:
     3. 获取每个实体的相关边和关联节点信息
     """
     
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, backend: Optional[str] = None):
         """初始化实体读取服务（使用适配器工厂）"""
         # 使用单例获取适配器（避免重复初始化）
-        self.client: ZepClientAdapter = get_zep_client()
+        self.client: ZepClientAdapter = get_zep_client(backend=backend)
     
     def _call_with_retry(
         self, 
@@ -188,7 +188,7 @@ class ZepEntityReader:
         logger.info(f"共获取 {len(edges_data)} 条边")
         return edges_data
     
-    def get_node_edges(self, node_uuid: str) -> List[Dict[str, Any]]:
+    def get_node_edges(self, graph_id: str, node_uuid: str) -> List[Dict[str, Any]]:
         """
         获取指定节点的所有相关边（带重试机制）
 
@@ -201,7 +201,7 @@ class ZepEntityReader:
         try:
             # 使用重试机制调用适配器 API
             edges = self._call_with_retry(
-                func=lambda: self.client.get_node_edges(node_uuid),
+                func=lambda: self.client.get_node_edges(graph_id, node_uuid),
                 operation_name=f"获取节点边(node={node_uuid[:8]}...)"
             )
 
@@ -408,7 +408,7 @@ class ZepEntityReader:
         try:
             # 使用重试机制获取节点
             node = self._call_with_retry(
-                func=lambda: self.client.get_node(entity_uuid),
+                func=lambda: self.client.get_node(graph_id, entity_uuid),
                 operation_name=f"获取节点详情(uuid={entity_uuid[:8]}...)"
             )
 
@@ -416,7 +416,7 @@ class ZepEntityReader:
                 return None
 
             # 获取节点的边
-            edges = self.get_node_edges(entity_uuid)
+            edges = self.get_node_edges(graph_id, entity_uuid)
 
             # 获取所有节点用于关联查找
             all_nodes = self.get_all_nodes(graph_id)
@@ -493,5 +493,4 @@ class ZepEntityReader:
             enrich_with_edges=enrich_with_edges
         )
         return result.entities
-
 

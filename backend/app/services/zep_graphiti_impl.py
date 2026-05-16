@@ -10,7 +10,7 @@ MVP 范围：
 - 节点/边检索
 - 语义搜索
 
-Ontology 在 MVP 阶段先 no-op。
+Ontology 会在应用层归一化后注入 Graphiti episode ingestion，用于自定义实体/边抽取。
 """
 
 import asyncio
@@ -19,7 +19,7 @@ import os
 import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from functools import lru_cache
+from pydantic import BaseModel, Field
 
 from .zep_adapter import (
     ZepClientAdapter,
@@ -197,54 +197,57 @@ class GraphitiClient(ZepClientAdapter):
         # 记录创建的 graph_id（用于 group_id 映射）
         self._graph_metadata: Dict[str, Dict[str, Any]] = {}
 
-        # 存储 ontology 定义（MVP 阶段仅记录，不强制执行）
+        # 存储 ontology 定义，并在 episode ingestion/search 中作为类型约束使用
         self._ontology_cache: Dict[str, Dict[str, Any]] = {}
+        self._instance_init_lock = threading.Lock()
 
     def _ensure_initialized(self):
         """确保 Graphiti 已初始化"""
         if self._initialized:
             return
+        with self._instance_init_lock:
+            if self._initialized:
+                return
+            try:
+                from graphiti_core import Graphiti
 
-        try:
-            from graphiti_core import Graphiti
+                # 应用 Neo4j 属性 sanitization patch (Issue #683 workaround)
+                from .graphiti_patch import apply_patch
+                apply_patch()
 
-            # 应用 Neo4j 属性 sanitization patch (Issue #683 workaround)
-            from .graphiti_patch import apply_patch
-            apply_patch()
+                llm_client = self._llm_client
+                if llm_client is None:
+                    llm_client = self._build_default_llm_client()
 
-            llm_client = self._llm_client
-            if llm_client is None:
-                llm_client = self._build_default_llm_client()
+                embedder = self._embedder
+                if embedder is None:
+                    embedder = self._build_default_embedder()
 
-            embedder = self._embedder
-            if embedder is None:
-                embedder = self._build_default_embedder()
+                # 创建 Graphiti 实例
+                self._graphiti = Graphiti(
+                    self.neo4j_uri,
+                    self.neo4j_user,
+                    self.neo4j_password,
+                    llm_client=llm_client,
+                    embedder=embedder,
+                )
 
-            # 创建 Graphiti 实例
-            self._graphiti = Graphiti(
-                self.neo4j_uri,
-                self.neo4j_user,
-                self.neo4j_password,
-                llm_client=llm_client,
-                embedder=embedder,
-            )
+                # 初始化索引和约束
+                _run_async(self._graphiti.build_indices_and_constraints())
 
-            # 初始化索引和约束
-            _run_async(self._graphiti.build_indices_and_constraints())
+                # 获取底层 Neo4j driver 用于直接查询
+                self._driver = self._graphiti.driver
 
-            # 获取底层 Neo4j driver 用于直接查询
-            self._driver = self._graphiti.driver
+                self._initialized = True
+                logger.info("Graphiti 客户端初始化完成")
 
-            self._initialized = True
-            logger.info("Graphiti 客户端初始化完成")
-
-        except ImportError as e:
-            raise ImportError(
-                "graphiti-core 未安装。请运行: pip install graphiti-core"
-            ) from e
-        except Exception as e:
-            logger.error(f"Graphiti 初始化失败: {e}")
-            raise
+            except ImportError as e:
+                raise ImportError(
+                    "graphiti-core 未安装。请运行: pip install graphiti-core"
+                ) from e
+            except Exception as e:
+                logger.error(f"Graphiti 初始化失败: {e}")
+                raise
 
     def _build_default_llm_client(self) -> Any:
         """
@@ -369,28 +372,36 @@ class GraphitiClient(ZepClientAdapter):
         """
         设置图谱本体
 
-        MVP 说明：Graphiti 不支持与 Zep Cloud 完全相同的 ontology API。
-        这里仅缓存定义，可用于：
-        1. 添加 episode 时作为 prompt 提示
-        2. 后续对齐时做类型映射
+        Graphiti 不提供与 Zep Cloud 完全等价的图级 ontology 注册接口。
+        当前实现会在应用层归一化 ontology，并在 add_episode/add_episode_batch
+        时作为自定义 entity_types/edge_types/edge_type_map 注入 ingestion。
 
-        Full parity 阶段可实现：
-        - 动态生成 Pydantic Entity/Edge 模型传递给 add_episode
-        - 在 Neo4j 中创建类型约束
+        仍未对齐的部分：
+        - 图级持久化约束/索引管理
+        - 更严格的 schema 校验与冲突检测
         """
         for graph_id in graph_ids:
             self._ontology_cache[graph_id] = {
-                "entities": entities or {},
-                "edges": edges or {},
+                "entities": self._normalize_entity_types(entities),
+                "edges": self._normalize_edge_types(edges),
+                "edge_type_map": self._build_edge_type_map(edges),
+                "excluded_entity_types": [],
             }
             logger.info(
-                f"Ontology 已缓存 (MVP no-op): graph_id={graph_id}, "
-                f"entity_types={len(entities or {})}, edge_types={len(edges or {})}"
+                f"Ontology 已缓存: graph_id={graph_id}, "
+                f"entity_types={len(self._ontology_cache[graph_id]['entities'])}, "
+                f"edge_types={len(self._ontology_cache[graph_id]['edges'])}"
             )
 
     # ==================== Episode 操作 ====================
 
-    def add_episode(self, graph_id: str, data: str, episode_type: str = "text") -> str:
+    def add_episode(
+        self,
+        graph_id: str,
+        data: str,
+        episode_type: str = "text",
+        reference_time: Optional[datetime] = None,
+    ) -> str:
         """添加单条 episode"""
         self._ensure_initialized()
 
@@ -403,14 +414,20 @@ class GraphitiClient(ZepClientAdapter):
         elif episode_type == "json":
             source_type = EpisodeType.json
 
+        ontology = self._ontology_cache.get(graph_id, {})
+
         async def _add():
             result = await self._graphiti.add_episode(
                 name=f"episode_{graph_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}",
                 episode_body=data,
                 source=source_type,
                 source_description="mirofish_simulation",
-                reference_time=datetime.now(timezone.utc),
+                reference_time=reference_time or datetime.now(timezone.utc),
                 group_id=graph_id,
+                entity_types=ontology.get("entities") or None,
+                excluded_entity_types=ontology.get("excluded_entity_types") or None,
+                edge_types=ontology.get("edges") or None,
+                edge_type_map=ontology.get("edge_type_map") or None,
             )
             return result.episode.uuid if result and result.episode else ""
 
@@ -426,6 +443,7 @@ class GraphitiClient(ZepClientAdapter):
 
         from graphiti_core.nodes import EpisodeType
         from graphiti_core.utils.bulk_utils import RawEpisode
+        ontology = self._ontology_cache.get(graph_id, {})
 
         # 构建 RawEpisode 列表
         raw_episodes = []
@@ -443,7 +461,7 @@ class GraphitiClient(ZepClientAdapter):
                     content=ep.get("data", ""),
                     source=source_type,
                     source_description="mirofish_simulation",
-                    reference_time=datetime.now(timezone.utc),
+                    reference_time=ep.get("reference_time") or datetime.now(timezone.utc),
                 )
             )
 
@@ -451,6 +469,10 @@ class GraphitiClient(ZepClientAdapter):
             result = await self._graphiti.add_episode_bulk(
                 bulk_episodes=raw_episodes,
                 group_id=graph_id,
+                entity_types=ontology.get("entities") or None,
+                excluded_entity_types=ontology.get("excluded_entity_types") or None,
+                edge_types=ontology.get("edges") or None,
+                edge_type_map=ontology.get("edge_type_map") or None,
             )
             # 返回所有 episode UUID
             return [ep.uuid for ep in result.episodes] if result and result.episodes else []
@@ -553,84 +575,121 @@ class GraphitiClient(ZepClientAdapter):
             ))
         return nodes
 
-    def get_node(self, node_uuid: str) -> Optional[GraphNode]:
+    def get_node(self, graph_id: str, node_uuid: str) -> Optional[GraphNode]:
         """获取单个节点"""
         self._ensure_initialized()
 
         async def _get_node():
-            # 按 uuid 查找节点，不限定 label（更灵活）
-            records, _, _ = await self._driver.execute_query(
-                """
-                MATCH (n {uuid: $uuid})
-                RETURN
-                    n.uuid AS uuid,
-                    n.name AS name,
-                    labels(n) AS labels,
-                    n.summary AS summary,
-                    properties(n) AS props,
-                    n.created_at AS created_at
-                LIMIT 1
-                """,
-                uuid=node_uuid,
-            )
-            return records
+            from graphiti_core.nodes import EntityNode
 
-        records = _run_async(_get_node())
-        if not records:
-            logger.debug(f"get_node: 未找到 uuid={node_uuid} 的节点")
+            node = await EntityNode.get_by_uuid(self._driver, node_uuid)
+            if not node or getattr(node, "group_id", None) != graph_id:
+                return None
+            return node
+
+        node = _run_async(_get_node())
+        if not node:
+            logger.debug(f"get_node: 未找到 graph_id={graph_id}, uuid={node_uuid} 的节点")
             return None
+        return self._graphiti_node_to_graph_node(node)
 
-        record = records[0]
-        props = record.get("props", {})
-        attributes = {
-            k: v for k, v in props.items()
-            if k not in ["uuid", "name", "summary", "created_at", "group_id"]
-        }
-        created_at = record.get("created_at")
-        if hasattr(created_at, 'to_native'):
-            created_at = created_at.to_native().isoformat()
-        elif created_at:
-            created_at = str(created_at)
-
-        return GraphNode(
-            uuid=record.get("uuid", ""),
-            name=record.get("name", ""),
-            labels=record.get("labels", ["Entity"]),
-            summary=record.get("summary", ""),
-            attributes=attributes,
-            created_at=created_at,
-        )
-
-    def get_node_edges(self, node_uuid: str) -> List[GraphEdge]:
+    def get_node_edges(self, graph_id: str, node_uuid: str) -> List[GraphEdge]:
         """获取节点的所有相关边（双向）"""
         self._ensure_initialized()
 
         async def _get_edges():
-            # 不限定节点 label，按 uuid 匹配，获取双向边
-            # 优先用 r.name（实际关系名），fallback 到 type(r)（关系类型）
-            records, _, _ = await self._driver.execute_query(
-                """
-                MATCH (n {uuid: $uuid})-[r]-(m)
-                RETURN DISTINCT
-                    r.uuid AS uuid,
-                    COALESCE(r.name, type(r)) AS name,
-                    r.fact AS fact,
-                    startNode(r).uuid AS source_uuid,
-                    endNode(r).uuid AS target_uuid,
-                    properties(r) AS props,
-                    r.created_at AS created_at,
-                    r.valid_at AS valid_at,
-                    r.invalid_at AS invalid_at,
-                    r.expired_at AS expired_at
-                """,
-                uuid=node_uuid,
-            )
-            return records
+            from graphiti_core.edges import EntityEdge
 
-        records = _run_async(_get_edges())
-        if not records:
-            logger.debug(f"get_node_edges: 节点 uuid={node_uuid} 没有关联的边")
-        return [self._record_to_edge(record) for record in records]
+            edges = await EntityEdge.get_by_node_uuid(self._driver, node_uuid)
+            return [
+                edge for edge in edges
+                if getattr(edge, "group_id", None) == graph_id
+            ]
+
+        edges = _run_async(_get_edges())
+        if not edges:
+            logger.debug(f"get_node_edges: graph_id={graph_id}, 节点 uuid={node_uuid} 没有关联的边")
+        return [self._graphiti_edge_to_graph_edge(edge) for edge in edges]
+
+    def _normalize_entity_types(
+        self,
+        entities: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, type[BaseModel]]:
+        if not entities:
+            return {}
+        if isinstance(entities, dict):
+            return entities
+
+        entity_models: Dict[str, type[BaseModel]] = {}
+        for entity_def in entities:
+            if not isinstance(entity_def, dict) or not entity_def.get("name"):
+                continue
+            annotations: Dict[str, Any] = {}
+            attrs: Dict[str, Any] = {"__annotations__": annotations}
+            for attr in entity_def.get("attributes", []):
+                attr_name = attr.get("name")
+                if not attr_name:
+                    continue
+                annotations[attr_name] = Optional[str]
+                attrs[attr_name] = Field(default=None, description=attr.get("description", attr_name))
+            entity_models[entity_def["name"]] = type(entity_def["name"], (BaseModel,), attrs)
+        return entity_models
+
+    def _normalize_edge_types(
+        self,
+        edges: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, type[BaseModel]]:
+        if not edges:
+            return {}
+        if isinstance(edges, dict):
+            normalized: Dict[str, type[BaseModel]] = {}
+            for edge_name, edge_value in edges.items():
+                normalized[edge_name] = edge_value[0] if isinstance(edge_value, tuple) else edge_value
+            return normalized
+
+        edge_models: Dict[str, type[BaseModel]] = {}
+        for edge_def in edges:
+            if not isinstance(edge_def, dict) or not edge_def.get("name"):
+                continue
+            annotations: Dict[str, Any] = {}
+            attrs: Dict[str, Any] = {"__annotations__": annotations}
+            for attr in edge_def.get("attributes", []):
+                attr_name = attr.get("name")
+                if not attr_name:
+                    continue
+                annotations[attr_name] = Optional[str]
+                attrs[attr_name] = Field(default=None, description=attr.get("description", attr_name))
+            class_name = ''.join(word.capitalize() for word in edge_def["name"].split('_'))
+            edge_models[edge_def["name"]] = type(class_name, (BaseModel,), attrs)
+        return edge_models
+
+    def _build_edge_type_map(
+        self,
+        edges: Optional[Dict[str, Any]] = None,
+    ) -> Dict[tuple[str, str], List[str]]:
+        if not edges:
+            return {}
+
+        edge_map: Dict[tuple[str, str], List[str]] = {}
+        edge_items = edges.items() if isinstance(edges, dict) else [
+            (edge.get("name"), edge) for edge in edges if isinstance(edge, dict)
+        ]
+        for edge_name, edge_def in edge_items:
+            if not edge_name:
+                continue
+            source_targets = []
+            if isinstance(edge_def, tuple) and len(edge_def) > 1:
+                source_targets = edge_def[1]
+            elif isinstance(edge_def, dict):
+                source_targets = edge_def.get("source_targets", [])
+
+            for source_target in source_targets:
+                if hasattr(source_target, "source") and hasattr(source_target, "target"):
+                    key = (source_target.source, source_target.target)
+                else:
+                    key = (source_target.get("source", "Entity"), source_target.get("target", "Entity"))
+                edge_map.setdefault(key, []).append(edge_name)
+        return edge_map
 
     # ==================== Edge 操作 ====================
 

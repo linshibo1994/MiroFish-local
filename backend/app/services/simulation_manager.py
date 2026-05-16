@@ -7,6 +7,7 @@ OASIS模拟管理器
 import os
 import json
 import shutil
+import csv
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -45,6 +46,7 @@ class SimulationState:
     simulation_id: str
     project_id: str
     graph_id: str
+    graph_backend: Optional[str] = None
     
     # 平台启用状态
     enable_twitter: bool = True
@@ -80,6 +82,7 @@ class SimulationState:
             "simulation_id": self.simulation_id,
             "project_id": self.project_id,
             "graph_id": self.graph_id,
+            "graph_backend": self.graph_backend,
             "enable_twitter": self.enable_twitter,
             "enable_reddit": self.enable_reddit,
             "status": self.status.value,
@@ -102,6 +105,7 @@ class SimulationState:
             "simulation_id": self.simulation_id,
             "project_id": self.project_id,
             "graph_id": self.graph_id,
+            "graph_backend": self.graph_backend,
             "status": self.status.value,
             "entities_count": self.entities_count,
             "profiles_count": self.profiles_count,
@@ -171,6 +175,7 @@ class SimulationManager:
             simulation_id=simulation_id,
             project_id=data.get("project_id", ""),
             graph_id=data.get("graph_id", ""),
+            graph_backend=data.get("graph_backend"),
             enable_twitter=data.get("enable_twitter", True),
             enable_reddit=data.get("enable_reddit", True),
             status=SimulationStatus(data.get("status", "created")),
@@ -194,6 +199,7 @@ class SimulationManager:
         self,
         project_id: str,
         graph_id: str,
+        graph_backend: Optional[str] = None,
         enable_twitter: bool = True,
         enable_reddit: bool = True,
     ) -> SimulationState:
@@ -216,6 +222,7 @@ class SimulationManager:
             simulation_id=simulation_id,
             project_id=project_id,
             graph_id=graph_id,
+            graph_backend=graph_backend,
             enable_twitter=enable_twitter,
             enable_reddit=enable_reddit,
             status=SimulationStatus.CREATED,
@@ -272,7 +279,7 @@ class SimulationManager:
             if progress_callback:
                 progress_callback("reading", 0, "正在连接Zep图谱...")
             
-            reader = ZepEntityReader()
+            reader = ZepEntityReader(backend=state.graph_backend or Config.ZEP_BACKEND)
             
             if progress_callback:
                 progress_callback("reading", 30, "正在读取节点数据...")
@@ -312,7 +319,10 @@ class SimulationManager:
                 )
             
             # 传入graph_id以启用Zep检索功能，获取更丰富的上下文
-            generator = OasisProfileGenerator(graph_id=state.graph_id)
+            generator = OasisProfileGenerator(
+                graph_id=state.graph_id,
+                graph_backend=state.graph_backend or Config.ZEP_BACKEND,
+            )
             
             def profile_progress(current, total, msg):
                 if progress_callback:
@@ -471,6 +481,30 @@ class SimulationManager:
                         simulations.append(state)
         
         return simulations
+
+    def _load_profiles_file(self, sim_dir: str, platform: str) -> List[Dict[str, Any]]:
+        """按平台读取 profile 文件，兼容 Reddit JSON 与 Twitter CSV/历史 JSON。"""
+        normalized_platform = (platform or "reddit").lower()
+
+        if normalized_platform == PlatformType.TWITTER.value:
+            csv_path = os.path.join(sim_dir, "twitter_profiles.csv")
+            if os.path.exists(csv_path):
+                with open(csv_path, 'r', encoding='utf-8', newline='') as f:
+                    return list(csv.DictReader(f))
+
+            legacy_json_path = os.path.join(sim_dir, "twitter_profiles.json")
+            if os.path.exists(legacy_json_path):
+                with open(legacy_json_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+
+            return []
+
+        profile_path = os.path.join(sim_dir, f"{normalized_platform}_profiles.json")
+        if not os.path.exists(profile_path):
+            return []
+
+        with open(profile_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
     
     def get_profiles(self, simulation_id: str, platform: str = "reddit") -> List[Dict[str, Any]]:
         """获取模拟的Agent Profile"""
@@ -479,13 +513,7 @@ class SimulationManager:
             raise ValueError(f"模拟不存在: {simulation_id}")
         
         sim_dir = self._get_simulation_dir(simulation_id)
-        profile_path = os.path.join(sim_dir, f"{platform}_profiles.json")
-        
-        if not os.path.exists(profile_path):
-            return []
-        
-        with open(profile_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        return self._load_profiles_file(sim_dir, platform)
     
     def get_simulation_config(self, simulation_id: str) -> Optional[Dict[str, Any]]:
         """获取模拟配置"""

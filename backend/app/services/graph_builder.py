@@ -48,19 +48,16 @@ class GraphBuilderService:
     - Graphiti: 使用 graphiti-core + Neo4j
     """
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, backend: Optional[str] = None):
         """
         初始化图谱构建服务
 
         Args:
             api_key: Zep API Key（仅 cloud 模式需要，可选）
         """
-        # 使用单例获取适配器（避免重复初始化）
-        self.client: ZepClientAdapter = get_zep_client()
+        self._backend = backend or Config.ZEP_BACKEND
+        self.client: ZepClientAdapter = get_zep_client(backend=self._backend)
         self.task_manager = TaskManager()
-
-        # 记录后端类型（用于条件逻辑）
-        self._backend = Config.ZEP_BACKEND
     
     def build_graph_async(
         self,
@@ -214,10 +211,10 @@ class GraphBuilderService:
 
         根据后端类型选择处理方式：
         - Zep Cloud: 动态创建 Pydantic 模型，调用 Zep API
-        - Graphiti: 缓存 ontology 定义（MVP 阶段 no-op）
+        - Graphiti: 归一化并缓存 ontology，供 episode 抽取时注入自定义实体/边类型
         """
         if self._backend == 'graphiti':
-            # Graphiti 后端：直接传递原始 ontology，适配器会缓存或 no-op
+            # Graphiti 后端：直接传递原始 ontology，适配器会归一化并在写入时注入
             self.client.set_ontology(
                 graph_ids=[graph_id],
                 entities=ontology.get("entity_types", []),
@@ -339,7 +336,7 @@ class GraphBuilderService:
 
             # 构建 episode 数据（适配器格式）
             episodes = [
-                {"data": chunk, "type": "text"}
+                {"data": chunk, "type": "text", "reference_time": None}
                 for chunk in batch_chunks
             ]
 
@@ -486,8 +483,8 @@ class GraphBuilderService:
                 "attributes": edge.attributes or {},
                 "created_at": edge.created_at,
                 "valid_at": edge.valid_at,
-                "invalid_at": None,  # 适配器暂不支持
-                "expired_at": None,  # 适配器暂不支持
+                "invalid_at": edge.invalid_at,
+                "expired_at": edge.expired_at,
                 "episodes": edge.episodes or [],
             })
 
@@ -502,4 +499,3 @@ class GraphBuilderService:
     def delete_graph(self, graph_id: str):
         """删除图谱"""
         self.client.delete_graph(graph_id)
-
