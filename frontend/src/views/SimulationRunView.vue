@@ -115,9 +115,9 @@ const statusClass = computed(() => {
 })
 
 const statusText = computed(() => {
-  if (currentStatus.value === 'error') return 'Error'
-  if (currentStatus.value === 'completed') return 'Completed'
-  return 'Running'
+  if (currentStatus.value === 'error') return '错误'
+  if (currentStatus.value === 'completed') return '已完成'
+  return '运行中'
 })
 
 const isSimulating = computed(() => currentStatus.value === 'processing')

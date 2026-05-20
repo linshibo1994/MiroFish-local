@@ -109,9 +109,9 @@ const statusClass = computed(() => {
 })
 
 const statusText = computed(() => {
-  if (currentStatus.value === 'error') return 'Error'
-  if (currentStatus.value === 'completed') return 'Completed'
-  return 'Generating'
+  if (currentStatus.value === 'error') return '错误'
+  if (currentStatus.value === 'completed') return '已完成'
+  return '生成中'
 })
 
 // --- Helpers ---

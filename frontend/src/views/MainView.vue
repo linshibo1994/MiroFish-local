@@ -130,11 +130,11 @@ const statusClass = computed(() => {
 })
 
 const statusText = computed(() => {
-  if (error.value) return 'Error'
-  if (currentPhase.value >= 2) return 'Ready'
-  if (currentPhase.value === 1) return 'Building Graph'
-  if (currentPhase.value === 0) return 'Generating Ontology'
-  return 'Initializing'
+  if (error.value) return '错误'
+  if (currentPhase.value >= 2) return '就绪'
+  if (currentPhase.value === 1) return '图谱构建中'
+  if (currentPhase.value === 0) return '本体生成中'
+  return '初始化中'
 })
 
 // --- Helpers ---

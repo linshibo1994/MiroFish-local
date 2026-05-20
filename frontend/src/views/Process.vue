@@ -235,7 +235,7 @@
               <span class="phase-num">01</span>
               <div class="phase-info">
                 <div class="phase-title">本体生成</div>
-                <div class="phase-api">/api/graph/ontology/generate</div>
+                <div class="phase-api" style="display:none">/api/graph/ontology/generate</div>
               </div>
               <span class="phase-status" :class="getPhaseStatusClass(0)">
                 {{ getPhaseStatusText(0) }}
@@ -306,7 +306,7 @@
               <span class="phase-num">02</span>
               <div class="phase-info">
                 <div class="phase-title">图谱构建</div>
-                <div class="phase-api">/api/graph/build</div>
+                <div class="phase-api" style="display:none">/api/graph/build</div>
               </div>
               <span class="phase-status" :class="getPhaseStatusClass(1)">
                 {{ getPhaseStatusText(1) }}

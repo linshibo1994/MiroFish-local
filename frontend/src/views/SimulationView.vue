@@ -109,9 +109,9 @@ const statusClass = computed(() => {
 })
 
 const statusText = computed(() => {
-  if (currentStatus.value === 'error') return 'Error'
-  if (currentStatus.value === 'completed') return 'Ready'
-  return 'Preparing'
+  if (currentStatus.value === 'error') return '错误'
+  if (currentStatus.value === 'completed') return '就绪'
+  return '准备中'
 })
 
 // --- Helpers ---
