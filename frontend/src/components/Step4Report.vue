@@ -166,11 +166,11 @@
                   <!-- Report Start -->
                   <template v-if="log.action === 'report_start'">
                     <div class="info-row">
-                      <span class="info-key">Simulation</span>
+                      <span class="info-key">模拟</span>
                       <span class="info-val mono">{{ log.details?.simulation_id }}</span>
                     </div>
                     <div class="info-row" v-if="log.details?.simulation_requirement">
-                      <span class="info-key">Requirement</span>
+                      <span class="info-key">需求</span>
                       <span class="info-val">{{ log.details.simulation_requirement }}</span>
                     </div>
                   </template>
@@ -377,7 +377,7 @@
     </div>
 
     <!-- Bottom Console Logs -->
-    <div class="console-logs">
+    <div v-if="false" class="console-logs">
       <div class="log-header">
         <span class="log-title">控制台输出</span>
         <span class="log-id">{{ reportId || '无报告' }}</span>

@@ -17,7 +17,7 @@
         <div class="card-content">
           <p class="api-note" style="display:none">POST /api/simulation/create</p>
           <p class="description">
-            新建simulation实例，拉取模拟世界参数模版
+            新建模拟实例，拉取模拟世界参数模版
           </p>
 
           <div v-if="simulationId" class="info-card">
