@@ -74,7 +74,7 @@
           </div>
 
           <!-- Generated Entity Tags -->
-          <div v-if="projectData?.ontology?.entity_types" class="tags-container" :class="{ 'dimmed': selectedOntologyItem }">
+          <div v-if="false" class="tags-container" :class="{ 'dimmed': selectedOntologyItem }">
             <span class="tag-label">生成的实体类型</span>
             <div class="tags-list">
               <span 
@@ -89,7 +89,7 @@
           </div>
 
           <!-- Generated Relation Tags -->
-          <div v-if="projectData?.ontology?.edge_types" class="tags-container" :class="{ 'dimmed': selectedOntologyItem }">
+          <div v-if="false" class="tags-container" :class="{ 'dimmed': selectedOntologyItem }">
             <span class="tag-label">生成的关系类型</span>
             <div class="tags-list">
               <span 
@@ -110,7 +110,7 @@
         <div class="card-header">
           <div class="step-info">
             <span class="step-num">02</span>
-            <span class="step-title">GraphRAG构建</span>
+            <span class="step-title">知识图谱构建</span>
           </div>
           <div class="step-status">
             <span v-if="currentPhase > 1" class="badge success">已完成</span>
@@ -171,7 +171,7 @@
     </div>
 
     <!-- Bottom Info / Logs -->
-    <div class="system-logs">
+    <div v-if="false" class="system-logs">
       <div class="log-header">
         <span class="log-title">系统仪表盘</span>
         <span class="log-id">{{ projectData?.project_id || '无项目' }}</span>

@@ -71,7 +71,7 @@
             <div class="waiting-ring"></div>
             <div class="waiting-ring"></div>
           </div>
-          <span class="waiting-text">等待报告生成Agent...</span>
+          <span class="waiting-text">等待报告生成智能体...</span>
         </div>
       </div>
 
@@ -85,7 +85,7 @@
           </svg>
           <div class="action-bar-text">
             <span class="action-bar-title">交互工具</span>
-            <span class="action-bar-subtitle mono">{{ profiles.length }} 个可用Agent</span>
+            <span class="action-bar-subtitle mono">{{ profiles.length }} 个可用智能体</span>
           </div>
         </div>
           <div class="action-bar-tabs">
@@ -97,7 +97,7 @@
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
               </svg>
-              <span>与Report Agent对话</span>
+              <span>与报告智能体对话</span>
             </button>
             <div class="agent-dropdown" v-if="profiles.length > 0">
               <button 
@@ -148,12 +148,12 @@
         <!-- Chat Mode -->
         <div v-if="activeTab === 'chat'" class="chat-container">
 
-          <!-- Report Agent Tools Card -->
+          <!-- 报告智能体 Tools Card -->
           <div v-if="chatTarget === 'report_agent'" class="report-agent-tools-card">
             <div class="tools-card-header">
               <div class="tools-card-avatar">R</div>
               <div class="tools-card-info">
-                <div class="tools-card-name">报告Agent - 对话</div>
+                <div class="tools-card-name">报告智能体 - 对话</div>
                 <div class="tools-card-subtitle">报告生成智能体的快速对话版本，可调用 4 种专业工具，拥有NewsPower的完整记忆</div>
               </div>
               <button class="tools-card-toggle" @click="showToolsDetail = !showToolsDetail">
@@ -195,7 +195,7 @@
                   </div>
                   <div class="tool-content">
                     <div class="tool-name">QuickSearch 快速检索</div>
-                    <div class="tool-desc">基于 GraphRAG 的即时查询接口，优化索引效率，用于快速提取具体的节点属性与离散事实</div>
+                    <div class="tool-desc">基于知识图谱的即时查询接口，优化索引效率，用于快速提取具体的节点属性与离散事实</div>
                   </div>
                 </div>
                 <div class="tool-item tool-green">
@@ -249,7 +249,7 @@
                 </svg>
               </div>
               <p class="empty-text">
-                {{ chatTarget === 'report_agent' ? '与 Report Agent 对话，深入了解报告内容' : '与模拟个体对话，了解他们的观点' }}
+                {{ chatTarget === 'report_agent' ? '与报告智能体对话，深入了解报告内容' : '与模拟个体对话，了解他们的观点' }}
               </p>
             </div>
             <div 
@@ -265,7 +265,7 @@
               <div class="message-content">
                 <div class="message-header">
                   <span class="sender-name">
-                    {{ msg.role === 'user' ? '你' : (chatTarget === 'report_agent' ? '报告Agent' : (selectedAgent?.username || 'Agent')) }}
+                    {{ msg.role === 'user' ? '你' : (chatTarget === 'report_agent' ? '报告智能体' : (selectedAgent?.username || '智能体')) }}
                   </span>
                   <span class="message-time">{{ formatTime(msg.timestamp) }}</span>
                 </div>
@@ -504,7 +504,7 @@ const selectReportAgentChat = () => {
   selectedAgentIndex.value = null
   showAgentDropdown.value = false
   
-  // 恢复 Report Agent 的对话记录
+  // 恢复 报告智能体 的对话记录
   chatHistory.value = chatHistoryCache.value['report_agent'] || []
 }
 
@@ -648,7 +648,7 @@ const sendMessage = async () => {
 }
 
 const sendToReportAgent = async (message) => {
-  addLog(`向 Report Agent 发送: ${message.substring(0, 50)}...`)
+  addLog(`向 报告智能体 发送: ${message.substring(0, 50)}...`)
   
   // Build chat history for API
   const historyForApi = chatHistory.value
@@ -671,7 +671,7 @@ const sendToReportAgent = async (message) => {
       content: res.data.response || res.data.answer || '无响应',
       timestamp: new Date().toISOString()
     })
-    addLog('Report Agent 已回复')
+    addLog('报告智能体 已回复')
   } else {
     throw new Error(res.error || '请求失败')
   }
@@ -820,7 +820,7 @@ const submitSurvey = async () => {
         
         surveyResultsList.push({
           agent_id: agentIdx,
-          agent_name: agent?.username || `Agent ${agentIdx}`,
+          agent_name: agent?.username || `智能体${agentIdx}`,
           profession: agent?.profession,
           question: surveyQuestion.value.trim(),
           answer: responseContent
@@ -1454,7 +1454,7 @@ watch(() => props.simulationId, (newId) => {
   overflow: hidden;
 }
 
-/* Report Agent Tools Card */
+/* 报告智能体 Tools Card */
 .report-agent-tools-card {
   border-bottom: 1px solid #E5E7EB;
   background: linear-gradient(135deg, #F8FAFC 0%, #F1F5F9 100%);

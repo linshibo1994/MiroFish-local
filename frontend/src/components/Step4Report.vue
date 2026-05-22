@@ -72,7 +72,7 @@
             <div class="waiting-ring"></div>
             <div class="waiting-ring"></div>
           </div>
-          <span class="waiting-text">等待报告生成Agent...</span>
+          <span class="waiting-text">等待报告生成智能体...</span>
         </div>
       </div>
 
@@ -370,7 +370,7 @@
           <!-- Empty State -->
           <div v-if="agentLogs.length === 0 && !isComplete" class="workflow-empty">
             <div class="empty-pulse"></div>
-            <span>等待 Agent 活动...</span>
+            <span>等待智能体活动...</span>
           </div>
         </div>
       </div>
@@ -507,7 +507,7 @@ const toolConfig = {
     icon: 'globe' // 地球图标 - 代表全景搜索
   },
   'interview_agents': {
-    name: 'Agent访谈',
+    name: '智能体访谈',
     color: 'green',
     icon: 'users' // 用户图标 - 代表对话
   },
@@ -702,7 +702,7 @@ const parseInterview = (text) => {
     const topicMatch = text.match(/\*\*采访主题:\*\*\s*(.+?)(?:\n|$)/)
     if (topicMatch) result.topic = topicMatch[1].trim()
     
-    // 提取采访人数（如 "5 / 9 位模拟Agent"）
+    // 提取采访人数（如 "5 / 9 位模拟智能体"）
     const countMatch = text.match(/\*\*采访人数:\*\*\s*(\d+)\s*\/\s*(\d+)/)
     if (countMatch) {
       result.successCount = parseInt(countMatch[1])
@@ -1395,7 +1395,7 @@ const InterviewDisplay = {
       // Header Section
       h('div', { class: 'interview-header' }, [
         h('div', { class: 'header-main' }, [
-          h('div', { class: 'header-title' }, 'Agent访谈'),
+          h('div', { class: 'header-title' }, '智能体访谈'),
           h('div', { class: 'header-stats' }, [
             h('span', { class: 'stat-item' }, [
               h('span', { class: 'stat-value' }, props.result.successCount || props.result.interviews.length),
@@ -1421,7 +1421,7 @@ const InterviewDisplay = {
           onClick: () => { activeIndex.value = i }
         }, [
           h('span', { class: 'tab-avatar' }, interview.name ? interview.name.charAt(0) : (i + 1)),
-          h('span', { class: 'tab-name' }, interview.title || interview.name || `Agent ${i + 1}`)
+          h('span', { class: 'tab-name' }, interview.title || interview.name || `智能体${i + 1}`)
         ]))
       ),
       
@@ -1431,7 +1431,7 @@ const InterviewDisplay = {
         h('div', { class: 'agent-profile' }, [
           h('div', { class: 'profile-avatar' }, props.result.interviews[activeIndex.value]?.name?.charAt(0) || 'A'),
           h('div', { class: 'profile-info' }, [
-            h('div', { class: 'profile-name' }, props.result.interviews[activeIndex.value]?.name || 'Agent'),
+            h('div', { class: 'profile-name' }, props.result.interviews[activeIndex.value]?.name || '智能体'),
             h('div', { class: 'profile-role' }, props.result.interviews[activeIndex.value]?.role || ''),
             props.result.interviews[activeIndex.value]?.bio && h('div', { class: 'profile-bio' }, props.result.interviews[activeIndex.value].bio)
           ])
@@ -1471,7 +1471,7 @@ const InterviewDisplay = {
                 h('div', { class: 'qa-badge a-badge' }, `A${qIdx + 1}`),
                 h('div', { class: 'qa-content' }, [
                   h('div', { class: 'qa-answer-header' }, [
-                    h('div', { class: 'qa-sender' }, interview?.name || 'Agent'),
+                    h('div', { class: 'qa-sender' }, interview?.name || '智能体'),
                     // 双平台切换按钮
                     hasDualPlatform && h('div', { class: 'platform-switch' }, [
                       h('button', {

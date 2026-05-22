@@ -26,10 +26,10 @@
           
           <div class="hero-desc">
             <p>
-              即使只有一段文字，<span class="highlight-bold">NewsPower</span> 也能基于其中的现实种子，全自动生成与之对应的至多<span class="highlight-orange">百万级Agent</span>构成的平行世界。通过上帝视角注入变量，在复杂的群体交互中寻找动态环境下的<span class="highlight-code">“局部最优解”</span>
+              即使只有一段文字，<span class=”highlight-bold”>NewsPower</span> 也能基于其中的现实种子，全自动生成与之对应的至多<span class=”highlight-orange”>百万级智能体</span>构成的平行世界。通过上帝视角注入变量，在复杂的群体交互中寻找动态环境下的<span class=”highlight-code”>”局部最优解”</span>
             </p>
             <p class="slogan-text">
-              让未来在 Agent 群中预演，让决策在百战后胜出<span class="blinking-cursor">_</span>
+              让未来在智能体群中预演，让决策在百战后胜出<span class="blinking-cursor">_</span>
             </p>
           </div>
            
@@ -69,7 +69,7 @@
             </div>
             <div class="metric-card">
               <div class="metric-value">高可用</div>
-              <div class="metric-label">最多百万级Agent模拟</div>
+              <div class="metric-label">最多百万级智能体模拟</div>
             </div>
           </div>
 
@@ -83,14 +83,14 @@
                 <span class="step-num">01</span>
                 <div class="step-info">
                   <div class="step-title">图谱构建</div>
-                  <div class="step-desc">现实种子提取 & 个体与群体记忆注入 & GraphRAG构建</div>
+                  <div class="step-desc">现实种子提取 & 个体与群体记忆注入 & 知识图谱构建</div>
                 </div>
               </div>
               <div class="workflow-item">
                 <span class="step-num">02</span>
                 <div class="step-info">
                   <div class="step-title">环境搭建</div>
-                  <div class="step-desc">实体关系抽取 & 人设生成 & 环境配置Agent注入仿真参数</div>
+                  <div class="step-desc">实体关系抽取 & 人设生成 & 环境配置智能体注入仿真参数</div>
                 </div>
               </div>
               <div class="workflow-item">
@@ -104,14 +104,14 @@
                 <span class="step-num">04</span>
                 <div class="step-info">
                   <div class="step-title">报告生成</div>
-                  <div class="step-desc">ReportAgent拥有丰富的工具集与模拟后环境进行深度交互</div>
+                  <div class="step-desc">报告智能体拥有丰富的工具集与模拟后环境进行深度交互</div>
                 </div>
               </div>
               <div class="workflow-item">
                 <span class="step-num">05</span>
                 <div class="step-info">
                   <div class="step-title">深度互动</div>
-                  <div class="step-desc">与模拟世界中的任意一位进行对话 & 与ReportAgent进行对话</div>
+                  <div class="step-desc">与模拟世界中的任意一位进行对话 & 与报告智能体进行对话</div>
                 </div>
               </div>
             </div>

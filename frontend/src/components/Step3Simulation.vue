@@ -261,13 +261,13 @@
 
         <div v-if="allActions.length === 0" class="waiting-state">
           <div class="pulse-ring"></div>
-          <span>等待 Agent 动作...</span>
+          <span>等待智能体动作...</span>
         </div>
       </div>
     </div>
 
     <!-- Bottom Info / Logs -->
-    <div class="system-logs">
+    <div v-if="false" class="system-logs">
       <div class="log-header">
         <span class="log-title">模拟监控</span>
         <span class="log-id">{{ simulationId || '无模拟实例' }}</span>
