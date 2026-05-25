@@ -632,12 +632,11 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onUnmounted, nextTick } from 'vue'
 import { 
   prepareSimulation, 
   getPrepareStatus, 
   getSimulationProfilesRealtime,
-  getSimulationConfig,
   getSimulationConfigRealtime 
 } from '../api/simulation'
 
@@ -662,6 +661,7 @@ const expectedTotal = ref(null)
 const simulationConfig = ref(null)
 const selectedProfile = ref(null)
 const showProfilesDetail = ref(true)
+const prepareStarted = ref(false)
 
 // 日志去重：记录上一次输出的关键信息
 let lastLoggedMessage = ''
@@ -818,6 +818,11 @@ const startPrepareSimulation = async () => {
     emit('update-status', 'error')
     return
   }
+
+  if (prepareStarted.value) {
+    return
+  }
+  prepareStarted.value = true
   
   // 标记第一步完成，开始第二步
   phase.value = 1
@@ -864,10 +869,12 @@ const startPrepareSimulation = async () => {
     } else {
       addLog(`准备失败: ${res.error || '未知错误'}`)
       emit('update-status', 'error')
+      prepareStarted.value = false
     }
   } catch (err) {
     addLog(`准备异常: ${err.message}`)
     emit('update-status', 'error')
+    prepareStarted.value = false
   }
 }
 
@@ -1112,13 +1119,12 @@ watch(() => props.systemLogs?.length, () => {
   })
 })
 
-onMounted(() => {
-  // 自动开始准备流程
-  if (props.simulationId) {
+watch(() => props.simulationId, (simulationId) => {
+  if (simulationId && !prepareStarted.value) {
     addLog('Step2 环境搭建初始化')
     startPrepareSimulation()
   }
-})
+}, { immediate: true })
 
 onUnmounted(() => {
   stopPolling()

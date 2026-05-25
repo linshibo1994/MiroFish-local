@@ -65,12 +65,14 @@
         <!-- Step 2: 环境搭建 -->
         <Step2EnvSetup
           v-else-if="currentStep === 2"
+          :simulationId="currentSimulationId"
           :projectData="projectData"
           :graphData="graphData"
           :systemLogs="systemLogs"
           @go-back="handleGoBack"
           @next-step="handleNextStep"
           @add-log="addLog"
+          @update-status="updateEnvStatus"
         />
       </div>
     </main>
@@ -78,12 +80,13 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import GraphPanel from '../components/GraphPanel.vue'
 import Step1GraphBuild from '../components/Step1GraphBuild.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
 import { getProject, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
+import { createSimulation } from '../api/simulation'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
 
 const route = useRoute()
@@ -103,11 +106,14 @@ const graphLoading = ref(false)
 const error = ref('')
 const projectData = ref(null)
 const graphData = ref(null)
+const currentSimulationId = ref('')
 const currentPhase = ref(-1) // -1: Upload, 0: Ontology, 1: Build, 2: Complete
 const ontologyProgress = ref(null)
 const buildProgress = ref(null)
 const systemLogs = ref([])
 const pendingUploadState = ref(null)
+const simulationCreating = ref(false)
+const envSetupStatus = ref('processing') // processing | completed | error
 
 // Polling timers
 let pollTimer = null
@@ -129,12 +135,20 @@ const rightPanelStyle = computed(() => {
 // --- Status Computed ---
 const statusClass = computed(() => {
   if (error.value) return 'error'
+  if (simulationCreating.value) return 'processing'
+  if (currentStep.value === 2) return envSetupStatus.value
   if (currentPhase.value >= 2) return 'completed'
   return 'processing'
 })
 
 const statusText = computed(() => {
   if (error.value) return '错误'
+  if (simulationCreating.value) return '创建模拟实例'
+  if (currentStep.value === 2) {
+    if (envSetupStatus.value === 'error') return '错误'
+    if (envSetupStatus.value === 'completed') return '就绪'
+    return '准备中'
+  }
   if (currentPhase.value >= 2) return '就绪'
   if (currentPhase.value === 1) return '图谱构建中'
   if (currentPhase.value === 0) return '本体生成中'
@@ -161,15 +175,41 @@ const toggleMaximize = (target) => {
 }
 
 const handleNextStep = (params = {}) => {
+  if (currentStep.value === 1) {
+    enterEnvironmentSetup()
+    return
+  }
+
+  if (currentStep.value === 2) {
+    addLog('进入 Step 3: 开始模拟')
+
+    if (params.maxRounds) {
+      addLog(`自定义模拟轮数: ${params.maxRounds} 轮`)
+    } else {
+      addLog('使用自动配置的模拟轮数')
+    }
+
+    const routeParams = {
+      name: 'SimulationRun',
+      params: { simulationId: currentSimulationId.value }
+    }
+
+    if (params.maxRounds) {
+      routeParams.query = { maxRounds: params.maxRounds }
+    }
+
+    router.push(routeParams)
+    return
+  }
+
   if (currentStep.value < 5) {
     currentStep.value++
     addLog(`进入 Step ${currentStep.value}: ${stepNames[currentStep.value - 1]}`)
-    
-    // 如果是从 Step 2 进入 Step 3，记录模拟轮数配置
-    if (currentStep.value === 3 && params.maxRounds) {
-      addLog(`自定义模拟轮数: ${params.maxRounds} 轮`)
-    }
   }
+}
+
+const updateEnvStatus = (status) => {
+  envSetupStatus.value = status || 'processing'
 }
 
 const handleGoBack = () => {
@@ -250,6 +290,63 @@ const loadProject = async () => {
     addLog(`Exception in loadProject: ${err.message}`)
   } finally {
     loading.value = false
+  }
+}
+
+const ensureProjectReadyForSimulation = async () => {
+  if (!projectData.value?.graph_id && currentProjectId.value && currentProjectId.value !== 'new') {
+    const res = await getProject(currentProjectId.value)
+    if (res.success) {
+      projectData.value = res.data
+    } else {
+      throw new Error(res.error || '项目数据加载失败')
+    }
+  }
+
+  if (!projectData.value?.project_id) {
+    throw new Error('缺少 project_id，无法创建模拟实例')
+  }
+
+  if (!projectData.value?.graph_id) {
+    throw new Error('项目尚未完成图谱构建，无法进入环境搭建')
+  }
+}
+
+const enterEnvironmentSetup = async () => {
+  if (simulationCreating.value) return
+
+  try {
+    error.value = ''
+    envSetupStatus.value = 'processing'
+    await ensureProjectReadyForSimulation()
+
+    if (!currentSimulationId.value) {
+      simulationCreating.value = true
+      addLog('正在创建模拟实例...')
+
+      const res = await createSimulation({
+        project_id: projectData.value.project_id,
+        graph_id: projectData.value.graph_id,
+        enable_twitter: true,
+        enable_reddit: true
+      })
+
+      if (!res.success || !res.data?.simulation_id) {
+        throw new Error(res.error || '创建模拟实例失败')
+      }
+
+      currentSimulationId.value = res.data.simulation_id
+      addLog(`模拟实例创建完成: ${currentSimulationId.value}`)
+    }
+
+    currentStep.value = 2
+    addLog(`进入 Step 2: ${stepNames[1]}`)
+  } catch (err) {
+    error.value = err.message
+    envSetupStatus.value = 'error'
+    addLog(`进入环境搭建失败: ${err.message}`)
+  } finally {
+    simulationCreating.value = false
   }
 }
 
