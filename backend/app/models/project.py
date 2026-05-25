@@ -35,6 +35,15 @@ class Project:
     # 文件信息
     files: List[Dict[str, str]] = field(default_factory=list)  # [{filename, path, size}]
     total_text_length: int = 0
+
+    # Step1 seed 分析信息
+    seed_input_mode: Optional[str] = None  # file_upload | web_search
+    search_query: Optional[str] = None
+    seed_summary_md: Optional[str] = None
+    seed_sources: List[Dict[str, Any]] = field(default_factory=list)
+    simulation_suggestions: List[str] = field(default_factory=list)
+    entity_hints: List[str] = field(default_factory=list)
+    seed_metadata: Dict[str, Any] = field(default_factory=dict)
     
     # 本体信息（接口1生成后填充）
     ontology: Optional[Dict[str, Any]] = None
@@ -65,6 +74,13 @@ class Project:
             "updated_at": self.updated_at,
             "files": self.files,
             "total_text_length": self.total_text_length,
+            "seed_input_mode": self.seed_input_mode,
+            "search_query": self.search_query,
+            "seed_summary_md": self.seed_summary_md,
+            "seed_sources": self.seed_sources,
+            "simulation_suggestions": self.simulation_suggestions,
+            "entity_hints": self.entity_hints,
+            "seed_metadata": self.seed_metadata,
             "ontology": self.ontology,
             "analysis_summary": self.analysis_summary,
             "graph_id": self.graph_id,
@@ -93,6 +109,13 @@ class Project:
             updated_at=data.get('updated_at', ''),
             files=data.get('files', []),
             total_text_length=data.get('total_text_length', 0),
+            seed_input_mode=data.get('seed_input_mode'),
+            search_query=data.get('search_query'),
+            seed_summary_md=data.get('seed_summary_md'),
+            seed_sources=data.get('seed_sources', []),
+            simulation_suggestions=data.get('simulation_suggestions', []),
+            entity_hints=data.get('entity_hints', []),
+            seed_metadata=data.get('seed_metadata', {}),
             ontology=data.get('ontology'),
             analysis_summary=data.get('analysis_summary'),
             graph_id=data.get('graph_id'),
@@ -137,6 +160,16 @@ class ProjectManager:
     def _get_project_text_path(cls, project_id: str) -> str:
         """获取项目提取文本存储路径"""
         return os.path.join(cls._get_project_dir(project_id), 'extracted_text.txt')
+
+    @classmethod
+    def _get_project_seed_summary_path(cls, project_id: str) -> str:
+        """获取项目 seed 摘要存储路径"""
+        return os.path.join(cls._get_project_dir(project_id), 'seed_summary.md')
+
+    @classmethod
+    def _get_project_seed_sources_path(cls, project_id: str) -> str:
+        """获取项目 seed 来源存储路径"""
+        return os.path.join(cls._get_project_dir(project_id), 'seed_sources.json')
     
     @classmethod
     def create_project(cls, name: str = "Unnamed Project") -> Project:
@@ -307,6 +340,44 @@ class ProjectManager:
         
         with open(text_path, 'r', encoding='utf-8') as f:
             return f.read()
+
+    @classmethod
+    def save_seed_summary(cls, project_id: str, summary_md: str) -> None:
+        """保存 seed 分析摘要"""
+        summary_path = cls._get_project_seed_summary_path(project_id)
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            f.write(summary_md or '')
+
+    @classmethod
+    def get_seed_summary(cls, project_id: str) -> Optional[str]:
+        """读取 seed 分析摘要"""
+        summary_path = cls._get_project_seed_summary_path(project_id)
+
+        if not os.path.exists(summary_path):
+            return None
+
+        with open(summary_path, 'r', encoding='utf-8') as f:
+            return f.read()
+
+    @classmethod
+    def save_seed_sources(cls, project_id: str, sources: List[Dict[str, Any]]) -> None:
+        """保存 seed 来源列表"""
+        sources_path = cls._get_project_seed_sources_path(project_id)
+        with open(sources_path, 'w', encoding='utf-8') as f:
+            json.dump(sources or [], f, ensure_ascii=False, indent=2)
+
+    @classmethod
+    def get_seed_sources(cls, project_id: str) -> List[Dict[str, Any]]:
+        """读取 seed 来源列表"""
+        sources_path = cls._get_project_seed_sources_path(project_id)
+
+        if not os.path.exists(sources_path):
+            return []
+
+        with open(sources_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        return data if isinstance(data, list) else []
     
     @classmethod
     def get_project_files(cls, project_id: str) -> List[str]:

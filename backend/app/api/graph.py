@@ -12,6 +12,8 @@ from . import graph_bp
 from ..config import Config
 from ..services.ontology_generator import OntologyGenerator
 from ..services.graph_builder import GraphBuilderService
+from ..services.bocha_search_service import BochaSearchService
+from ..services.seed_analysis_service import SeedAnalysisService
 from ..services.text_processor import TextProcessor
 from ..utils.file_parser import FileParser
 from ..utils.logger import get_logger
@@ -43,6 +45,58 @@ def _get_project_backend_or_404(graph_id: str):
         )
     backend = project.graph_backend or Config.ZEP_BACKEND
     return project, backend, None
+
+
+def _persist_seed_analysis(project, seed_result, sources=None) -> None:
+    """把 seed 分析结果同步保存到元数据和独立文件。"""
+    source_dicts = []
+    for source in sources or []:
+        source_dicts.append(source.to_dict() if hasattr(source, "to_dict") else source)
+
+    project.seed_summary_md = seed_result.seed_summary_md
+    project.seed_sources = source_dicts
+    project.simulation_suggestions = seed_result.simulation_suggestions
+    project.entity_hints = seed_result.entity_hints
+    project.seed_metadata = seed_result.seed_metadata
+
+    ProjectManager.save_seed_summary(project.project_id, project.seed_summary_md)
+    ProjectManager.save_seed_sources(project.project_id, project.seed_sources)
+
+
+def _extract_and_store_uploaded_files(project, uploaded_files):
+    """保存上传文件并提取预处理文本。"""
+    document_texts = []
+    all_text = ""
+
+    for file in uploaded_files:
+        if file and file.filename and allowed_file(file.filename):
+            file_info = ProjectManager.save_file_to_project(
+                project.project_id,
+                file,
+                file.filename
+            )
+            project.files.append({
+                "filename": file_info["original_filename"],
+                "size": file_info["size"]
+            })
+
+            text = FileParser.extract_text(file_info["path"])
+            text = TextProcessor.preprocess_text(text)
+            document_texts.append(text)
+            all_text += f"\n\n=== {file_info['original_filename']} ===\n{text}"
+
+    return document_texts, all_text
+
+
+def _save_generated_ontology(project, ontology):
+    """保存本体生成结果到项目。"""
+    project.ontology = {
+        "entity_types": ontology.get("entity_types", []),
+        "edge_types": ontology.get("edge_types", [])
+    }
+    project.analysis_summary = ontology.get("analysis_summary", "")
+    project.status = ProjectStatus.ONTOLOGY_GENERATED
+    ProjectManager.save_project(project)
 
 
 # ============== 项目管理接口 ==============
@@ -151,131 +205,218 @@ def reset_project(project_id: str):
     })
 
 
-# ============== 接口1：上传文件并生成本体 ==============
+# ============== Step1：Web 搜索 seed ==============
+
+@graph_bp.route('/seed/web-search', methods=['POST'])
+def create_seed_from_web_search():
+    """
+    通过博查 Web Search 创建 seed 项目。
+    """
+    try:
+        if request.content_type and 'multipart/form-data' in request.content_type:
+            return jsonify({
+                "success": False,
+                "error": "Web 搜索 seed 仅接受 JSON 请求，文件输入请使用 /ontology/generate 的 multipart 阶段"
+            }), 400
+
+        data = request.get_json(silent=True) or {}
+        query = (data.get('query') or data.get('search_query') or '').strip()
+        project_name = data.get('project_name') or query or 'Web Search Seed'
+        additional_context = data.get('additional_context')
+
+        if not query:
+            return jsonify({
+                "success": False,
+                "error": "请提供搜索关键词 query"
+            }), 400
+        if data.get('files'):
+            return jsonify({
+                "success": False,
+                "error": "搜索输入和文件输入互斥，请不要在 Web 搜索 seed 中提交 files"
+            }), 400
+
+        sources = BochaSearchService().search(
+            query=query,
+            count=data.get('count'),
+            freshness=data.get('freshness', 'noLimit'),
+            summary=data.get('summary', True),
+        )
+        if not sources:
+            return jsonify({
+                "success": False,
+                "error": "未获得可用搜索结果"
+            }), 400
+
+        project = ProjectManager.create_project(name=project_name)
+        project.seed_input_mode = 'web_search'
+        project.search_query = query
+
+        source_text = SeedAnalysisService._build_search_material(
+            [source.to_dict() for source in sources],
+            query,
+        )
+        ProjectManager.save_extracted_text(project.project_id, source_text)
+        project.total_text_length = len(source_text)
+
+        seed_result = SeedAnalysisService().analyze_from_sources(
+            sources=sources,
+            query=query,
+            additional_context=additional_context,
+        )
+        _persist_seed_analysis(project, seed_result, sources=sources)
+        ProjectManager.save_project(project)
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "project_id": project.project_id,
+                "project_name": project.name,
+                "seed_input_mode": project.seed_input_mode,
+                "search_query": project.search_query,
+                "seed_summary_md": project.seed_summary_md,
+                "seed_sources": project.seed_sources,
+                "simulation_suggestions": project.simulation_suggestions,
+                "entity_hints": project.entity_hints,
+                "seed_metadata": project.seed_metadata,
+                "total_text_length": project.total_text_length,
+            }
+        })
+
+    except ValueError as exc:
+        return jsonify({
+            "success": False,
+            "error": str(exc)
+        }), 400
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+# ============== 接口1：seed 分析 / 生成本体 ==============
 
 @graph_bp.route('/ontology/generate', methods=['POST'])
 def generate_ontology():
     """
-    接口1：上传文件，分析生成本体定义
-    
-    请求方式：multipart/form-data
-    
-    参数：
-        files: 上传的文件（PDF/MD/TXT），可多个
-        simulation_requirement: 模拟需求描述（必填）
-        project_name: 项目名称（可选）
-        additional_context: 额外说明（可选）
-        
-    返回：
-        {
-            "success": true,
-            "data": {
-                "project_id": "proj_xxxx",
-                "ontology": {
-                    "entity_types": [...],
-                    "edge_types": [...],
-                    "analysis_summary": "..."
-                },
-                "files": [...],
-                "total_text_length": 12345
-            }
-        }
+    multipart/form-data：上传文件并生成 seed 分析，不生成本体。
+    application/json：基于已有 project_id 和 simulation_requirement 生成本体。
     """
     try:
-        logger.info("=== 开始生成本体定义 ===")
-        
-        # 获取参数
-        simulation_requirement = request.form.get('simulation_requirement', '')
-        project_name = request.form.get('project_name', 'Unnamed Project')
-        additional_context = request.form.get('additional_context', '')
-        
-        logger.debug(f"项目名称: {project_name}")
-        logger.debug(f"模拟需求: {simulation_requirement[:100]}...")
-        
-        if not simulation_requirement:
+        if request.is_json:
+            logger.info("=== 开始基于项目生成本体定义 ===")
+            data = request.get_json(silent=True) or {}
+            project_id = data.get('project_id')
+            simulation_requirement = (data.get('simulation_requirement') or '').strip()
+            additional_context = data.get('additional_context')
+
+            if data.get('files') or data.get('search_query') or data.get('query'):
+                return jsonify({
+                    "success": False,
+                    "error": "本体生成阶段仅接受 project_id 和 simulation_requirement；文件和搜索输入请先完成 seed 阶段"
+                }), 400
+            if not project_id:
+                return jsonify({
+                    "success": False,
+                    "error": "请提供 project_id"
+                }), 400
+            if not simulation_requirement:
+                return jsonify({
+                    "success": False,
+                    "error": "请提供模拟需求描述 (simulation_requirement)"
+                }), 400
+
+            project = ProjectManager.get_project(project_id)
+            if not project:
+                return jsonify({
+                    "success": False,
+                    "error": f"项目不存在: {project_id}"
+                }), 404
+
+            extracted_text = ProjectManager.get_extracted_text(project_id)
+            if not extracted_text:
+                return jsonify({
+                    "success": False,
+                    "error": "未找到提取的文本内容，请先完成 seed 分析阶段"
+                }), 400
+
+            project.simulation_requirement = simulation_requirement
+            logger.info("调用 LLM 生成本体定义...")
+            ontology = OntologyGenerator().generate(
+                document_texts=[extracted_text],
+                simulation_requirement=simulation_requirement,
+                additional_context=additional_context if additional_context else None
+            )
+            _save_generated_ontology(project, ontology)
+            logger.info(f"=== 本体生成完成 === 项目ID: {project.project_id}")
+
+            return jsonify({
+                "success": True,
+                "data": {
+                    "project_id": project.project_id,
+                    "project_name": project.name,
+                    "ontology": project.ontology,
+                    "analysis_summary": project.analysis_summary,
+                    "files": project.files,
+                    "seed_input_mode": project.seed_input_mode,
+                    "total_text_length": project.total_text_length
+                }
+            })
+
+        logger.info("=== 开始 multipart 文件 seed 分析 ===")
+        if request.form.get('search_query') or request.form.get('query'):
             return jsonify({
                 "success": False,
-                "error": "请提供模拟需求描述 (simulation_requirement)"
+                "error": "文件输入和搜索输入互斥；搜索 seed 请使用 /seed/web-search"
             }), 400
-        
-        # 获取上传的文件
+
+        project_name = request.form.get('project_name', 'Unnamed Project')
+        additional_context = request.form.get('additional_context', '')
         uploaded_files = request.files.getlist('files')
         if not uploaded_files or all(not f.filename for f in uploaded_files):
             return jsonify({
                 "success": False,
                 "error": "请至少上传一个文档文件"
             }), 400
-        
-        # 创建项目
+
         project = ProjectManager.create_project(name=project_name)
-        project.simulation_requirement = simulation_requirement
+        project.seed_input_mode = 'file_upload'
+        simulation_requirement = request.form.get('simulation_requirement', '').strip()
+        if simulation_requirement:
+            project.simulation_requirement = simulation_requirement
         logger.info(f"创建项目: {project.project_id}")
-        
-        # 保存文件并提取文本
-        document_texts = []
-        all_text = ""
-        
-        for file in uploaded_files:
-            if file and file.filename and allowed_file(file.filename):
-                # 保存文件到项目目录
-                file_info = ProjectManager.save_file_to_project(
-                    project.project_id, 
-                    file, 
-                    file.filename
-                )
-                project.files.append({
-                    "filename": file_info["original_filename"],
-                    "size": file_info["size"]
-                })
-                
-                # 提取文本
-                text = FileParser.extract_text(file_info["path"])
-                text = TextProcessor.preprocess_text(text)
-                document_texts.append(text)
-                all_text += f"\n\n=== {file_info['original_filename']} ===\n{text}"
-        
+
+        document_texts, all_text = _extract_and_store_uploaded_files(project, uploaded_files)
         if not document_texts:
             ProjectManager.delete_project(project.project_id)
             return jsonify({
                 "success": False,
                 "error": "没有成功处理任何文档，请检查文件格式"
             }), 400
-        
-        # 保存提取的文本
+
         project.total_text_length = len(all_text)
         ProjectManager.save_extracted_text(project.project_id, all_text)
-        logger.info(f"文本提取完成，共 {len(all_text)} 字符")
-        
-        # 生成本体
-        logger.info("调用 LLM 生成本体定义...")
-        generator = OntologyGenerator()
-        ontology = generator.generate(
-            document_texts=document_texts,
-            simulation_requirement=simulation_requirement,
-            additional_context=additional_context if additional_context else None
+        seed_result = SeedAnalysisService().analyze_from_text(
+            text=all_text,
+            topic=project_name,
+            additional_context=additional_context if additional_context else None,
         )
-        
-        # 保存本体到项目
-        entity_count = len(ontology.get("entity_types", []))
-        edge_count = len(ontology.get("edge_types", []))
-        logger.info(f"本体生成完成: {entity_count} 个实体类型, {edge_count} 个关系类型")
-        
-        project.ontology = {
-            "entity_types": ontology.get("entity_types", []),
-            "edge_types": ontology.get("edge_types", [])
-        }
-        project.analysis_summary = ontology.get("analysis_summary", "")
-        project.status = ProjectStatus.ONTOLOGY_GENERATED
+        _persist_seed_analysis(project, seed_result, sources=[])
         ProjectManager.save_project(project)
-        logger.info(f"=== 本体生成完成 === 项目ID: {project.project_id}")
-        
+        logger.info(f"=== 文件 seed 分析完成 === 项目ID: {project.project_id}")
+
         return jsonify({
             "success": True,
             "data": {
                 "project_id": project.project_id,
                 "project_name": project.name,
-                "ontology": project.ontology,
-                "analysis_summary": project.analysis_summary,
+                "seed_input_mode": project.seed_input_mode,
+                "seed_summary_md": project.seed_summary_md,
+                "seed_sources": project.seed_sources,
+                "simulation_suggestions": project.simulation_suggestions,
+                "entity_hints": project.entity_hints,
+                "seed_metadata": project.seed_metadata,
                 "files": project.files,
                 "total_text_length": project.total_text_length
             }

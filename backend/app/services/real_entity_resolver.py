@@ -1,0 +1,390 @@
+"""
+真实实体解析与验证服务。
+
+该服务负责把图谱中的 EntityNode 映射到可引用的现实资料，并给出
+verified / ambiguous / unverified / unsupported 四类状态。没有足够上下文的
+抽象节点不会进入正式真实画像生成流程。
+"""
+
+import re
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Sequence
+
+from ..utils.logger import get_logger
+from .zep_entity_reader import EntityNode
+
+try:
+    from .bocha_search_service import BochaSearchService
+except ImportError:  # 当前仓库暂未提供该服务，保留接口兼容。
+    BochaSearchService = None
+
+
+logger = get_logger("mirofish.real_entity_resolver")
+
+
+VERIFIED = "verified"
+AMBIGUOUS = "ambiguous"
+UNVERIFIED = "unverified"
+UNSUPPORTED = "unsupported"
+
+
+@dataclass
+class RealEntitySource:
+    """真实资料来源。"""
+
+    title: str
+    url: str
+    snippet: str = ""
+    site_name: str = ""
+    published_at: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "title": self.title,
+            "url": self.url,
+            "snippet": self.snippet,
+            "site_name": self.site_name,
+            "published_at": self.published_at,
+        }
+
+
+@dataclass
+class ResolvedRealEntity:
+    """实体真实身份解析结果。"""
+
+    entity_uuid: str
+    entity_name: str
+    entity_type: str
+    verification_status: str
+    info_confidence: float = 0.0
+    info_sources: List[Dict[str, Any]] = field(default_factory=list)
+    source_citations: List[Dict[str, Any]] = field(default_factory=list)
+    real_identity_summary: str = ""
+    verified_facts: List[str] = field(default_factory=list)
+    skip_reason: str = ""
+    raw_query: str = ""
+
+    @property
+    def is_verified(self) -> bool:
+        return self.verification_status == VERIFIED
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "entity_uuid": self.entity_uuid,
+            "entity_name": self.entity_name,
+            "entity_type": self.entity_type,
+            "verification_status": self.verification_status,
+            "info_confidence": self.info_confidence,
+            "info_sources": self.info_sources,
+            "source_citations": self.source_citations,
+            "real_identity_summary": self.real_identity_summary,
+            "verified_facts": self.verified_facts,
+            "skip_reason": self.skip_reason,
+            "raw_query": self.raw_query,
+        }
+
+
+class RealEntityResolver:
+    """基于外部搜索服务对图谱实体进行真实性验证。"""
+
+    ABSTRACT_TYPES = {
+        "entity",
+        "node",
+        "topic",
+        "theme",
+        "concept",
+        "event",
+        "issue",
+        "keyword",
+        "unknown",
+    }
+    GROUP_TYPES = {
+        "university",
+        "governmentagency",
+        "organization",
+        "ngo",
+        "mediaoutlet",
+        "company",
+        "institution",
+        "group",
+        "community",
+    }
+
+    def __init__(
+        self,
+        search_service: Optional[Any] = None,
+        min_source_count: int = 2,
+        allow_group_agents: bool = True,
+    ):
+        self.min_source_count = max(1, int(min_source_count or 1))
+        self.allow_group_agents = allow_group_agents
+        self.search_service = search_service if search_service is not None else self._build_default_search_service()
+
+    def _build_default_search_service(self) -> Optional[Any]:
+        if BochaSearchService is None:
+            logger.warning("BochaSearchService 不存在，真实实体验证将返回 unsupported")
+            return None
+        try:
+            return BochaSearchService()
+        except Exception as exc:
+            logger.warning(f"BochaSearchService 初始化失败: {exc}")
+            return None
+
+    def resolve_entities(self, entities: Sequence[EntityNode]) -> List[ResolvedRealEntity]:
+        """批量解析实体，保持输入顺序。"""
+        return [self.resolve_entity(entity) for entity in entities]
+
+    def resolve_entity(self, entity: EntityNode) -> ResolvedRealEntity:
+        """解析单个实体。"""
+        entity_type = entity.get_entity_type() or "Entity"
+        raw_query = self._build_search_query(entity, entity_type)
+
+        unsupported_reason = self._unsupported_reason(entity, entity_type)
+        if unsupported_reason:
+            return self._result(entity, entity_type, UNSUPPORTED, skip_reason=unsupported_reason, raw_query=raw_query)
+
+        if not self.search_service:
+            return self._result(entity, entity_type, UNSUPPORTED, skip_reason="未配置真实资料搜索服务", raw_query=raw_query)
+
+        try:
+            raw_results = self._call_search_service(raw_query)
+        except Exception as exc:
+            logger.warning(f"真实实体搜索失败: entity={entity.name}, error={exc}")
+            return self._result(entity, entity_type, UNVERIFIED, skip_reason=f"搜索服务调用失败: {exc}", raw_query=raw_query)
+
+        sources = self._normalize_sources(raw_results)
+        matched_sources = self._filter_matching_sources(entity.name, sources)
+        citations = [source.to_dict() for source in matched_sources]
+
+        if len(matched_sources) < self.min_source_count:
+            status = UNVERIFIED if sources else UNSUPPORTED
+            reason = "可引用来源不足" if sources else "未检索到可引用来源"
+            return self._result(
+                entity,
+                entity_type,
+                status,
+                info_sources=[source.to_dict() for source in sources],
+                source_citations=citations,
+                skip_reason=reason,
+                raw_query=raw_query,
+            )
+
+        if self._looks_ambiguous(entity.name, matched_sources):
+            return self._result(
+                entity,
+                entity_type,
+                AMBIGUOUS,
+                info_confidence=0.45,
+                info_sources=[source.to_dict() for source in sources],
+                source_citations=citations,
+                real_identity_summary=self._build_summary(entity, matched_sources),
+                verified_facts=self._build_verified_facts(matched_sources),
+                skip_reason="搜索结果可能指向多个同名对象",
+                raw_query=raw_query,
+            )
+
+        confidence = min(0.95, 0.55 + 0.15 * len(matched_sources))
+        return self._result(
+            entity,
+            entity_type,
+            VERIFIED,
+            info_confidence=confidence,
+            info_sources=[source.to_dict() for source in sources],
+            source_citations=citations,
+            real_identity_summary=self._build_summary(entity, matched_sources),
+            verified_facts=self._build_verified_facts(matched_sources),
+            raw_query=raw_query,
+        )
+
+    def _unsupported_reason(self, entity: EntityNode, entity_type: str) -> str:
+        entity_type_lower = entity_type.lower()
+        labels = [label.lower() for label in entity.labels or []]
+
+        if entity_type_lower in self.GROUP_TYPES and not self.allow_group_agents:
+            return "群体/机构实体未启用 allow_group_agents"
+
+        has_specific_label = any(label not in {"entity", "node"} for label in labels)
+        has_context = self._has_sufficient_context(entity)
+
+        if not has_specific_label and not has_context:
+            return "默认 Entity 节点缺少足够上下文"
+
+        if entity_type_lower in self.ABSTRACT_TYPES and not has_context:
+            return "抽象实体缺少可验证上下文"
+
+        if not entity.name or len(entity.name.strip()) < 2:
+            return "实体名称不足以检索"
+
+        return ""
+
+    def _has_sufficient_context(self, entity: EntityNode) -> bool:
+        summary = (entity.summary or "").strip()
+        attrs = entity.attributes or {}
+        edges = entity.related_edges or []
+        nodes = entity.related_nodes or []
+
+        meaningful_attrs = [value for value in attrs.values() if value and str(value).strip()]
+        meaningful_edges = [edge for edge in edges if (edge.get("fact") or edge.get("name") or edge.get("edge_name"))]
+
+        return len(summary) >= 24 or len(meaningful_attrs) >= 2 or len(meaningful_edges) >= 1 or len(nodes) >= 1
+
+    def _build_search_query(self, entity: EntityNode, entity_type: str) -> str:
+        parts = [entity.name.strip(), entity_type]
+        if entity.summary:
+            parts.append(entity.summary[:120])
+        return " ".join(part for part in parts if part).strip()
+
+    def _call_search_service(self, query: str) -> Any:
+        limit = max(self.min_source_count * 4, 5)
+        for method_name in ("search", "web_search", "search_web", "run"):
+            method = getattr(self.search_service, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                return method(query=query, count=limit)
+            except TypeError:
+                try:
+                    return method(query, limit=limit)
+                except TypeError:
+                    return method(query)
+        raise AttributeError("搜索服务未提供 search/web_search/search_web/run 方法")
+
+    def _normalize_sources(self, raw_results: Any) -> List[RealEntitySource]:
+        items = self._extract_result_items(raw_results)
+        sources: List[RealEntitySource] = []
+        seen_urls = set()
+
+        for item in items:
+            if hasattr(item, "to_dict") and callable(item.to_dict):
+                item = item.to_dict()
+            elif not isinstance(item, dict):
+                item = {
+                    "title": getattr(item, "title", ""),
+                    "url": getattr(item, "url", ""),
+                    "snippet": getattr(item, "snippet", ""),
+                    "summary": getattr(item, "summary", ""),
+                    "site_name": getattr(item, "site_name", ""),
+                    "published_at": getattr(item, "published_at", "") or getattr(item, "date_published", ""),
+                }
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or item.get("name") or "").strip()
+            url = str(item.get("url") or item.get("link") or item.get("displayLink") or "").strip()
+            snippet = str(item.get("snippet") or item.get("summary") or item.get("content") or "").strip()
+            site_name = str(item.get("site_name") or item.get("siteName") or item.get("source") or "").strip()
+            published_at = str(
+                item.get("published_at")
+                or item.get("date")
+                or item.get("publishedTime")
+                or item.get("date_published")
+                or item.get("datePublished")
+                or ""
+            ).strip()
+
+            if not title and not snippet:
+                continue
+            if url and url in seen_urls:
+                continue
+            if url:
+                seen_urls.add(url)
+            sources.append(
+                RealEntitySource(
+                    title=title,
+                    url=url,
+                    snippet=snippet,
+                    site_name=site_name,
+                    published_at=published_at,
+                )
+            )
+
+        return sources
+
+    def _extract_result_items(self, raw_results: Any) -> List[Dict[str, Any]]:
+        if raw_results is None:
+            return []
+        if isinstance(raw_results, list):
+            return raw_results
+        if not isinstance(raw_results, dict):
+            return []
+
+        candidates = [
+            raw_results.get("results"),
+            raw_results.get("items"),
+            raw_results.get("webPages", {}).get("value") if isinstance(raw_results.get("webPages"), dict) else None,
+            raw_results.get("data", {}).get("webPages", {}).get("value") if isinstance(raw_results.get("data"), dict) else None,
+            raw_results.get("data", {}).get("results") if isinstance(raw_results.get("data"), dict) else None,
+        ]
+        for candidate in candidates:
+            if isinstance(candidate, list):
+                return candidate
+        return []
+
+    def _filter_matching_sources(self, entity_name: str, sources: Sequence[RealEntitySource]) -> List[RealEntitySource]:
+        name_tokens = self._tokens(entity_name)
+        if not name_tokens:
+            return []
+
+        matched = []
+        for source in sources:
+            haystack = f"{source.title} {source.snippet}".lower()
+            if all(token in haystack for token in name_tokens):
+                matched.append(source)
+        return matched
+
+    def _looks_ambiguous(self, entity_name: str, sources: Sequence[RealEntitySource]) -> bool:
+        name = entity_name.lower().strip()
+        titles_without_name = 0
+        for source in sources:
+            title = source.title.lower()
+            if name not in title and titles_without_name >= 1:
+                return True
+            if name not in title:
+                titles_without_name += 1
+        return False
+
+    def _build_summary(self, entity: EntityNode, sources: Sequence[RealEntitySource]) -> str:
+        snippets = [source.snippet for source in sources if source.snippet]
+        if snippets:
+            summary = " ".join(snippets[:2])
+        else:
+            summary = entity.summary or ""
+        return summary[:600].strip()
+
+    def _build_verified_facts(self, sources: Sequence[RealEntitySource]) -> List[str]:
+        facts = []
+        for source in sources:
+            text = source.snippet or source.title
+            if text:
+                facts.append(text[:240])
+        return facts
+
+    def _tokens(self, value: str) -> List[str]:
+        tokens = re.findall(r"[\w\u4e00-\u9fff]+", value.lower())
+        return [token for token in tokens if len(token) > 1]
+
+    def _result(
+        self,
+        entity: EntityNode,
+        entity_type: str,
+        status: str,
+        info_confidence: float = 0.0,
+        info_sources: Optional[List[Dict[str, Any]]] = None,
+        source_citations: Optional[List[Dict[str, Any]]] = None,
+        real_identity_summary: str = "",
+        verified_facts: Optional[List[str]] = None,
+        skip_reason: str = "",
+        raw_query: str = "",
+    ) -> ResolvedRealEntity:
+        return ResolvedRealEntity(
+            entity_uuid=entity.uuid,
+            entity_name=entity.name,
+            entity_type=entity_type,
+            verification_status=status,
+            info_confidence=info_confidence,
+            info_sources=info_sources or [],
+            source_citations=source_citations or [],
+            real_identity_summary=real_identity_summary,
+            verified_facts=verified_facts or [],
+            skip_reason=skip_reason,
+            raw_query=raw_query,
+        )

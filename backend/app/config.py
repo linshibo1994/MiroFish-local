@@ -43,6 +43,25 @@ class Config:
     ZEP_API_KEY = os.environ.get('ZEP_API_KEY')
     ZEP_BACKEND = os.environ.get('ZEP_BACKEND', 'cloud')  # 'cloud' | 'graphiti'
 
+    # 博查 Web Search 配置（仅在调用搜索 seed 时按需校验）
+    BOCHA_API_KEY = os.environ.get('BOCHA_API_KEY')
+    BOCHA_BASE_URL = os.environ.get('BOCHA_BASE_URL', 'https://api.bochaai.com/v1')
+    BOCHA_WEB_SEARCH_ENDPOINT = os.environ.get('BOCHA_WEB_SEARCH_ENDPOINT', '/web-search')
+    BOCHA_WEB_SEARCH_MAX_RESULTS = int(
+        os.environ.get('BOCHA_WEB_SEARCH_MAX_RESULTS')
+        or os.environ.get('BOCHA_DEFAULT_COUNT', '8')
+    )
+    BOCHA_WEB_SEARCH_TIMEOUT = int(
+        os.environ.get('BOCHA_WEB_SEARCH_TIMEOUT')
+        or os.environ.get('BOCHA_TIMEOUT_SECONDS', '30')
+    )
+    BOCHA_VALIDATE_LINKS = os.environ.get('BOCHA_VALIDATE_LINKS', 'true').lower() in {'1', 'true', 'yes', 'on'}
+    BOCHA_LINK_CHECK_TIMEOUT = int(os.environ.get('BOCHA_LINK_CHECK_TIMEOUT', '5'))
+    BOCHA_LINK_CHECK_MAX_BYTES = int(os.environ.get('BOCHA_LINK_CHECK_MAX_BYTES', '16384'))
+    # 兼容早期实现中的内部命名
+    BOCHA_DEFAULT_COUNT = BOCHA_WEB_SEARCH_MAX_RESULTS
+    BOCHA_TIMEOUT_SECONDS = BOCHA_WEB_SEARCH_TIMEOUT
+
     # Graphiti / Neo4j 配置（本地部署时使用）
     NEO4J_URI = os.environ.get('NEO4J_URI', 'bolt://localhost:7687')
     NEO4J_USER = os.environ.get('NEO4J_USER', 'neo4j')

@@ -1,12 +1,27 @@
 import service, { requestWithRetry } from './index'
 
 /**
- * 生成本体（上传文档和模拟需求）
- * @param {Object} data - 包含files, simulation_requirement, project_name等
+ * 联网搜索现实种子
+ * @param {Object} data - 包含 search_query, project_name, additional_context
  * @returns {Promise}
  */
-export function generateOntology(formData) {
-  return requestWithRetry(() => 
+export function searchSeedByKeyword(data) {
+  return requestWithRetry(() =>
+    service({
+      url: '/api/graph/seed/web-search',
+      method: 'post',
+      data
+    })
+  )
+}
+
+/**
+ * 上传文件并分析现实种子（multipart 阶段）
+ * @param {FormData} formData - 包含 files, project_name, additional_context
+ * @returns {Promise}
+ */
+export function analyzeUploadedSeed(formData) {
+  return requestWithRetry(() =>
     service({
       url: '/api/graph/ontology/generate',
       method: 'post',
@@ -14,6 +29,26 @@ export function generateOntology(formData) {
       headers: {
         'Content-Type': 'multipart/form-data'
       }
+    })
+  )
+}
+
+/**
+ * 基于已确认的项目和模拟需求生成本体。
+ * 兼容旧调用：如果传入 FormData，则退回 multipart 文件分析函数。
+ * @param {Object|FormData} data - JSON 阶段包含 project_id, simulation_requirement
+ * @returns {Promise}
+ */
+export function generateOntology(data) {
+  if (typeof FormData !== 'undefined' && data instanceof FormData) {
+    return analyzeUploadedSeed(data)
+  }
+
+  return requestWithRetry(() =>
+    service({
+      url: '/api/graph/ontology/generate',
+      method: 'post',
+      data
     })
   )
 }

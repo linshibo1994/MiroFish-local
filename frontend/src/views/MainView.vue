@@ -53,10 +53,13 @@
           v-if="currentStep === 1"
           :currentPhase="currentPhase"
           :projectData="projectData"
+          :pendingUpload="pendingUploadState"
           :ontologyProgress="ontologyProgress"
           :buildProgress="buildProgress"
           :graphData="graphData"
           :systemLogs="systemLogs"
+          @ontology-generated="handleOntologyGenerated"
+          @add-log="addLog"
           @next-step="handleNextStep"
         />
         <!-- Step 2: 环境搭建 -->
@@ -80,7 +83,7 @@ import { useRoute, useRouter } from 'vue-router'
 import GraphPanel from '../components/GraphPanel.vue'
 import Step1GraphBuild from '../components/Step1GraphBuild.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
-import { generateOntology, getProject, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
+import { getProject, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
 
 const route = useRoute()
@@ -104,6 +107,7 @@ const currentPhase = ref(-1) // -1: Upload, 0: Ontology, 1: Build, 2: Complete
 const ontologyProgress = ref(null)
 const buildProgress = ref(null)
 const systemLogs = ref([])
+const pendingUploadState = ref(null)
 
 // Polling timers
 let pollTimer = null
@@ -134,7 +138,7 @@ const statusText = computed(() => {
   if (currentPhase.value >= 2) return '就绪'
   if (currentPhase.value === 1) return '图谱构建中'
   if (currentPhase.value === 0) return '本体生成中'
-  return '初始化中'
+  return '等待输入'
 })
 
 // --- Helpers ---
@@ -188,42 +192,33 @@ const initProject = async () => {
 
 const handleNewProject = async () => {
   const pending = getPendingUpload()
-  if (!pending.isPending || pending.files.length === 0) {
-    error.value = 'No pending files found.'
-    addLog('Error: No pending files found for new project.')
+  pendingUploadState.value = pending.isPending ? pending : null
+  currentPhase.value = -1
+  ontologyProgress.value = null
+  buildProgress.value = null
+  projectData.value = null
+  graphData.value = null
+  addLog('Step1 ready. Waiting for seed input.')
+}
+
+const handleOntologyGenerated = async (data) => {
+  if (!data?.project_id) {
+    error.value = '本体生成结果缺少 project_id'
+    addLog('Error: ontology result missing project_id.')
     return
   }
-  
-  try {
-    loading.value = true
-    currentPhase.value = 0
-    ontologyProgress.value = { message: 'Uploading and analyzing docs...' }
-    addLog('Starting ontology generation: Uploading files...')
-    
-    const formData = new FormData()
-    pending.files.forEach(f => formData.append('files', f))
-    formData.append('simulation_requirement', pending.simulationRequirement)
-    
-    const res = await generateOntology(formData)
-    if (res.success) {
-      clearPendingUpload()
-      currentProjectId.value = res.data.project_id
-      projectData.value = res.data
-      
-      router.replace({ name: 'Process', params: { projectId: res.data.project_id } })
-      ontologyProgress.value = null
-      addLog(`Ontology generated successfully for project ${res.data.project_id}`)
-      await startBuildGraph()
-    } else {
-      error.value = res.error || 'Ontology generation failed'
-      addLog(`Error generating ontology: ${error.value}`)
-    }
-  } catch (err) {
-    error.value = err.message
-    addLog(`Exception in handleNewProject: ${err.message}`)
-  } finally {
-    loading.value = false
-  }
+
+  currentProjectId.value = data.project_id
+  projectData.value = data
+  currentPhase.value = 0
+  ontologyProgress.value = null
+  error.value = ''
+  clearPendingUpload()
+  pendingUploadState.value = null
+
+  router.replace({ name: 'Process', params: { projectId: data.project_id } })
+  addLog(`Ontology generated successfully for project ${data.project_id}`)
+  await startBuildGraph()
 }
 
 const loadProject = async () => {
@@ -261,6 +256,7 @@ const loadProject = async () => {
 const updatePhaseByStatus = (status) => {
   switch (status) {
     case 'created':
+      currentPhase.value = -1; break;
     case 'ontology_generated': currentPhase.value = 0; break;
     case 'graph_building': currentPhase.value = 1; break;
     case 'graph_completed': currentPhase.value = 2; break;

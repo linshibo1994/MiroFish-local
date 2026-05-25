@@ -415,6 +415,11 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
                 "entities_count": state_data.get("entities_count", 0),
                 "profiles_count": profiles_count,
                 "entity_types": state_data.get("entity_types", []),
+                "verification_candidate_count": state_data.get("verification_candidate_count", 0),
+                "verification_verified_count": state_data.get("verification_verified_count", 0),
+                "verification_skipped_count": state_data.get("verification_skipped_count", 0),
+                "verification_skipped_entities": state_data.get("verification_skipped_entities", []),
+                "profile_provenance": state_data.get("profile_provenance", []),
                 "config_generated": config_generated,
                 "created_at": state_data.get("created_at"),
                 "updated_at": state_data.get("updated_at"),
@@ -554,6 +559,10 @@ def prepare_simulation():
         entity_types_list = data.get('entity_types')
         use_llm_for_profiles = data.get('use_llm_for_profiles', True)
         parallel_profile_count = data.get('parallel_profile_count', 5)
+        use_real_profiles = data.get('use_real_profiles', True)
+        strict_real_mode = data.get('strict_real_mode', True)
+        allow_group_agents = data.get('allow_group_agents', True)
+        min_source_count = data.get('min_source_count', 2)
         
         # ========== 同步获取实体数量（在后台任务启动前） ==========
         # 这样前端在调用prepare后立即就能获取到预期Agent总数
@@ -606,7 +615,8 @@ def prepare_simulation():
                     # 计算总进度
                     stage_weights = {
                         "reading": (0, 20),           # 0-20%
-                        "generating_profiles": (20, 70),  # 20-70%
+                        "verifying_entities": (20, 35),    # 20-35%
+                        "generating_profiles": (35, 70),  # 35-70%
                         "generating_config": (70, 90),    # 70-90%
                         "copying_scripts": (90, 100)       # 90-100%
                     }
@@ -617,6 +627,7 @@ def prepare_simulation():
                     # 构建详细进度信息
                     stage_names = {
                         "reading": "读取图谱实体",
+                        "verifying_entities": "验证真实实体",
                         "generating_profiles": "生成Agent人设",
                         "generating_config": "生成模拟配置",
                         "copying_scripts": "准备模拟脚本"
@@ -670,7 +681,11 @@ def prepare_simulation():
                     defined_entity_types=entity_types_list,
                     use_llm_for_profiles=use_llm_for_profiles,
                     progress_callback=progress_callback,
-                    parallel_profile_count=parallel_profile_count
+                    parallel_profile_count=parallel_profile_count,
+                    use_real_profiles=use_real_profiles,
+                    strict_real_mode=strict_real_mode,
+                    allow_group_agents=allow_group_agents,
+                    min_source_count=min_source_count,
                 )
                 
                 # 任务完成
@@ -703,7 +718,14 @@ def prepare_simulation():
                 "message": "准备任务已启动，请通过 /api/simulation/prepare/status 查询进度",
                 "already_prepared": False,
                 "expected_entities_count": state.entities_count,  # 预期的Agent总数
-                "entity_types": state.entity_types  # 实体类型列表
+                "entity_types": state.entity_types,  # 实体类型列表
+                "use_real_profiles": use_real_profiles,
+                "strict_real_mode": strict_real_mode,
+                "allow_group_agents": allow_group_agents,
+                "min_source_count": min_source_count,
+                "verification_candidate_count": state.verification_candidate_count,
+                "verification_verified_count": state.verification_verified_count,
+                "verification_skipped_count": state.verification_skipped_count,
             }
         })
         
@@ -778,6 +800,8 @@ def get_prepare_status():
         if not task_id:
             if simulation_id:
                 # 有simulation_id但未准备完成
+                manager = SimulationManager()
+                state = manager.get_simulation(simulation_id)
                 return jsonify({
                     "success": True,
                     "data": {
@@ -785,7 +809,12 @@ def get_prepare_status():
                         "status": "not_started",
                         "progress": 0,
                         "message": "尚未开始准备，请调用 /api/simulation/prepare 开始",
-                        "already_prepared": False
+                        "already_prepared": False,
+                        "verification_candidate_count": state.verification_candidate_count if state else 0,
+                        "verification_verified_count": state.verification_verified_count if state else 0,
+                        "verification_skipped_count": state.verification_skipped_count if state else 0,
+                        "verification_skipped_entities": state.verification_skipped_entities if state else [],
+                        "profile_provenance": state.profile_provenance if state else [],
                     }
                 })
             return jsonify({
@@ -821,6 +850,15 @@ def get_prepare_status():
         
         task_dict = task.to_dict()
         task_dict["already_prepared"] = False
+        if simulation_id:
+            manager = SimulationManager()
+            state = manager.get_simulation(simulation_id)
+            if state:
+                task_dict["verification_candidate_count"] = state.verification_candidate_count
+                task_dict["verification_verified_count"] = state.verification_verified_count
+                task_dict["verification_skipped_count"] = state.verification_skipped_count
+                task_dict["verification_skipped_entities"] = state.verification_skipped_entities
+                task_dict["profile_provenance"] = state.profile_provenance
         
         return jsonify({
             "success": True,
@@ -910,12 +948,17 @@ def get_simulation_profiles(simulation_id: str):
         
         manager = SimulationManager()
         profiles = manager.get_profiles(simulation_id, platform=platform)
+        state = manager.get_simulation(simulation_id)
         
         return jsonify({
             "success": True,
             "data": {
                 "platform": platform,
                 "count": len(profiles),
+                "verified_count": state.verification_verified_count if state else 0,
+                "skipped_count": state.verification_skipped_count if state else 0,
+                "skipped_entities": state.verification_skipped_entities if state else [],
+                "profile_provenance": state.profile_provenance if state else [],
                 "profiles": profiles
             }
         })
@@ -1003,6 +1046,14 @@ def get_simulation_profiles_realtime(simulation_id: str):
                     with open(profiles_file, 'r', encoding='utf-8') as f:
                         reader = csv.DictReader(f)
                         profiles = list(reader)
+                    for row in profiles:
+                        for key in ("source_citations", "runtime_traits", "provenance"):
+                            value = row.get(key)
+                            if value:
+                                try:
+                                    row[key] = json.loads(value)
+                                except json.JSONDecodeError:
+                                    pass
             except (json.JSONDecodeError, Exception) as e:
                 logger.warning(f"读取 profiles 文件失败（可能正在写入中）: {e}")
                 profiles = []
@@ -1010,6 +1061,10 @@ def get_simulation_profiles_realtime(simulation_id: str):
         # 检查是否正在生成（通过 state.json 判断）
         is_generating = False
         total_expected = None
+        verified_count = 0
+        skipped_count = 0
+        skipped_entities = []
+        profile_provenance = []
         
         state_file = os.path.join(sim_dir, "state.json")
         if os.path.exists(state_file):
@@ -1019,6 +1074,10 @@ def get_simulation_profiles_realtime(simulation_id: str):
                     status = state_data.get("status", "")
                     is_generating = status == "preparing"
                     total_expected = state_data.get("entities_count")
+                    verified_count = state_data.get("verification_verified_count", 0)
+                    skipped_count = state_data.get("verification_skipped_count", 0)
+                    skipped_entities = state_data.get("verification_skipped_entities", [])
+                    profile_provenance = state_data.get("profile_provenance", [])
             except Exception:
                 pass
         
@@ -1029,6 +1088,10 @@ def get_simulation_profiles_realtime(simulation_id: str):
                 "platform": platform,
                 "count": len(profiles),
                 "total_expected": total_expected,
+                "verified_count": verified_count,
+                "skipped_count": skipped_count,
+                "skipped_entities": skipped_entities,
+                "profile_provenance": profile_provenance,
                 "is_generating": is_generating,
                 "file_exists": file_exists,
                 "file_modified_at": file_modified_at,

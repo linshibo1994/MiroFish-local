@@ -18,6 +18,7 @@ from ..utils.logger import get_logger
 from .zep_entity_reader import ZepEntityReader, FilteredEntities
 from .oasis_profile_generator import OasisProfileGenerator, OasisAgentProfile
 from .simulation_config_generator import SimulationConfigGenerator, SimulationParameters
+from .real_entity_resolver import RealEntityResolver, VERIFIED
 
 logger = get_logger('mirofish.simulation')
 
@@ -59,6 +60,11 @@ class SimulationState:
     entities_count: int = 0
     profiles_count: int = 0
     entity_types: List[str] = field(default_factory=list)
+    verification_candidate_count: int = 0
+    verification_verified_count: int = 0
+    verification_skipped_count: int = 0
+    verification_skipped_entities: List[Dict[str, Any]] = field(default_factory=list)
+    profile_provenance: List[Dict[str, Any]] = field(default_factory=list)
     
     # 配置生成信息
     config_generated: bool = False
@@ -89,6 +95,11 @@ class SimulationState:
             "entities_count": self.entities_count,
             "profiles_count": self.profiles_count,
             "entity_types": self.entity_types,
+            "verification_candidate_count": self.verification_candidate_count,
+            "verification_verified_count": self.verification_verified_count,
+            "verification_skipped_count": self.verification_skipped_count,
+            "verification_skipped_entities": self.verification_skipped_entities,
+            "profile_provenance": self.profile_provenance,
             "config_generated": self.config_generated,
             "config_reasoning": self.config_reasoning,
             "current_round": self.current_round,
@@ -110,6 +121,11 @@ class SimulationState:
             "entities_count": self.entities_count,
             "profiles_count": self.profiles_count,
             "entity_types": self.entity_types,
+            "verification_candidate_count": self.verification_candidate_count,
+            "verification_verified_count": self.verification_verified_count,
+            "verification_skipped_count": self.verification_skipped_count,
+            "verification_skipped_entities": self.verification_skipped_entities,
+            "profile_provenance": self.profile_provenance,
             "config_generated": self.config_generated,
             "error": self.error,
         }
@@ -182,6 +198,11 @@ class SimulationManager:
             entities_count=data.get("entities_count", 0),
             profiles_count=data.get("profiles_count", 0),
             entity_types=data.get("entity_types", []),
+            verification_candidate_count=data.get("verification_candidate_count", 0),
+            verification_verified_count=data.get("verification_verified_count", 0),
+            verification_skipped_count=data.get("verification_skipped_count", 0),
+            verification_skipped_entities=data.get("verification_skipped_entities", []),
+            profile_provenance=data.get("profile_provenance", []),
             config_generated=data.get("config_generated", False),
             config_reasoning=data.get("config_reasoning", ""),
             current_round=data.get("current_round", 0),
@@ -241,7 +262,11 @@ class SimulationManager:
         defined_entity_types: Optional[List[str]] = None,
         use_llm_for_profiles: bool = True,
         progress_callback: Optional[callable] = None,
-        parallel_profile_count: int = 3
+        parallel_profile_count: int = 3,
+        use_real_profiles: bool = True,
+        strict_real_mode: bool = True,
+        allow_group_agents: bool = True,
+        min_source_count: int = 2,
     ) -> SimulationState:
         """
         准备模拟环境（全程自动化）
@@ -261,6 +286,10 @@ class SimulationManager:
             use_llm_for_profiles: 是否使用LLM生成详细人设
             progress_callback: 进度回调函数 (stage, progress, message)
             parallel_profile_count: 并行生成人设的数量，默认3
+            use_real_profiles: 是否启用真实资料验证画像
+            strict_real_mode: 严格真实模式，正式Profile只允许 verified
+            allow_group_agents: 是否允许机构/群体实体进入Agent
+            min_source_count: verified 所需最少来源数
             
         Returns:
             SimulationState
@@ -306,9 +335,58 @@ class SimulationManager:
                 state.error = "没有找到符合条件的实体，请检查图谱是否正确构建"
                 self._save_simulation_state(state)
                 return state
+
+            entities_for_profiles = filtered.entities
+            resolved_results = []
+            resolved_by_uuid = {}
+
+            if use_real_profiles:
+                if progress_callback:
+                    progress_callback(
+                        "verifying_entities", 0,
+                        "开始验证真实实体...",
+                        current=0,
+                        total=len(filtered.entities)
+                    )
+
+                resolver = RealEntityResolver(
+                    min_source_count=min_source_count,
+                    allow_group_agents=allow_group_agents,
+                )
+                resolved_results = resolver.resolve_entities(filtered.entities)
+                verified_results = [item for item in resolved_results if item.verification_status == VERIFIED]
+                skipped_results = [item for item in resolved_results if item.verification_status != VERIFIED]
+                verified_uuids = {item.entity_uuid for item in verified_results}
+
+                state.verification_candidate_count = len(resolved_results)
+                state.verification_verified_count = len(verified_results)
+                state.verification_skipped_count = len(skipped_results)
+                state.verification_skipped_entities = [item.to_dict() for item in skipped_results]
+
+                resolution_path = os.path.join(sim_dir, "real_entity_resolution.json")
+                with open(resolution_path, 'w', encoding='utf-8') as f:
+                    json.dump([item.to_dict() for item in resolved_results], f, ensure_ascii=False, indent=2)
+
+                if progress_callback:
+                    progress_callback(
+                        "verifying_entities", 100,
+                        f"验证完成，verified={len(verified_results)}, skipped={len(skipped_results)}",
+                        current=len(resolved_results),
+                        total=len(resolved_results)
+                    )
+
+                if not verified_results:
+                    state.status = SimulationStatus.FAILED
+                    state.error = "真实实体验证后没有 verified 实体，已拒绝生成正式Profile"
+                    self._save_simulation_state(state)
+                    return state
+
+                entities_for_profiles = [entity for entity in filtered.entities if entity.uuid in verified_uuids]
+                resolved_by_uuid = {item.entity_uuid: item for item in verified_results}
+                self._save_simulation_state(state)
             
             # ========== 阶段2: 生成Agent Profile ==========
-            total_entities = len(filtered.entities)
+            total_entities = len(entities_for_profiles)
             
             if progress_callback:
                 progress_callback(
@@ -346,16 +424,19 @@ class SimulationManager:
                 realtime_platform = "twitter"
             
             profiles = generator.generate_profiles_from_entities(
-                entities=filtered.entities,
+                entities=entities_for_profiles,
                 use_llm=use_llm_for_profiles,
                 progress_callback=profile_progress,
                 graph_id=state.graph_id,  # 传入graph_id用于Zep检索
                 parallel_count=parallel_profile_count,  # 并行生成数量
                 realtime_output_path=realtime_output_path,  # 实时保存路径
-                output_platform=realtime_platform  # 输出格式
+                output_platform=realtime_platform,  # 输出格式
+                resolved_real_entities=resolved_by_uuid if use_real_profiles else None,
+                strict_real_mode=strict_real_mode if use_real_profiles else False,
             )
             
             state.profiles_count = len(profiles)
+            state.profile_provenance = [profile._provenance_dict() for profile in profiles]
             
             # 保存Profile文件（注意：Twitter使用CSV格式，Reddit使用JSON格式）
             # Reddit 已经在生成过程中实时保存了，这里再保存一次确保完整性
@@ -415,7 +496,7 @@ class SimulationManager:
                 graph_id=state.graph_id,
                 simulation_requirement=simulation_requirement,
                 document_text=document_text,
-                entities=filtered.entities,
+                entities=entities_for_profiles,
                 enable_twitter=state.enable_twitter,
                 enable_reddit=state.enable_reddit
             )
@@ -490,7 +571,16 @@ class SimulationManager:
             csv_path = os.path.join(sim_dir, "twitter_profiles.csv")
             if os.path.exists(csv_path):
                 with open(csv_path, 'r', encoding='utf-8', newline='') as f:
-                    return list(csv.DictReader(f))
+                    rows = list(csv.DictReader(f))
+                for row in rows:
+                    for key in ("source_citations", "runtime_traits", "provenance"):
+                        value = row.get(key)
+                        if value:
+                            try:
+                                row[key] = json.loads(value)
+                            except json.JSONDecodeError:
+                                pass
+                return rows
 
             legacy_json_path = os.path.join(sim_dir, "twitter_profiles.json")
             if os.path.exists(legacy_json_path):

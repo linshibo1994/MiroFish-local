@@ -225,9 +225,9 @@ const isDragOver = ref(false)
 // 文件输入引用
 const fileInput = ref(null)
 
-// 计算属性:是否可以提交
+// 首页只负责进入引擎，输入可在 Step1 内补齐
 const canSubmit = computed(() => {
-  return formData.value.simulationRequirement.trim() !== '' && files.value.length > 0
+  return true
 })
 
 // 触发文件选择
@@ -284,15 +284,18 @@ const scrollToBottom = () => {
   })
 }
 
-// 开始模拟 - 立即跳转，API调用在Process页面进行
+// 开始模拟 - Step1 接管输入分析，首页输入仅作为迁移期兼容缓存
 const startSimulation = () => {
-  if (!canSubmit.value || loading.value) return
+  if (loading.value) return
   
-  // 存储待上传的数据
-  import('../store/pendingUpload.js').then(({ setPendingUpload }) => {
-    setPendingUpload(files.value, formData.value.simulationRequirement)
+  import('../store/pendingUpload.js').then(({ setPendingUpload, clearPendingUpload }) => {
+    const requirement = formData.value.simulationRequirement.trim()
+    if (files.value.length > 0 || requirement) {
+      setPendingUpload(files.value, requirement)
+    } else {
+      clearPendingUpload()
+    }
     
-    // 立即跳转到Process页面（使用特殊标识表示新建项目）
     router.push({
       name: 'Process',
       params: { projectId: 'new' }

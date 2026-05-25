@@ -15,7 +15,7 @@ OASIS Agent Profile生成器
 import json
 import random
 import time
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -26,6 +26,7 @@ from ..utils.logger import get_logger
 from .zep_entity_reader import EntityNode, ZepEntityReader
 from .zep_factory import get_zep_client
 from .zep_adapter import ZepClientAdapter
+from .real_entity_resolver import ResolvedRealEntity, VERIFIED
 
 logger = get_logger('mirofish.oasis_profile')
 
@@ -59,6 +60,14 @@ class OasisAgentProfile:
     # 来源实体信息
     source_entity_uuid: Optional[str] = None
     source_entity_type: Optional[str] = None
+
+    # 真实资料验证与来源追踪
+    verification_status: str = "unverified"
+    info_confidence: float = 0.0
+    info_sources: List[Dict[str, Any]] = field(default_factory=list)
+    source_citations: List[Dict[str, Any]] = field(default_factory=list)
+    real_identity_summary: str = ""
+    runtime_traits: Dict[str, Any] = field(default_factory=dict)
     
     created_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d"))
     
@@ -87,6 +96,12 @@ class OasisAgentProfile:
             profile["profession"] = self.profession
         if self.interested_topics:
             profile["interested_topics"] = self.interested_topics
+
+        profile["verification_status"] = self.verification_status
+        profile["info_confidence"] = self.info_confidence
+        profile["source_citations"] = self.source_citations
+        profile["runtime_traits"] = self.runtime_traits
+        profile["provenance"] = self._provenance_dict()
         
         return profile
     
@@ -117,6 +132,12 @@ class OasisAgentProfile:
             profile["profession"] = self.profession
         if self.interested_topics:
             profile["interested_topics"] = self.interested_topics
+
+        profile["verification_status"] = self.verification_status
+        profile["info_confidence"] = self.info_confidence
+        profile["source_citations"] = json.dumps(self.source_citations, ensure_ascii=False)
+        profile["runtime_traits"] = json.dumps(self.runtime_traits, ensure_ascii=False)
+        profile["provenance"] = json.dumps(self._provenance_dict(), ensure_ascii=False)
         
         return profile
     
@@ -140,7 +161,27 @@ class OasisAgentProfile:
             "interested_topics": self.interested_topics,
             "source_entity_uuid": self.source_entity_uuid,
             "source_entity_type": self.source_entity_type,
+            "verification_status": self.verification_status,
+            "info_confidence": self.info_confidence,
+            "info_sources": self.info_sources,
+            "source_citations": self.source_citations,
+            "real_identity_summary": self.real_identity_summary,
+            "runtime_traits": self.runtime_traits,
+            "provenance": self._provenance_dict(),
             "created_at": self.created_at,
+        }
+
+    def _provenance_dict(self) -> Dict[str, Any]:
+        """返回真实资料来源元数据。"""
+        return {
+            "verification_status": self.verification_status,
+            "info_confidence": self.info_confidence,
+            "source_entity_uuid": self.source_entity_uuid,
+            "source_entity_type": self.source_entity_type,
+            "source_citations": self.source_citations,
+            "info_sources": self.info_sources,
+            "real_identity_summary": self.real_identity_summary,
+            "runtime_traits": self.runtime_traits,
         }
 
 
@@ -217,7 +258,9 @@ class OasisProfileGenerator:
         self, 
         entity: EntityNode, 
         user_id: int,
-        use_llm: bool = True
+        use_llm: bool = True,
+        resolved_real_entity: Optional[ResolvedRealEntity] = None,
+        strict_real_mode: bool = False,
     ) -> OasisAgentProfile:
         """
         从Zep实体生成OASIS Agent Profile
@@ -226,37 +269,57 @@ class OasisProfileGenerator:
             entity: Zep实体节点
             user_id: 用户ID（用于OASIS）
             use_llm: 是否使用LLM生成详细人设
+            resolved_real_entity: 真实实体验证结果
+            strict_real_mode: 严格真实模式，只允许 verified 结果生成正式Profile
             
         Returns:
             OasisAgentProfile
         """
         entity_type = entity.get_entity_type() or "Entity"
+
+        if strict_real_mode and (
+            not resolved_real_entity or resolved_real_entity.verification_status != VERIFIED
+        ):
+            status = resolved_real_entity.verification_status if resolved_real_entity else "missing"
+            raise ValueError(f"严格真实模式只允许 verified 实体生成Profile，当前状态: {status}")
         
         # 基础信息
         name = entity.name
         user_name = self._generate_username(name)
         
-        # 构建上下文信息
-        context = self._build_entity_context(entity)
-        
-        if use_llm:
-            # 使用LLM生成详细人设
-            profile_data = self._generate_profile_with_llm(
-                entity_name=name,
+        if resolved_real_entity:
+            profile_data = self._generate_profile_from_resolved_entity(
+                entity=entity,
                 entity_type=entity_type,
-                entity_summary=entity.summary,
-                entity_attributes=entity.attributes,
-                context=context
+                resolved_real_entity=resolved_real_entity,
             )
         else:
-            # 使用规则生成基础人设
-            profile_data = self._generate_profile_rule_based(
-                entity_name=name,
-                entity_type=entity_type,
-                entity_summary=entity.summary,
-                entity_attributes=entity.attributes
-            )
-        
+            # 构建上下文信息
+            context = self._build_entity_context(entity)
+
+            if strict_real_mode:
+                raise ValueError("严格真实模式缺少 resolved_real_entity，拒绝生成非真实Profile")
+
+            if use_llm:
+                # 使用LLM生成详细人设
+                profile_data = self._generate_profile_with_llm(
+                    entity_name=name,
+                    entity_type=entity_type,
+                    entity_summary=entity.summary,
+                    entity_attributes=entity.attributes,
+                    context=context
+                )
+            else:
+                # 使用规则生成基础人设
+                profile_data = self._generate_profile_rule_based(
+                    entity_name=name,
+                    entity_type=entity_type,
+                    entity_summary=entity.summary,
+                    entity_attributes=entity.attributes
+                )
+
+        runtime_traits = profile_data.get("runtime_traits", {})
+
         return OasisAgentProfile(
             user_id=user_id,
             user_name=user_name,
@@ -275,7 +338,63 @@ class OasisProfileGenerator:
             interested_topics=profile_data.get("interested_topics", []),
             source_entity_uuid=entity.uuid,
             source_entity_type=entity_type,
+            verification_status=resolved_real_entity.verification_status if resolved_real_entity else "unverified",
+            info_confidence=resolved_real_entity.info_confidence if resolved_real_entity else 0.0,
+            info_sources=resolved_real_entity.info_sources if resolved_real_entity else [],
+            source_citations=resolved_real_entity.source_citations if resolved_real_entity else [],
+            real_identity_summary=resolved_real_entity.real_identity_summary if resolved_real_entity else "",
+            runtime_traits=runtime_traits,
         )
+
+    def _generate_profile_from_resolved_entity(
+        self,
+        entity: EntityNode,
+        entity_type: str,
+        resolved_real_entity: ResolvedRealEntity,
+    ) -> Dict[str, Any]:
+        """仅基于真实身份 dossier 生成Profile文案。"""
+        summary = (resolved_real_entity.real_identity_summary or "").strip()
+        if not summary:
+            summary = f"{resolved_real_entity.entity_name} 已通过真实资料来源验证。"
+
+        citations = resolved_real_entity.source_citations[:3]
+        citation_lines = []
+        for idx, source in enumerate(citations, start=1):
+            title = source.get("title") or source.get("url") or f"来源{idx}"
+            url = source.get("url", "")
+            citation_lines.append(f"[{idx}] {title} {url}".strip())
+
+        facts = [fact for fact in resolved_real_entity.verified_facts if fact]
+        fact_text = " ".join(facts[:3])
+        citation_text = "；".join(citation_lines)
+
+        persona_parts = [summary]
+        if fact_text:
+            persona_parts.append(f"已验证资料要点：{fact_text}")
+        if citation_text:
+            persona_parts.append(f"资料来源：{citation_text}")
+
+        runtime_traits = {
+            "age": 30,
+            "gender": "other",
+            "mbti": "ISTJ",
+            "country": "中国",
+            "profession": entity_type,
+            "interested_topics": [],
+            "note": "OASIS运行必需默认字段，仅用于模拟引擎，不代表真实事实。",
+        }
+
+        return {
+            "bio": summary[:200],
+            "persona": " ".join(persona_parts),
+            "age": runtime_traits["age"],
+            "gender": runtime_traits["gender"],
+            "mbti": runtime_traits["mbti"],
+            "country": runtime_traits["country"],
+            "profession": runtime_traits["profession"],
+            "interested_topics": runtime_traits["interested_topics"],
+            "runtime_traits": runtime_traits,
+        }
     
     def _generate_username(self, name: str) -> str:
         """生成用户名"""
@@ -856,7 +975,9 @@ class OasisProfileGenerator:
         graph_id: Optional[str] = None,
         parallel_count: int = 5,
         realtime_output_path: Optional[str] = None,
-        output_platform: str = "reddit"
+        output_platform: str = "reddit",
+        resolved_real_entities: Optional[Union[Dict[str, ResolvedRealEntity], List[ResolvedRealEntity]]] = None,
+        strict_real_mode: bool = False,
     ) -> List[OasisAgentProfile]:
         """
         批量从实体生成Agent Profile（支持并行生成）
@@ -869,6 +990,8 @@ class OasisProfileGenerator:
             parallel_count: 并行生成数量，默认5
             realtime_output_path: 实时写入的文件路径（如果提供，每生成一个就写入一次）
             output_platform: 输出平台格式 ("reddit" 或 "twitter")
+            resolved_real_entities: 已解析的真实实体结果，按 uuid 匹配
+            strict_real_mode: 严格真实模式，禁止异常时生成备用虚构Profile
             
         Returns:
             Agent Profile列表
@@ -879,6 +1002,12 @@ class OasisProfileGenerator:
         # 设置graph_id用于Zep检索
         if graph_id:
             self.graph_id = graph_id
+
+        resolved_by_uuid: Dict[str, ResolvedRealEntity] = {}
+        if isinstance(resolved_real_entities, dict):
+            resolved_by_uuid = resolved_real_entities
+        elif isinstance(resolved_real_entities, list):
+            resolved_by_uuid = {item.entity_uuid: item for item in resolved_real_entities}
         
         total = len(entities)
         profiles = [None] * total  # 预分配列表保持顺序
@@ -924,7 +1053,9 @@ class OasisProfileGenerator:
                 profile = self.generate_profile_from_entity(
                     entity=entity,
                     user_id=idx,
-                    use_llm=use_llm
+                    use_llm=use_llm,
+                    resolved_real_entity=resolved_by_uuid.get(entity.uuid),
+                    strict_real_mode=strict_real_mode,
                 )
                 
                 # 实时输出生成的人设到控制台和日志
@@ -934,6 +1065,8 @@ class OasisProfileGenerator:
                 
             except Exception as e:
                 logger.error(f"生成实体 {entity.name} 的人设失败: {str(e)}")
+                if strict_real_mode:
+                    return idx, None, str(e)
                 # 创建一个基础profile
                 fallback_profile = OasisAgentProfile(
                     user_id=idx,
@@ -966,6 +1099,8 @@ class OasisProfileGenerator:
                 
                 try:
                     result_idx, profile, error = future.result()
+                    if profile is None and strict_real_mode:
+                        raise ValueError(f"严格真实模式下生成Profile失败: {entity.name}, {error}")
                     profiles[result_idx] = profile
                     
                     with lock:
@@ -989,6 +1124,8 @@ class OasisProfileGenerator:
                         
                 except Exception as e:
                     logger.error(f"处理实体 {entity.name} 时发生异常: {str(e)}")
+                    if strict_real_mode:
+                        raise
                     with lock:
                         completed_count[0] += 1
                     profiles[idx] = OasisAgentProfile(
@@ -1007,7 +1144,7 @@ class OasisProfileGenerator:
         print(f"人设生成完成！共生成 {len([p for p in profiles if p])} 个Agent")
         print(f"{'='*60}\n")
         
-        return profiles
+        return [p for p in profiles if p is not None]
     
     def _print_generated_profile(self, entity_name: str, entity_type: str, profile: OasisAgentProfile):
         """实时输出生成的人设到控制台（完整内容，不截断）"""
@@ -1088,7 +1225,11 @@ class OasisProfileGenerator:
             writer = csv.writer(f)
             
             # 写入OASIS要求的表头
-            headers = ['user_id', 'name', 'username', 'user_char', 'description']
+            headers = [
+                'user_id', 'name', 'username', 'user_char', 'description',
+                'verification_status', 'info_confidence', 'source_citations',
+                'runtime_traits', 'provenance'
+            ]
             writer.writerow(headers)
             
             # 写入数据行
@@ -1108,7 +1249,12 @@ class OasisProfileGenerator:
                     profile.name,           # name: 真实姓名
                     profile.user_name,      # username: 用户名
                     user_char,              # user_char: 完整人设（内部LLM使用）
-                    description             # description: 简短简介（外部显示）
+                    description,            # description: 简短简介（外部显示）
+                    profile.verification_status,
+                    profile.info_confidence,
+                    json.dumps(profile.source_citations, ensure_ascii=False),
+                    json.dumps(profile.runtime_traits, ensure_ascii=False),
+                    json.dumps(profile._provenance_dict(), ensure_ascii=False),
                 ]
                 writer.writerow(row)
         
@@ -1173,6 +1319,11 @@ class OasisProfileGenerator:
                 "gender": self._normalize_gender(profile.gender),
                 "mbti": profile.mbti if profile.mbti else "ISTJ",
                 "country": profile.country if profile.country else "中国",
+                "provenance": profile._provenance_dict(),
+                "verification_status": profile.verification_status,
+                "info_confidence": profile.info_confidence,
+                "source_citations": profile.source_citations,
+                "runtime_traits": profile.runtime_traits,
             }
             
             # 可选字段
