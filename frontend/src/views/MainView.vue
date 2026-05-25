@@ -73,6 +73,7 @@
           @next-step="handleNextStep"
           @add-log="addLog"
           @update-status="updateEnvStatus"
+          @simulation-created="handleSimulationCreated"
         />
       </div>
     </main>
@@ -210,6 +211,13 @@ const handleNextStep = (params = {}) => {
 
 const updateEnvStatus = (status) => {
   envSetupStatus.value = status || 'processing'
+}
+
+const handleSimulationCreated = (simulationId) => {
+  currentSimulationId.value = simulationId || ''
+  if (currentSimulationId.value) {
+    addLog(`模拟实例同步完成: ${currentSimulationId.value}`)
+  }
 }
 
 const handleGoBack = () => {
