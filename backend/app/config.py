@@ -60,6 +60,8 @@ class Config:
         os.environ.get('BOCHA_WEB_SEARCH_TIMEOUT')
         or os.environ.get('BOCHA_TIMEOUT_SECONDS', '30')
     )
+    BOCHA_WEB_SEARCH_FRESHNESS = os.environ.get('BOCHA_WEB_SEARCH_FRESHNESS', 'twoMonths')
+    BOCHA_WEB_SEARCH_RECENT_DAYS = int(os.environ.get('BOCHA_WEB_SEARCH_RECENT_DAYS', '60'))
     BOCHA_VALIDATE_LINKS = os.environ.get('BOCHA_VALIDATE_LINKS', 'true').lower() in {'1', 'true', 'yes', 'on'}
     BOCHA_LINK_CHECK_TIMEOUT = int(os.environ.get('BOCHA_LINK_CHECK_TIMEOUT', '5'))
     BOCHA_LINK_CHECK_MAX_BYTES = int(os.environ.get('BOCHA_LINK_CHECK_MAX_BYTES', '16384'))

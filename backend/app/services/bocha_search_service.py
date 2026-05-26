@@ -5,6 +5,7 @@
 import json
 import re
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from urllib import error, parse, request
 
@@ -54,7 +55,7 @@ class BochaSearchService:
         self,
         query: str,
         count: Optional[int] = None,
-        freshness: str = "noLimit",
+        freshness: Optional[str] = None,
         summary: bool = True,
     ) -> List[SearchSource]:
         """执行网页搜索并返回标准来源列表"""
@@ -64,18 +65,21 @@ class BochaSearchService:
         if not self.api_key:
             raise ValueError("BOCHA_API_KEY 未配置")
 
-        result_count = count or Config.BOCHA_WEB_SEARCH_MAX_RESULTS
-        result_count = max(1, min(int(result_count), 50))
+        requested_count = count or Config.BOCHA_WEB_SEARCH_MAX_RESULTS
+        requested_count = max(1, min(int(requested_count), 50))
+        result_count = self._request_count_for_freshness(requested_count, freshness)
         payload = {
             "query": clean_query,
-            "freshness": freshness or "noLimit",
+            "freshness": freshness or Config.BOCHA_WEB_SEARCH_FRESHNESS,
             "summary": bool(summary),
             "count": result_count,
         }
 
         response_data = self._post_json(payload)
         sources = self.parse_sources(response_data)
-        return self._filter_live_sources(sources) if self.validate_links else sources
+        sources = self._filter_recent_sources(sources, freshness)
+        sources = self._filter_live_sources(sources) if self.validate_links else sources
+        return sources[:requested_count]
 
     def _post_json(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """发送 JSON POST 请求"""
@@ -134,6 +138,59 @@ class BochaSearchService:
 
         return sources
 
+    def _request_count_for_freshness(self, requested_count: int, freshness: Optional[str]) -> int:
+        if freshness:
+            return requested_count
+        if Config.BOCHA_WEB_SEARCH_RECENT_DAYS <= 0:
+            return requested_count
+        return min(max(requested_count * 3, requested_count), 50)
+
+    def _filter_recent_sources(
+        self,
+        sources: List[SearchSource],
+        freshness: Optional[str] = None,
+    ) -> List[SearchSource]:
+        if freshness:
+            return sources
+        recent_days = Config.BOCHA_WEB_SEARCH_RECENT_DAYS
+        if recent_days <= 0:
+            return sources
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=recent_days)
+        filtered: List[SearchSource] = []
+        for source in sources:
+            published_at = self._parse_published_datetime(source.date_published)
+            if not published_at:
+                filtered.append(source)
+                continue
+            if published_at >= cutoff:
+                filtered.append(source)
+            else:
+                logger.info(
+                    f"过滤博查来源：发布时间超过最近{recent_days}天 "
+                    f"url={source.url}, date_published={source.date_published}"
+                )
+        return filtered
+
+    @staticmethod
+    def _parse_published_datetime(value: str) -> Optional[datetime]:
+        clean_value = (value or "").strip()
+        if not clean_value:
+            return None
+
+        normalized = clean_value.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            try:
+                parsed = datetime.strptime(clean_value[:10], "%Y-%m-%d")
+            except ValueError:
+                return None
+
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
     def _filter_live_sources(self, sources: List[SearchSource]) -> List[SearchSource]:
         """过滤空链接、重复链接、失效链接和明显已删除页面。"""
         filtered: List[SearchSource] = []
@@ -152,8 +209,9 @@ class BochaSearchService:
                 continue
 
             source.url = normalized_url
-            if not self._is_live_source(source):
-                logger.info(f"过滤博查来源：链接不可访问或页面失效 url={normalized_url}")
+            is_live, reason = self._check_live_source(source)
+            if not is_live:
+                logger.info(f"过滤博查来源：{reason} url={normalized_url}")
                 continue
 
             seen_urls.add(normalized_url)
@@ -162,30 +220,46 @@ class BochaSearchService:
         return filtered
 
     def _is_live_source(self, source: SearchSource) -> bool:
-        """通过轻量请求确认链接仍然可访问，且页面内容不提示已删除。"""
+        """兼容旧测试与外部调用：只返回链接是否可用。"""
+        is_live, _ = self._check_live_source(source)
+        return is_live
+
+    def _check_live_source(self, source: SearchSource) -> tuple[bool, str]:
+        """通过浏览器式请求确认链接仍然可访问，且页面内容不提示已删除。"""
+        body = ""
         try:
-            status, body = self._request_source_preview(source.url, method="HEAD")
-            if status in {405, 501}:
-                status, body = self._request_source_preview(source.url, method="GET")
-            elif 200 <= status < 400:
-                _, body = self._request_source_preview(source.url, method="GET")
+            try:
+                status, _ = self._request_source_preview(source.url, method="HEAD")
+            except Exception as exc:
+                logger.info(f"博查来源 HEAD 校验异常，改用 GET 复核 url={source.url}, error={exc}")
+            else:
+                if status < 200 or status >= 400:
+                    logger.info(f"博查来源 HEAD 校验未通过，改用 GET 复核 url={source.url}, status={status}")
+            status, body = self._request_source_preview(source.url, method="GET")
         except Exception as exc:
-            logger.info(f"过滤博查来源：链接检查异常 url={source.url}, error={exc}")
-            return False
+            logger.info(f"博查来源链接检查异常 url={source.url}, error={exc}")
+            return False, "链接检查异常"
 
         if status < 200 or status >= 400:
-            return False
+            if self._looks_blocked_from_body(body):
+                return False, f"目标站点拦截后端校验请求 status={status}"
+            return False, f"链接不可访问 status={status}"
+        if self._looks_blocked_from_body(body):
+            return False, "目标站点返回拦截页"
         if self._looks_deleted_from_body(body):
-            return False
-        return True
+            return False, "页面内容提示已删除或不存在"
+        return True, ""
 
     def _request_source_preview(self, url: str, method: str = "GET") -> tuple[int, str]:
         headers = {
-            "User-Agent": "Mozilla/5.0 (compatible; MiroFishBot/1.0; +https://mirofish.local)",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         }
-        if method == "GET":
-            headers["Range"] = f"bytes=0-{max(Config.BOCHA_LINK_CHECK_MAX_BYTES - 1, 0)}"
 
         req = request.Request(url=url, method=method, headers=headers)
         try:
@@ -230,6 +304,22 @@ class BochaSearchService:
         text = re.sub(r"\s+", " ", body[: Config.BOCHA_LINK_CHECK_MAX_BYTES]).strip()
         return cls._contains_deleted_marker(text)
 
+    @classmethod
+    def _looks_blocked_from_body(cls, body: str) -> bool:
+        if not body:
+            return False
+        text = re.sub(r"\s+", " ", body[: Config.BOCHA_LINK_CHECK_MAX_BYTES]).strip()
+        lowered = text.lower()
+        blocked_patterns = [
+            "waf拦截页面",
+            "web应用防护",
+            "您的请求已中断",
+            "访问拦截",
+            "access denied",
+            "request blocked",
+        ]
+        return any(pattern in lowered for pattern in blocked_patterns)
+
     @staticmethod
     def _contains_deleted_marker(text: str) -> bool:
         if not text:
@@ -239,9 +329,9 @@ class BochaSearchService:
         deleted_patterns = [
             "404 not found",
             "page not found",
-            "not found",
-            "deleted",
-            "gone",
+            "this page has been deleted",
+            "this article has been deleted",
+            "410 gone",
             "页面不存在",
             "网页不存在",
             "文件不存在",

@@ -48,6 +48,12 @@ class GraphBuilderService:
     - Graphiti: 使用 graphiti-core + Neo4j
     """
 
+    INTERNAL_ATTRIBUTE_KEYS = {
+        "name_embedding",
+        "embedding",
+        "embeddings",
+    }
+
     def __init__(self, api_key: Optional[str] = None, backend: Optional[str] = None):
         """
         初始化图谱构建服务
@@ -465,7 +471,7 @@ class GraphBuilderService:
                 "name": node.name,
                 "labels": node.labels or [],
                 "summary": node.summary or "",
-                "attributes": node.attributes or {},
+                "attributes": self._sanitize_display_attributes(node.attributes),
                 "created_at": node.created_at,
             })
 
@@ -480,7 +486,7 @@ class GraphBuilderService:
                 "target_node_uuid": edge.target_node_uuid,
                 "source_node_name": node_map.get(edge.source_node_uuid, ""),
                 "target_node_name": node_map.get(edge.target_node_uuid, ""),
-                "attributes": edge.attributes or {},
+                "attributes": self._sanitize_display_attributes(edge.attributes),
                 "created_at": edge.created_at,
                 "valid_at": edge.valid_at,
                 "invalid_at": edge.invalid_at,
@@ -494,6 +500,16 @@ class GraphBuilderService:
             "edges": edges_data,
             "node_count": len(nodes_data),
             "edge_count": len(edges_data),
+        }
+
+    @classmethod
+    def _sanitize_display_attributes(cls, attributes: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """过滤不适合前端展示的内部属性。"""
+        if not attributes:
+            return {}
+        return {
+            key: value for key, value in attributes.items()
+            if str(key).lower() not in cls.INTERNAL_ATTRIBUTE_KEYS
         }
     
     def delete_graph(self, graph_id: str):

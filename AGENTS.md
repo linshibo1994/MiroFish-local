@@ -20,6 +20,14 @@
 ## Testing Guidelines
 后端测试框架已声明为 `pytest` 与 `pytest-asyncio`。新增后端测试建议放入 `backend/tests/`，命名使用 `test_*.py`。前端暂未接入自动化测试；涉及界面或交互变更时，请在 PR 中附上手动验证步骤、关键截图，至少覆盖上传、图谱构建和模拟入口。
 
+## Mandatory Completion Workflow
+每次完成代码或配置修改后，必须执行以下底线流程，除非用户明确要求暂停或不要提交：
+
+- 进行一次代码 review 自检，重点检查行为回归、无关改动、敏感信息、错误处理和测试覆盖。
+- 运行与变更范围匹配的测试或构建；若无法运行，必须说明原因和风险。
+- 使用中文提交信息提交本次相关改动，提交内容必须只包含本次任务相关文件，不能混入工作区里已有的无关改动。
+- 提交完成后必须推送到当前远程分支；如推送失败，必须报告失败原因和后续处理建议。
+
 ## Commit & Pull Request Guidelines
 提交信息遵循 Conventional Commits，仓库历史已使用 `feat: ...`、`fix(backend): ...`、`docs: ...`。推荐格式：`type(scope): summary`，例如 `feat(frontend): add simulation status panel`。PR 应包含变更目的、影响范围、验证命令、环境前提；如修改 UI，请附截图；如修改配置或本地部署流程，请同步更新 `README.md`、`LOCAL-STARTUP.md` 或示例环境文件。
 

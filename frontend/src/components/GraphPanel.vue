@@ -53,7 +53,7 @@
           <div class="detail-panel-header">
             <span class="detail-title">{{ selectedItem.type === 'node' ? '节点详情' : '关系详情' }}</span>
             <span v-if="selectedItem.type === 'node'" class="detail-type-badge" :style="{ background: selectedItem.color, color: '#fff' }">
-              {{ selectedItem.entityType }}
+              {{ translateEntityType(selectedItem.entityType) }}
             </span>
             <button class="detail-close" @click="closeDetailPanel">×</button>
           </div>
@@ -74,12 +74,12 @@
             </div>
             
             <!-- Properties -->
-            <div class="detail-section" v-if="selectedItem.data.attributes && Object.keys(selectedItem.data.attributes).length > 0">
+            <div class="detail-section" v-if="selectedNodeAttributes.length > 0">
               <div class="section-title">属性:</div>
               <div class="properties-list">
-                <div v-for="(value, key) in selectedItem.data.attributes" :key="key" class="property-item">
-                  <span class="property-key">{{ key }}:</span>
-                  <span class="property-value">{{ value || '无' }}</span>
+                <div v-for="property in selectedNodeAttributes" :key="property.key" class="property-item">
+                  <span class="property-key">{{ property.label }}:</span>
+                  <span class="property-value">{{ property.value }}</span>
                 </div>
               </div>
             </div>
@@ -95,7 +95,7 @@
               <div class="section-title">标签:</div>
               <div class="labels-list">
                 <span v-for="label in selectedItem.data.labels" :key="label" class="label-tag">
-                  {{ label }}
+                  {{ translateGraphLabel(label) }}
                 </span>
               </div>
             </div>
@@ -122,7 +122,7 @@
                     @click="toggleSelfLoop(loop.uuid || idx)"
                   >
                     <span class="self-loop-index">#{{ idx + 1 }}</span>
-                    <span class="self-loop-name">{{ loop.name || loop.fact_type || '关联' }}</span>
+                    <span class="self-loop-name">{{ translateRelationType(loop.name || loop.fact_type) || '关联' }}</span>
                     <span class="self-loop-toggle">{{ expandedSelfLoops.has(loop.uuid || idx) ? '−' : '+' }}</span>
                   </div>
                   
@@ -137,7 +137,7 @@
                     </div>
                     <div class="detail-row" v-if="loop.fact_type">
                       <span class="detail-label">类型:</span>
-                      <span class="detail-value">{{ loop.fact_type }}</span>
+                      <span class="detail-value">{{ translateRelationType(loop.fact_type) }}</span>
                     </div>
                     <div class="detail-row" v-if="loop.created_at">
                       <span class="detail-label">创建时间:</span>
@@ -157,7 +157,7 @@
             <!-- 普通边详情 -->
             <template v-else>
               <div class="edge-relation-header">
-                {{ selectedItem.data.source_name }} → {{ selectedItem.data.name || 'RELATED_TO' }} → {{ selectedItem.data.target_name }}
+                {{ selectedItem.data.source_name }} → {{ translateRelationType(selectedItem.data.name) || '关联于' }} → {{ selectedItem.data.target_name }}
               </div>
               
               <div class="detail-row">
@@ -166,11 +166,11 @@
               </div>
               <div class="detail-row">
                 <span class="detail-label">标签:</span>
-                <span class="detail-value">{{ selectedItem.data.name || 'RELATED_TO' }}</span>
+                <span class="detail-value">{{ translateRelationType(selectedItem.data.name) || '关联于' }}</span>
               </div>
               <div class="detail-row">
                 <span class="detail-label">类型:</span>
-                <span class="detail-value">{{ selectedItem.data.fact_type || '未知' }}</span>
+                <span class="detail-value">{{ translateRelationType(selectedItem.data.fact_type) || '未知' }}</span>
               </div>
               <div class="detail-row" v-if="selectedItem.data.fact">
                 <span class="detail-label">事实:</span>
@@ -227,7 +227,7 @@
       <div class="legend-items">
         <div class="legend-item" v-for="type in entityTypes" :key="type.name">
           <span class="legend-dot" :style="{ background: type.color }"></span>
-          <span class="legend-label">{{ type.name }}</span>
+          <span class="legend-label">{{ translateEntityType(type.name) }}</span>
         </div>
       </div>
     </div>
@@ -246,6 +246,8 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch, nextTick, computed } from 'vue'
 import * as d3 from 'd3'
+import { translateEntityType, translateRelationType } from '../utils/entityTranslations.js'
+import { getDisplayAttributes, translateGraphLabel } from '../utils/graphDisplay.js'
 
 const props = defineProps({
   graphData: Object,
@@ -263,6 +265,11 @@ const showEdgeLabels = ref(true) // 默认显示边标签
 const expandedSelfLoops = ref(new Set()) // 展开的自环项
 const showSimulationFinishedHint = ref(false) // 模拟结束后的提示
 const wasSimulating = ref(false) // 追踪之前是否在模拟中
+
+const selectedNodeAttributes = computed(() => {
+  if (selectedItem.value?.type !== 'node') return []
+  return getDisplayAttributes(selectedItem.value.data?.attributes)
+})
 
 // 关闭模拟结束提示
 const dismissFinishedHint = () => {
@@ -627,7 +634,7 @@ const renderGraph = () => {
   const linkLabels = linkGroup.selectAll('text')
     .data(edges)
     .enter().append('text')
-    .text(d => d.name)
+    .text(d => translateRelationType(d.name))
     .attr('font-size', '9px')
     .attr('fill', '#666')
     .attr('text-anchor', 'middle')

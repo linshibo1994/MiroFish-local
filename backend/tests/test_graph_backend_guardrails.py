@@ -2,6 +2,7 @@ from app import create_app
 from app.api import graph as graph_api
 from app.api import report as report_api
 from app.api import simulation as simulation_api
+from app.services.graph_builder import GraphBuilderService
 
 
 def test_graph_data_requires_project_metadata(monkeypatch):
@@ -80,3 +81,21 @@ def test_generate_profiles_requires_project_metadata(monkeypatch):
     data = response.get_json()
     assert data["success"] is False
     assert "图谱未绑定到任何项目元数据" in data["error"]
+
+
+def test_graph_data_sanitizes_internal_embedding_attributes():
+    attributes = GraphBuilderService._sanitize_display_attributes(
+        {
+            "name_embedding": [0.1, 0.2],
+            "Name_Embedding": [0.3],
+            "summary": "可展示摘要",
+            "custom_label": "可展示标签",
+        }
+    )
+
+    assert "name_embedding" not in attributes
+    assert "Name_Embedding" not in attributes
+    assert attributes == {
+        "summary": "可展示摘要",
+        "custom_label": "可展示标签",
+    }

@@ -238,7 +238,7 @@ def create_seed_from_web_search():
         sources = BochaSearchService().search(
             query=query,
             count=data.get('count'),
-            freshness=data.get('freshness', 'noLimit'),
+            freshness=data.get('freshness'),
             summary=data.get('summary', True),
         )
         if not sources:

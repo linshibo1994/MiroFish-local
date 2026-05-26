@@ -1,8 +1,9 @@
 import io
+from datetime import datetime
 
 from app import create_app
 from app.models.project import Project, ProjectManager, ProjectStatus
-from app.services.bocha_search_service import BochaSearchService
+from app.services.bocha_search_service import BochaSearchService, SearchSource
 
 
 def test_project_seed_fields_roundtrip():
@@ -119,6 +120,104 @@ def test_bocha_search_service_parses_web_pages(monkeypatch):
     assert sources[0].date_published == "2026-05-01"
 
 
+def test_bocha_search_uses_two_months_freshness_by_default(monkeypatch):
+    captured_payload = {}
+    response_payload = {
+        "data": {
+            "webPages": {
+                "value": [
+                    {
+                        "name": "新闻标题",
+                        "url": "https://example.com/news",
+                    }
+                ]
+            }
+        }
+    }
+
+    def fake_post_json(self, payload):
+        captured_payload.update(payload)
+        return response_payload
+
+    monkeypatch.setattr(BochaSearchService, "_post_json", fake_post_json)
+
+    BochaSearchService(api_key="test-key", validate_links=False).search("测试", count=1)
+
+    assert captured_payload["freshness"] == "twoMonths"
+    assert captured_payload["count"] == 3
+
+
+def test_bocha_search_accepts_explicit_freshness(monkeypatch):
+    captured_payload = {}
+    response_payload = {
+        "data": {
+            "webPages": {
+                "value": [
+                    {
+                        "name": "新闻标题",
+                        "url": "https://example.com/news",
+                    }
+                ]
+            }
+        }
+    }
+
+    def fake_post_json(self, payload):
+        captured_payload.update(payload)
+        return response_payload
+
+    monkeypatch.setattr(BochaSearchService, "_post_json", fake_post_json)
+
+    BochaSearchService(api_key="test-key", validate_links=False).search(
+        "测试",
+        count=1,
+        freshness="oneMonth",
+    )
+
+    assert captured_payload["freshness"] == "oneMonth"
+    assert captured_payload["count"] == 1
+
+
+def test_bocha_search_filters_old_sources_by_default(monkeypatch):
+    response_payload = {
+        "data": {
+            "webPages": {
+                "value": [
+                    {
+                        "name": "近期新闻",
+                        "url": "https://example.com/recent",
+                        "datePublished": "2026-05-01T00:00:00+08:00",
+                    },
+                    {
+                        "name": "过期新闻",
+                        "url": "https://example.com/old",
+                        "datePublished": "2026-01-01T00:00:00+08:00",
+                    },
+                    {
+                        "name": "无日期新闻",
+                        "url": "https://example.com/no-date",
+                    },
+                ]
+            }
+        }
+    }
+
+    monkeypatch.setattr(BochaSearchService, "_post_json", lambda self, payload: response_payload)
+    class FixedDatetime:
+        now = staticmethod(lambda tz=None: datetime(2026, 5, 26, tzinfo=tz))
+        fromisoformat = staticmethod(datetime.fromisoformat)
+        strptime = staticmethod(datetime.strptime)
+
+    monkeypatch.setattr("app.services.bocha_search_service.datetime", FixedDatetime)
+
+    sources = BochaSearchService(api_key="test-key", validate_links=False).search("测试", count=5)
+
+    assert [source.url for source in sources] == [
+        "https://example.com/recent",
+        "https://example.com/no-date",
+    ]
+
+
 def test_bocha_search_filters_empty_invalid_and_deleted_sources(monkeypatch):
     response_payload = {
         "data": {
@@ -138,8 +237,8 @@ def test_bocha_search_filters_empty_invalid_and_deleted_sources(monkeypatch):
     monkeypatch.setattr(BochaSearchService, "_post_json", lambda self, payload: response_payload)
     monkeypatch.setattr(
         BochaSearchService,
-        "_is_live_source",
-        lambda self, source: source.url == "https://example.com/live",
+        "_check_live_source",
+        lambda self, source: (source.url == "https://example.com/live", "链接不可访问"),
     )
 
     sources = BochaSearchService(api_key="test-key", validate_links=True).search("测试", count=6)
@@ -147,3 +246,59 @@ def test_bocha_search_filters_empty_invalid_and_deleted_sources(monkeypatch):
     assert len(sources) == 1
     assert sources[0].title == "可用来源"
     assert sources[0].url == "https://example.com/live"
+
+
+def test_bocha_link_check_falls_back_to_get_when_head_is_blocked(monkeypatch):
+    calls = []
+
+    def fake_request_source_preview(self, url, method="GET"):
+        calls.append(method)
+        if method == "HEAD":
+            return 403, ""
+        return 200, "<html><title>可用新闻</title></html>"
+
+    monkeypatch.setattr(
+        BochaSearchService,
+        "_request_source_preview",
+        fake_request_source_preview,
+    )
+
+    service = BochaSearchService(api_key="test-key", validate_links=True)
+    is_live, reason = service._check_live_source(
+        SearchSource(title="可用新闻", url="https://example.com/news")
+    )
+
+    assert is_live is True
+    assert reason == ""
+    assert calls == ["HEAD", "GET"]
+
+
+def test_bocha_link_check_falls_back_to_get_when_head_raises(monkeypatch):
+    calls = []
+
+    def fake_request_source_preview(self, url, method="GET"):
+        calls.append(method)
+        if method == "HEAD":
+            raise TimeoutError("head timeout")
+        return 200, "<html><title>可用新闻</title></html>"
+
+    monkeypatch.setattr(
+        BochaSearchService,
+        "_request_source_preview",
+        fake_request_source_preview,
+    )
+
+    service = BochaSearchService(api_key="test-key", validate_links=True)
+    is_live, reason = service._check_live_source(
+        SearchSource(title="可用新闻", url="https://example.com/news")
+    )
+
+    assert is_live is True
+    assert reason == ""
+    assert calls == ["HEAD", "GET"]
+
+
+def test_bocha_deleted_marker_does_not_match_common_substrings():
+    assert BochaSearchService._looks_deleted_from_body('<a class="gonew">返回新闻频道</a>') is False
+    assert BochaSearchService._looks_deleted_from_body("function onthrow(error) {}") is False
+    assert BochaSearchService._looks_deleted_from_body("404 Not Found") is True
