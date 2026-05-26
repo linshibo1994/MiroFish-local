@@ -1,6 +1,6 @@
 import json
 
-from app.services.real_entity_resolver import RealEntityResolver, UNSUPPORTED, VERIFIED
+from app.services.real_entity_resolver import RealEntityResolver, RealEntitySource, UNSUPPORTED, VERIFIED
 from app.services.zep_entity_reader import EntityNode
 
 
@@ -42,7 +42,9 @@ def test_group_entities_are_disabled_by_default():
     assert "allow_group_agents" in result.skip_reason
 
 
-def test_organization_entities_are_not_blocked_by_group_default():
+def test_organization_entities_are_not_blocked_by_group_default(monkeypatch):
+    monkeypatch.setattr("app.services.real_entity_resolver.Config.LLM_WEB_SEARCH_API_KEY", "")
+
     entity = EntityNode(
         uuid="org-1",
         name="Example Organization",
@@ -59,10 +61,12 @@ def test_organization_entities_are_not_blocked_by_group_default():
     result = resolver.resolve_entity(entity)
 
     assert result.verification_status == UNSUPPORTED
-    assert result.skip_reason == "未检索到可引用来源"
+    assert result.skip_reason == "LLM联网查询未返回可引用来源"
 
 
-def test_group_entities_are_allowed_by_default_with_one_source():
+def test_group_entities_are_allowed_by_default_with_one_source(monkeypatch):
+    monkeypatch.setattr("app.services.real_entity_resolver.Config.LLM_WEB_SEARCH_API_KEY", "")
+
     entity = EntityNode(
         uuid="group-1",
         name="Example Community",
@@ -88,7 +92,9 @@ def test_group_entities_are_allowed_by_default_with_one_source():
     assert len(result.source_citations) == 1
 
 
-def test_short_names_are_not_rejected_before_search():
+def test_short_names_are_not_rejected_before_search(monkeypatch):
+    monkeypatch.setattr("app.services.real_entity_resolver.Config.LLM_WEB_SEARCH_API_KEY", "")
+
     entity = EntityNode(
         uuid="short-1",
         name="张",
@@ -113,7 +119,7 @@ def test_short_names_are_not_rejected_before_search():
     assert result.verification_status == VERIFIED
 
 
-def test_llm_web_search_fallback_when_search_service_fails(monkeypatch):
+def test_default_real_entity_resolution_uses_llm_web_search(monkeypatch):
     entity = EntityNode(
         uuid="person-1",
         name="Alice Example",
@@ -122,9 +128,9 @@ def test_llm_web_search_fallback_when_search_service_fails(monkeypatch):
         attributes={},
     )
 
-    class BrokenSearchService:
+    class UnexpectedSearchService:
         def search(self, *args, **kwargs):
-            raise RuntimeError("bocha unavailable")
+            raise AssertionError("LLM联网结果充足时不应该调用显式搜索服务")
 
     class FakeCompletions:
         def create(self, **kwargs):
@@ -161,7 +167,7 @@ def test_llm_web_search_fallback_when_search_service_fails(monkeypatch):
     monkeypatch.setattr("app.services.real_entity_resolver.Config.LLM_WEB_SEARCH_API_KEY", "test-key")
     monkeypatch.setattr("app.services.real_entity_resolver.Config.LLM_WEB_SEARCH_VALIDATE_LINKS", False)
     resolver = RealEntityResolver(
-        search_service=BrokenSearchService(),
+        search_service=UnexpectedSearchService(),
         llm_web_search_client=FakeClient(),
     )
     result = resolver.resolve_entity(entity)
@@ -170,30 +176,27 @@ def test_llm_web_search_fallback_when_search_service_fails(monkeypatch):
     assert result.source_citations[0]["url"] == "https://example.com/alice"
 
 
-def test_llm_source_link_validation_adapts_source_shape(monkeypatch):
-    from app.services import real_entity_resolver as resolver_module
-    from app.services.real_entity_resolver import RealEntitySource
-
-    class FakeBochaValidator:
-        def __init__(self, api_key=None, validate_links=True):
-            pass
-
-        def _filter_live_sources(self, sources):
-            assert sources[0].summary == sources[0].snippet
-            return sources
-
-    monkeypatch.setattr(resolver_module, "BochaSearchService", FakeBochaValidator)
+def test_llm_source_validation_only_filters_invalid_urls(monkeypatch):
     monkeypatch.setattr("app.services.real_entity_resolver.Config.LLM_WEB_SEARCH_VALIDATE_LINKS", True)
 
     resolver = RealEntityResolver(search_service=None)
-    validated = resolver._validate_llm_sources([
-        RealEntitySource(
-            title="Alice Example public profile",
-            url="https://example.com/alice",
-            snippet="Alice Example is a public person with enough context.",
-            site_name="Example",
-            published_at="",
-        )
-    ])
+    validated = resolver._validate_llm_sources(
+        [
+            RealEntitySource(
+                title="Alice Example public profile",
+                url="https://example.com/alice",
+                snippet="Alice Example is a public person with enough context.",
+                site_name="Example",
+                published_at="",
+            ),
+            RealEntitySource(
+                title="Alice Example invalid profile",
+                url="not-a-url",
+                snippet="Alice Example invalid source.",
+                site_name="Example",
+                published_at="",
+            ),
+        ]
+    )
 
-    assert validated[0].url == "https://example.com/alice"
+    assert [source.url for source in validated] == ["https://example.com/alice"]

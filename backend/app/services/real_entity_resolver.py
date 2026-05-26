@@ -9,17 +9,13 @@ verified / ambiguous / unverified / unsupported 四类状态。没有足够上�
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
+from urllib.parse import urlparse
 
 from openai import OpenAI
 
 from ..config import Config
 from ..utils.logger import get_logger
 from .zep_entity_reader import EntityNode
-
-try:
-    from .bocha_search_service import BochaSearchService
-except ImportError:  # 当前仓库暂未提供该服务，保留接口兼容。
-    BochaSearchService = None
 
 
 logger = get_logger("mirofish.real_entity_resolver")
@@ -88,7 +84,7 @@ class ResolvedRealEntity:
 
 
 class RealEntityResolver:
-    """基于外部搜索服务对图谱实体进行真实性验证。"""
+    """基于 LLM 联网搜索对图谱实体进行真实性验证。"""
 
     ABSTRACT_TYPES = {
         "entity",
@@ -129,18 +125,9 @@ class RealEntityResolver:
     ):
         self.min_source_count = max(1, int(min_source_count or 1))
         self.allow_group_agents = allow_group_agents
-        self.search_service = search_service if search_service is not None else self._build_default_search_service()
+        # 真实资料验证默认只使用 LLM 联网；search_service 仅保留给测试或显式离线注入。
+        self.search_service = search_service
         self.llm_web_search_client = llm_web_search_client
-
-    def _build_default_search_service(self) -> Optional[Any]:
-        if BochaSearchService is None:
-            logger.warning("BochaSearchService 不存在，真实实体验证将返回 unsupported")
-            return None
-        try:
-            return BochaSearchService()
-        except Exception as exc:
-            logger.warning(f"BochaSearchService 初始化失败: {exc}")
-            return None
 
     def resolve_entities(self, entities: Sequence[EntityNode]) -> List[ResolvedRealEntity]:
         """批量解析实体，保持输入顺序。"""
@@ -156,23 +143,19 @@ class RealEntityResolver:
             return self._result(entity, entity_type, UNSUPPORTED, skip_reason=unsupported_reason, raw_query=raw_query)
 
         search_error = ""
-        raw_results = None
-        try:
-            if self.search_service:
-                raw_results = self._call_search_service(raw_query)
-            else:
-                search_error = "未配置真实资料搜索服务"
-        except Exception as exc:
-            logger.warning(f"真实实体搜索失败: entity={entity.name}, error={exc}")
-            search_error = f"搜索服务调用失败: {exc}"
-
-        sources = self._normalize_sources(raw_results)
+        sources = self._search_with_llm_web(entity, entity_type, raw_query)
         matched_sources = self._filter_matching_sources(entity.name, sources)
         if len(matched_sources) < self.min_source_count:
-            llm_sources = self._search_with_llm_web(entity, entity_type, raw_query)
-            if llm_sources:
-                sources = self._merge_sources(sources, llm_sources)
-                matched_sources = self._filter_matching_sources(entity.name, sources)
+            try:
+                if self.search_service:
+                    raw_results = self._call_search_service(raw_query)
+                    injected_sources = self._normalize_sources(raw_results)
+                    if injected_sources:
+                        sources = self._merge_sources(sources, injected_sources)
+                        matched_sources = self._filter_matching_sources(entity.name, sources)
+            except Exception as exc:
+                logger.warning(f"真实实体显式搜索服务调用失败: entity={entity.name}, error={exc}")
+                search_error = f"显式搜索服务调用失败: {exc}"
 
         citations = [source.to_dict() for source in matched_sources]
 
@@ -181,9 +164,9 @@ class RealEntityResolver:
             if sources:
                 reason = f"可引用来源不足，需要{self.min_source_count}条，实际{len(matched_sources)}条"
             elif search_error:
-                reason = f"{search_error}，LLM联网查询也未返回可引用来源"
+                reason = f"LLM联网查询未返回可引用来源，且{search_error}"
             else:
-                reason = "未检索到可引用来源"
+                reason = "LLM联网查询未返回可引用来源"
             return self._result(
                 entity,
                 entity_type,
@@ -280,7 +263,7 @@ class RealEntityResolver:
         entity_type: str,
         query: str,
     ) -> List[RealEntitySource]:
-        """使用百炼兼容模式联网搜索兜底获取可引用真实来源。"""
+        """使用 LLM 联网搜索获取可引用真实来源。"""
         if not Config.LLM_WEB_SEARCH_API_KEY:
             logger.warning("LLM_WEB_SEARCH_API_KEY/LLM_API_KEY 未配置，跳过LLM联网查询")
             return []
@@ -393,43 +376,14 @@ class RealEntityResolver:
     def _validate_llm_sources(self, sources: List[RealEntitySource]) -> List[RealEntitySource]:
         if not sources or not Config.LLM_WEB_SEARCH_VALIDATE_LINKS:
             return sources
-        if BochaSearchService is None:
-            return sources
-        try:
-            validator = BochaSearchService(
-                api_key="link-validator-only",
-                validate_links=True,
-            )
-            search_sources = []
-            for source in sources:
-                search_sources.append(
-                    type(
-                        "LLMSearchSource",
-                        (),
-                        {
-                            "title": source.title,
-                            "url": source.url,
-                            "snippet": source.snippet,
-                            "summary": source.snippet,
-                            "site_name": source.site_name,
-                            "date_published": source.published_at,
-                        },
-                    )()
-                )
-            validated = validator._filter_live_sources(search_sources)
-            return [
-                RealEntitySource(
-                    title=source.title,
-                    url=source.url,
-                    snippet=getattr(source, "snippet", ""),
-                    site_name=getattr(source, "site_name", ""),
-                    published_at=getattr(source, "date_published", ""),
-                )
-                for source in validated
-            ]
-        except Exception as exc:
-            logger.warning("LLM联网来源链接校验失败，保守丢弃来源: %s", exc)
-            return []
+        validated = []
+        for source in sources:
+            parsed_url = urlparse(source.url)
+            if parsed_url.scheme in {"http", "https"} and parsed_url.netloc:
+                validated.append(source)
+            else:
+                logger.info("过滤LLM联网来源：URL 为空或非法 title=%s", source.title)
+        return validated
 
     def _normalize_sources(self, raw_results: Any) -> List[RealEntitySource]:
         items = self._extract_result_items(raw_results)
