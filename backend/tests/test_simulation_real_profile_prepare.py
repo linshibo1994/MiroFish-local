@@ -27,9 +27,12 @@ def test_prepare_fails_when_real_verification_has_zero_verified(tmp_path, monkey
                 filtered_count=1,
             )
 
+    resolver_init_args = {}
+
     class FakeResolver:
-        def __init__(self, min_source_count=2, allow_group_agents=False):
-            pass
+        def __init__(self, min_source_count=1, allow_group_agents=True):
+            resolver_init_args["min_source_count"] = min_source_count
+            resolver_init_args["allow_group_agents"] = allow_group_agents
 
         def resolve_entities(self, entities):
             return [
@@ -64,6 +67,10 @@ def test_prepare_fails_when_real_verification_has_zero_verified(tmp_path, monkey
     )
 
     assert result.status == SimulationStatus.FAILED
+    assert resolver_init_args == {
+        "min_source_count": 1,
+        "allow_group_agents": True,
+    }
     assert result.verification_candidate_count == 1
     assert result.verification_verified_count == 0
     assert result.verification_skipped_count == 1

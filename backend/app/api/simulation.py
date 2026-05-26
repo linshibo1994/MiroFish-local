@@ -562,7 +562,7 @@ def prepare_simulation():
         use_real_profiles = data.get('use_real_profiles', True)
         strict_real_mode = data.get('strict_real_mode', True)
         allow_group_agents = data.get('allow_group_agents', True)
-        min_source_count = data.get('min_source_count', 2)
+        min_source_count = data.get('min_source_count', 1)
         
         # ========== 同步获取实体数量（在后台任务启动前） ==========
         # 这样前端在调用prepare后立即就能获取到预期Agent总数

@@ -894,7 +894,7 @@ const startPrepareSimulation = async () => {
       use_real_profiles: true,
       strict_real_mode: true,
       allow_group_agents: true,
-      min_source_count: 2
+      min_source_count: 1
     })
     
     if (res.success && res.data) {
@@ -1027,7 +1027,7 @@ const fetchProfilesRealtime = async () => {
     if (res.success && res.data) {
       const prevCount = profiles.value.length
       profiles.value = res.data.profiles || []
-      expectedTotal.value = res.data.total_expected
+      expectedTotal.value = res.data.verified_count || res.data.total_expected
       
       // 提取实体类型
       const types = new Set()

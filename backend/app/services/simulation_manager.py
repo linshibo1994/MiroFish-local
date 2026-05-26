@@ -266,7 +266,7 @@ class SimulationManager:
         use_real_profiles: bool = True,
         strict_real_mode: bool = True,
         allow_group_agents: bool = True,
-        min_source_count: int = 2,
+        min_source_count: int = 1,
     ) -> SimulationState:
         """
         准备模拟环境（全程自动化）
@@ -288,7 +288,7 @@ class SimulationManager:
             parallel_profile_count: 并行生成人设的数量，默认3
             use_real_profiles: 是否启用真实资料验证画像
             strict_real_mode: 严格真实模式，正式Profile只允许 verified
-            allow_group_agents: 是否允许机构/群体实体进入Agent
+            allow_group_agents: 是否允许机构/群体实体进入Agent，默认 true
             min_source_count: verified 所需最少来源数
             
         Returns:

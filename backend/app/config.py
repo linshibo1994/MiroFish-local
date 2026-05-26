@@ -38,6 +38,11 @@ class Config:
     LLM_API_KEY = os.environ.get('LLM_API_KEY')
     LLM_BASE_URL = os.environ.get('LLM_BASE_URL', 'https://api.openai.com/v1')
     LLM_MODEL_NAME = os.environ.get('LLM_MODEL_NAME', 'gpt-4o-mini')
+    LLM_WEB_SEARCH_API_KEY = os.environ.get('LLM_WEB_SEARCH_API_KEY') or LLM_API_KEY
+    LLM_WEB_SEARCH_BASE_URL = os.environ.get('LLM_WEB_SEARCH_BASE_URL') or LLM_BASE_URL
+    LLM_WEB_SEARCH_MODEL = os.environ.get('LLM_WEB_SEARCH_MODEL') or LLM_MODEL_NAME
+    LLM_WEB_SEARCH_STRATEGY = os.environ.get('LLM_WEB_SEARCH_STRATEGY', 'max')
+    LLM_WEB_SEARCH_VALIDATE_LINKS = os.environ.get('LLM_WEB_SEARCH_VALIDATE_LINKS', 'true').lower() in {'1', 'true', 'yes', 'on'}
     
     # Zep配置
     ZEP_API_KEY = os.environ.get('ZEP_API_KEY')

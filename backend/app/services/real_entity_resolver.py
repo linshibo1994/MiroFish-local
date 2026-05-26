@@ -10,6 +10,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
+from openai import OpenAI
+
+from ..config import Config
 from ..utils.logger import get_logger
 from .zep_entity_reader import EntityNode
 
@@ -98,7 +101,16 @@ class RealEntityResolver:
         "keyword",
         "unknown",
     }
-    GROUP_TYPES = {
+    GROUP_AGENT_TYPES = {
+        "group",
+        "community",
+        "publicgroup",
+        "socialgroup",
+        "citizengroup",
+        "netizencommunity",
+        "audiencegroup",
+    }
+    ORGANIZATION_TYPES = {
         "university",
         "governmentagency",
         "organization",
@@ -106,19 +118,19 @@ class RealEntityResolver:
         "mediaoutlet",
         "company",
         "institution",
-        "group",
-        "community",
     }
 
     def __init__(
         self,
         search_service: Optional[Any] = None,
-        min_source_count: int = 2,
+        min_source_count: int = 1,
         allow_group_agents: bool = True,
+        llm_web_search_client: Optional[Any] = None,
     ):
         self.min_source_count = max(1, int(min_source_count or 1))
         self.allow_group_agents = allow_group_agents
         self.search_service = search_service if search_service is not None else self._build_default_search_service()
+        self.llm_web_search_client = llm_web_search_client
 
     def _build_default_search_service(self) -> Optional[Any]:
         if BochaSearchService is None:
@@ -143,22 +155,35 @@ class RealEntityResolver:
         if unsupported_reason:
             return self._result(entity, entity_type, UNSUPPORTED, skip_reason=unsupported_reason, raw_query=raw_query)
 
-        if not self.search_service:
-            return self._result(entity, entity_type, UNSUPPORTED, skip_reason="未配置真实资料搜索服务", raw_query=raw_query)
-
+        search_error = ""
+        raw_results = None
         try:
-            raw_results = self._call_search_service(raw_query)
+            if self.search_service:
+                raw_results = self._call_search_service(raw_query)
+            else:
+                search_error = "未配置真实资料搜索服务"
         except Exception as exc:
             logger.warning(f"真实实体搜索失败: entity={entity.name}, error={exc}")
-            return self._result(entity, entity_type, UNVERIFIED, skip_reason=f"搜索服务调用失败: {exc}", raw_query=raw_query)
+            search_error = f"搜索服务调用失败: {exc}"
 
         sources = self._normalize_sources(raw_results)
         matched_sources = self._filter_matching_sources(entity.name, sources)
+        if len(matched_sources) < self.min_source_count:
+            llm_sources = self._search_with_llm_web(entity, entity_type, raw_query)
+            if llm_sources:
+                sources = self._merge_sources(sources, llm_sources)
+                matched_sources = self._filter_matching_sources(entity.name, sources)
+
         citations = [source.to_dict() for source in matched_sources]
 
         if len(matched_sources) < self.min_source_count:
             status = UNVERIFIED if sources else UNSUPPORTED
-            reason = "可引用来源不足" if sources else "未检索到可引用来源"
+            if sources:
+                reason = f"可引用来源不足，需要{self.min_source_count}条，实际{len(matched_sources)}条"
+            elif search_error:
+                reason = f"{search_error}，LLM联网查询也未返回可引用来源"
+            else:
+                reason = "未检索到可引用来源"
             return self._result(
                 entity,
                 entity_type,
@@ -200,8 +225,8 @@ class RealEntityResolver:
         entity_type_lower = entity_type.lower()
         labels = [label.lower() for label in entity.labels or []]
 
-        if entity_type_lower in self.GROUP_TYPES and not self.allow_group_agents:
-            return "群体/机构实体未启用 allow_group_agents"
+        if entity_type_lower in self.GROUP_AGENT_TYPES and not self.allow_group_agents:
+            return "群体实体未启用 allow_group_agents"
 
         has_specific_label = any(label not in {"entity", "node"} for label in labels)
         has_context = self._has_sufficient_context(entity)
@@ -212,8 +237,8 @@ class RealEntityResolver:
         if entity_type_lower in self.ABSTRACT_TYPES and not has_context:
             return "抽象实体缺少可验证上下文"
 
-        if not entity.name or len(entity.name.strip()) < 2:
-            return "实体名称不足以检索"
+        if not entity.name or not entity.name.strip():
+            return "实体名称为空，无法检索"
 
         return ""
 
@@ -248,6 +273,137 @@ class RealEntityResolver:
                 except TypeError:
                     return method(query)
         raise AttributeError("搜索服务未提供 search/web_search/search_web/run 方法")
+
+    def _search_with_llm_web(
+        self,
+        entity: EntityNode,
+        entity_type: str,
+        query: str,
+    ) -> List[RealEntitySource]:
+        """使用百炼兼容模式联网搜索兜底获取可引用真实来源。"""
+        if not Config.LLM_WEB_SEARCH_API_KEY:
+            logger.warning("LLM_WEB_SEARCH_API_KEY/LLM_API_KEY 未配置，跳过LLM联网查询")
+            return []
+
+        try:
+            client = self.llm_web_search_client or OpenAI(
+                api_key=Config.LLM_WEB_SEARCH_API_KEY,
+                base_url=Config.LLM_WEB_SEARCH_BASE_URL,
+            )
+            prompt = self._build_llm_web_search_prompt(entity, entity_type, query)
+            response = client.chat.completions.create(
+                model=Config.LLM_WEB_SEARCH_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是严谨的真实资料检索助手。必须基于联网搜索结果返回可引用来源；"
+                            "没有可靠来源时返回空 sources 数组，禁止编造事实或链接。"
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.1,
+                extra_body={
+                    "enable_search": True,
+                    "search_options": {
+                        "forced_search": True,
+                        "search_strategy": Config.LLM_WEB_SEARCH_STRATEGY,
+                    },
+                },
+            )
+            raw_text = self._extract_response_text(response)
+            sources = self._normalize_sources({"results": self._parse_llm_sources(raw_text)})
+            sources = self._validate_llm_sources(sources)
+            if sources:
+                logger.info("LLM联网查询完成: entity=%s, sources=%s", entity.name, len(sources))
+            return sources
+        except Exception as exc:
+            logger.warning("LLM联网查询失败: entity=%s, error=%s", entity.name, exc)
+            return []
+
+    def _build_llm_web_search_prompt(self, entity: EntityNode, entity_type: str, query: str) -> str:
+        context_parts = []
+        if entity.summary:
+            context_parts.append(f"图谱摘要: {entity.summary[:500]}")
+        if entity.attributes:
+            context_parts.append(f"图谱属性: {entity.attributes}")
+        if entity.related_edges:
+            facts = [edge.get("fact") or edge.get("edge_name") for edge in entity.related_edges[:8]]
+            facts = [fact for fact in facts if fact]
+            if facts:
+                context_parts.append("图谱关系: " + "；".join(facts))
+        context = "\n".join(context_parts) or "无额外图谱上下文"
+        return (
+            "请联网查询并验证下面图谱实体是否对应真实人物、机构或可验证群体。"
+            "只返回可以公开引用的真实来源，不要编造来源。"
+            "如果无法找到可靠来源，返回空 sources 数组。\n\n"
+            f"实体名称: {entity.name}\n"
+            f"实体类型: {entity_type}\n"
+            f"检索关键词: {query}\n"
+            f"{context}\n\n"
+            "返回 JSON：{\"sources\":[{\"title\":\"...\",\"url\":\"https://...\","
+            "\"snippet\":\"能证明实体身份或事件关联的简短事实\",\"site_name\":\"...\","
+            "\"published_at\":\"...\"}]}"
+        )
+
+    def _extract_response_text(self, response: Any) -> str:
+        choices = getattr(response, "choices", []) or []
+        if choices:
+            message = getattr(choices[0], "message", None)
+            content = getattr(message, "content", None)
+            if isinstance(content, str):
+                return content
+        return getattr(response, "output_text", "") or ""
+
+    def _parse_llm_sources(self, raw_text: str) -> List[Dict[str, Any]]:
+        import json
+
+        if not raw_text:
+            return []
+        try:
+            data = json.loads(raw_text)
+        except json.JSONDecodeError:
+            match = re.search(r"\{[\s\S]*\}", raw_text)
+            if not match:
+                return []
+            try:
+                data = json.loads(match.group())
+            except json.JSONDecodeError:
+                return []
+        sources = data.get("sources") if isinstance(data, dict) else None
+        return sources if isinstance(sources, list) else []
+
+    def _merge_sources(
+        self,
+        primary: Sequence[RealEntitySource],
+        fallback: Sequence[RealEntitySource],
+    ) -> List[RealEntitySource]:
+        merged = []
+        seen_urls = set()
+        for source in list(primary) + list(fallback):
+            key = source.url or f"{source.title}:{source.snippet}"
+            if key in seen_urls:
+                continue
+            seen_urls.add(key)
+            merged.append(source)
+        return merged
+
+    def _validate_llm_sources(self, sources: List[RealEntitySource]) -> List[RealEntitySource]:
+        if not sources or not Config.LLM_WEB_SEARCH_VALIDATE_LINKS:
+            return sources
+        if BochaSearchService is None:
+            return sources
+        try:
+            validator = BochaSearchService(
+                api_key="link-validator-only",
+                validate_links=True,
+            )
+            return validator._filter_live_sources(sources)
+        except Exception as exc:
+            logger.warning("LLM联网来源链接校验失败，保守丢弃来源: %s", exc)
+            return []
 
     def _normalize_sources(self, raw_results: Any) -> List[RealEntitySource]:
         items = self._extract_result_items(raw_results)
@@ -360,7 +516,10 @@ class RealEntityResolver:
 
     def _tokens(self, value: str) -> List[str]:
         tokens = re.findall(r"[\w\u4e00-\u9fff]+", value.lower())
-        return [token for token in tokens if len(token) > 1]
+        return [
+            token for token in tokens
+            if len(token) > 1 or re.search(r"[\u4e00-\u9fff]", token)
+        ]
 
     def _result(
         self,
