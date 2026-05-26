@@ -168,3 +168,32 @@ def test_llm_web_search_fallback_when_search_service_fails(monkeypatch):
 
     assert result.verification_status == VERIFIED
     assert result.source_citations[0]["url"] == "https://example.com/alice"
+
+
+def test_llm_source_link_validation_adapts_source_shape(monkeypatch):
+    from app.services import real_entity_resolver as resolver_module
+    from app.services.real_entity_resolver import RealEntitySource
+
+    class FakeBochaValidator:
+        def __init__(self, api_key=None, validate_links=True):
+            pass
+
+        def _filter_live_sources(self, sources):
+            assert sources[0].summary == sources[0].snippet
+            return sources
+
+    monkeypatch.setattr(resolver_module, "BochaSearchService", FakeBochaValidator)
+    monkeypatch.setattr("app.services.real_entity_resolver.Config.LLM_WEB_SEARCH_VALIDATE_LINKS", True)
+
+    resolver = RealEntityResolver(search_service=None)
+    validated = resolver._validate_llm_sources([
+        RealEntitySource(
+            title="Alice Example public profile",
+            url="https://example.com/alice",
+            snippet="Alice Example is a public person with enough context.",
+            site_name="Example",
+            published_at="",
+        )
+    ])
+
+    assert validated[0].url == "https://example.com/alice"

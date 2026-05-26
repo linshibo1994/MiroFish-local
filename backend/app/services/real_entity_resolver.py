@@ -400,7 +400,33 @@ class RealEntityResolver:
                 api_key="link-validator-only",
                 validate_links=True,
             )
-            return validator._filter_live_sources(sources)
+            search_sources = []
+            for source in sources:
+                search_sources.append(
+                    type(
+                        "LLMSearchSource",
+                        (),
+                        {
+                            "title": source.title,
+                            "url": source.url,
+                            "snippet": source.snippet,
+                            "summary": source.snippet,
+                            "site_name": source.site_name,
+                            "date_published": source.published_at,
+                        },
+                    )()
+                )
+            validated = validator._filter_live_sources(search_sources)
+            return [
+                RealEntitySource(
+                    title=source.title,
+                    url=source.url,
+                    snippet=getattr(source, "snippet", ""),
+                    site_name=getattr(source, "site_name", ""),
+                    published_at=getattr(source, "date_published", ""),
+                )
+                for source in validated
+            ]
         except Exception as exc:
             logger.warning("LLM联网来源链接校验失败，保守丢弃来源: %s", exc)
             return []
