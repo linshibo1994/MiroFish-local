@@ -24,7 +24,7 @@ class SeedAnalysisResult:
 
 
 class SeedAnalysisService:
-    """基于搜索结果或文件文本生成 seed 摘要和后续模拟建议"""
+    """基于搜索结果或文件文本生成事件摘要和后续模拟建议"""
 
     MAX_MATERIAL_LENGTH = 24000
 

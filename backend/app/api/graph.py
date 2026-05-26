@@ -441,8 +441,9 @@ def build_graph():
         {
             "project_id": "proj_xxxx",  // 必填，来自接口1
             "graph_name": "图谱名称",    // 可选
-            "chunk_size": 500,          // 可选，默认500
-            "chunk_overlap": 50         // 可选，默认50
+            "chunk_size": 1200,         // 可选，默认1200
+            "chunk_overlap": 100,       // 可选，默认100
+            "batch_size": 5             // 可选，默认5
         }
         
     返回：
@@ -520,8 +521,9 @@ def build_graph():
         
         # 获取配置
         graph_name = data.get('graph_name', project.name or 'MiroFish Graph')
-        chunk_size = data.get('chunk_size', project.chunk_size or Config.DEFAULT_CHUNK_SIZE)
-        chunk_overlap = data.get('chunk_overlap', project.chunk_overlap or Config.DEFAULT_CHUNK_OVERLAP)
+        chunk_size = int(data.get('chunk_size') or Config.DEFAULT_CHUNK_SIZE)
+        chunk_overlap = int(data.get('chunk_overlap') or Config.DEFAULT_CHUNK_OVERLAP)
+        batch_size = max(1, int(data.get('batch_size') or Config.GRAPH_BUILD_BATCH_SIZE))
         
         # 更新项目配置
         project.chunk_size = chunk_size
@@ -621,7 +623,7 @@ def build_graph():
                 episode_uuids = builder.add_text_batches(
                     graph_id, 
                     chunks,
-                    batch_size=3,
+                    batch_size=batch_size,
                     progress_callback=add_progress_callback
                 )
                 

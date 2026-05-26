@@ -4,7 +4,7 @@
 
 本轮审查后，原 4 份文档已统一到以下架构基线，解决了原文档中的 4 个关键偏差：
 
-1. **Step1 顺序必须拆成两段**：先做“现实种子摄取与总结”，再做“模拟提示词确认”，最后才是“本体生成”。不能把搜索、提示词、本体生成混在同一个接口里一次完成。
+1. **Step1 顺序必须拆成两段**：先做”现实事件摄取与总结”，再做“模拟提示词确认”，最后才是“本体生成”。不能把搜索、提示词、本体生成混在同一个接口里一次完成。
 2. **联网查询固定走后端 API 集成博查 Web Search API**：关键词模式由后端持有 API Key 并调用博查，前端不接触第三方密钥。
 3. **Step2 不能再允许虚构降级**：一旦搜索失败或实体无法验证，默认必须“跳过该实体或阻断流程”，不能回退到“根据图谱摘要编一个人设”。
 4. **文档必须对齐当前仓库真实结构**：当前前端入口在 `frontend/src/views/Home.vue`，Step1 主流程在 `frontend/src/views/MainView.vue`，`Step1GraphBuild.vue` 当前是展示组件，改造方案必须覆盖这些现状。
@@ -18,8 +18,8 @@
 本次改造只覆盖两段核心链路：
 
 1. **Step1 图谱构建链路**
-   - 现实种子输入支持“关键词联网搜索 / 文件上传”两种互斥模式
-   - 基于博查搜索结果或上传文档生成种子总结 Markdown
+   - 现实事件输入支持“关键词联网搜索 / 文件上传”两种互斥模式
+   - 基于博查搜索结果或上传文档生成事件总结 Markdown
    - 自动生成 2-3 条模拟提示词建议
    - 用户确认模拟提示词后，再生成本体与 GraphRAG 图谱
    - 保留后续图谱构建、记忆注入主链路
@@ -58,7 +58,7 @@
 
 4. **输入模式可追溯**
    - 必须明确记录本次项目是 `web_search` 还是 `file_upload`。
-   - 前后端均不得允许同一次现实种子输入同时提交关键词和文件。
+   - 前后端均不得允许同一次现实事件输入同时提交关键词和文件。
    - 搜索查询词、上传文件列表、总结文档、来源列表都需要持久化到项目目录。
 
 5. **兼容现有仓库演进路径**
@@ -79,7 +79,7 @@
 ```text
 [Home 进入引擎]
         ↓
-[Step1-01 现实种子输入]
+[Step1-01 现实事件输入]
   - Tab/分段控件选择：关键词联网搜索 或 文件上传
   - 两种输入只能二选一
         ↓
@@ -90,7 +90,7 @@
 [文件模式：POST /api/graph/ontology/generate multipart]
   - 复用现有文件上传与文本解析能力
         ↓
-[现实种子分析]
+[现实事件分析]
   - 生成 seed_summary.md
   - 生成 2-3 条 simulation suggestions
         ↓
@@ -149,7 +149,7 @@
 | 文件 | 作用 |
 |---|---|
 | `backend/app/services/bocha_search_service.py` | 博查 Web Search API 适配层，负责搜索、结果标准化、去重与超时控制 |
-| `backend/app/services/seed_analysis_service.py` | 编排 Step1 种子摄取：搜索、文件解析、总结 Markdown、建议生成、项目落盘 |
+| `backend/app/services/seed_analysis_service.py` | 编排 Step1 事件摄取：搜索、文件解析、总结 Markdown、建议生成、项目落盘 |
 | `backend/app/services/real_entity_resolver.py` | Step2 真实性验证与资料归一化服务，输出可追溯的真实实体档案 |
 
 ### 5.2 后端修改文件
@@ -157,7 +157,7 @@
 | 文件 | 修改重点 |
 |---|---|
 | `backend/app/api/graph.py` | 新增 `POST /api/graph/seed/web-search`；调整 `POST /api/graph/ontology/generate` 支持文件分析与基于 `project_id` 的第二阶段本体生成；保留兼容入口 |
-| `backend/app/models/project.py` | 增加种子输入模式、搜索词、总结 Markdown、来源列表、建议列表等字段 |
+| `backend/app/models/project.py` | 增加事件输入模式、搜索词、总结 Markdown、来源列表、建议列表等字段 |
 | `backend/app/services/ontology_generator.py` | 本体 schema 增加 `category`，并强制区分 `person / organization / group` |
 | `backend/app/api/simulation.py` | `prepare` 增加真实性模式参数，状态返回增加已验证/跳过统计 |
 | `backend/app/services/oasis_profile_generator.py` | 去除虚构降级路径，接入真实实体解析结果，补充来源与验证状态导出 |
@@ -169,7 +169,7 @@
 |---|---|
 | `frontend/src/views/Home.vue` | 从“强制先上传文件+输入提示词”改为“进入引擎入口页”；可保留兼容快捷模式但不再作为主路径 |
 | `frontend/src/store/pendingUpload.js` | 缩减为兼容层，或在主路径完成迁移后移除 |
-| `frontend/src/views/MainView.vue` | 新增 Step1 的种子分析、建议选择、本体生成三段状态管理 |
+| `frontend/src/views/MainView.vue` | 新增 Step1 的事件分析、建议选择、本体生成三段状态管理 |
 | `frontend/src/components/Step1GraphBuild.vue` | 从展示组件改为交互组件，通过 Tab/分段控件在关键词搜索和拖拽上传之间切换，支持总结展示与建议选择 |
 | `frontend/src/components/Step2EnvSetup.vue` | 展示真实性状态、来源列表、跳过实体、真实事实与仿真参数分栏 |
 | `frontend/src/api/graph.js` | 新增 `searchSeedByKeyword`，调整 `generateOntology` 调用签名 |
@@ -243,7 +243,7 @@ class SimulationState:
 | `/api/graph/seed/web-search` | `POST` | 关键词联网搜索接口。调用博查 Web Search API，生成总结与建议 |
 | `/api/graph/ontology/generate` | `POST` | 双形态接口。`multipart/form-data` 用于文件模式分析；`application/json` 基于 `project_id + simulation_requirement` 生成本体 |
 | `/api/graph/build` | `POST` | 保持不变 |
-| `/api/graph/project/<project_id>` | `GET` | 返回增强后的种子 summary、sources、suggestions |
+| `/api/graph/project/<project_id>` | `GET` | 返回增强后的事件 summary、sources、suggestions |
 
 ### 7.2 Step2 接口
 
@@ -261,7 +261,7 @@ class SimulationState:
 - `POST /api/graph/ontology/generate` 的 multipart 上传入口继续作为文件模式主入口。
 - 如果收到旧版参数，可在服务端内部执行：
   1. 创建项目并保存文件
-  2. 生成默认种子摘要与建议
+  2. 生成默认事件摘要与建议
   3. 等待用户确认模拟提示词
   4. 再进入本体生成
 

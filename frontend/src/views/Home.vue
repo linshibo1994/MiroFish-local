@@ -2,7 +2,7 @@
   <div class="home-container">
     <!-- 顶部导航栏 -->
     <nav class="navbar">
-      <div class="nav-brand">NEWSPOWER</div>
+      <div class="nav-brand">传播推演</div>
       <div class="nav-links">
         <a href="https://github.com/666ghj/MiroFish" target="_blank" class="github-link">
           访问我们的Github主页 <span class="arrow">↗</span>
@@ -26,7 +26,7 @@
           
           <div class="hero-desc">
             <p>
-              即使只有一段文字，<span class=”highlight-bold”>NewsPower</span> 也能基于其中的现实种子，全自动生成与之对应的至多<span class=”highlight-orange”>百万级智能体</span>构成的平行世界。通过上帝视角注入变量，在复杂的群体交互中寻找动态环境下的<span class=”highlight-code”>”局部最优解”</span>
+              即使只有一段文字，<span class=”highlight-bold”>传播推演</span> 也能基于其中的现实事件，全自动生成与之对应的至多<span class=”highlight-orange”>百万级智能体</span>构成的平行世界。通过上帝视角注入变量，在复杂的群体交互中寻找动态环境下的<span class=”highlight-code”>”局部最优解”</span>
             </p>
             <p class="slogan-text">
               让未来在智能体群中预演，让决策在百战后胜出<span class="blinking-cursor">_</span>
@@ -39,7 +39,7 @@
         <div class="hero-right">
           <!-- Logo 区域 -->
           <div class="logo-container">
-            <img src="../assets/logo/NewsPower_logo.png" alt="NewsPower Logo" class="hero-logo" />
+            <img src="../assets/logo/传播推演_logo.png" alt="传播推演 Logo" class="hero-logo" />
           </div>
           
           <button class="scroll-down-btn" @click="scrollToBottom">
@@ -83,7 +83,7 @@
                 <span class="step-num">01</span>
                 <div class="step-info">
                   <div class="step-title">图谱构建</div>
-                  <div class="step-desc">现实种子提取 & 个体与群体记忆注入 & 知识图谱构建</div>
+                  <div class="step-desc">现实事件提取 & 个体与群体记忆注入 & 知识图谱构建</div>
                 </div>
               </div>
               <div class="workflow-item">
@@ -124,7 +124,7 @@
             <!-- 上传区域 -->
             <div class="console-section">
               <div class="console-header">
-                <span class="console-label">01 / 现实种子</span>
+                <span class="console-label">01 / 现实事件</span>
                 <span class="console-meta">支持格式: PDF, MD, TXT</span>
               </div>
               
@@ -180,7 +180,7 @@
                   rows="6"
                   :disabled="loading"
                 ></textarea>
-                <div class="model-badge">引擎: NewsPower-V1.0</div>
+                <div class="model-badge">引擎: 传播推演-V1.0</div>
               </div>
             </div>
 

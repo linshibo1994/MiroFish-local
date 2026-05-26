@@ -57,6 +57,8 @@ services:
       network: host
       args:
         VITE_API_BASE_URL: /api
+        VITE_GIT_SHA: ${GIT_SHA:-unknown}
+        VITE_BUILD_TIME: ${BUILD_TIME:-unknown}
     container_name: mirofish-frontend
     depends_on:
       backend:

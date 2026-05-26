@@ -362,6 +362,14 @@ class SimulationManager:
                 state.verification_verified_count = len(verified_results)
                 state.verification_skipped_count = len(skipped_results)
                 state.verification_skipped_entities = [item.to_dict() for item in skipped_results]
+                logger.info(
+                    "真实实体验证完成: simulation_id=%s, candidates=%s, verified=%s, skipped=%s, allow_group_agents=%s",
+                    simulation_id,
+                    len(resolved_results),
+                    len(verified_results),
+                    len(skipped_results),
+                    allow_group_agents,
+                )
 
                 resolution_path = os.path.join(sim_dir, "real_entity_resolution.json")
                 with open(resolution_path, 'w', encoding='utf-8') as f:

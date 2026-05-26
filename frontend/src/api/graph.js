@@ -1,7 +1,7 @@
 import service, { requestWithRetry } from './index'
 
 /**
- * 联网搜索现实种子
+ * 联网搜索现实事件
  * @param {Object} data - 包含 search_query, project_name, additional_context
  * @returns {Promise}
  */
@@ -16,7 +16,7 @@ export function searchSeedByKeyword(data) {
 }
 
 /**
- * 上传文件并分析现实种子（multipart 阶段）
+ * 上传文件并分析现实事件（multipart 阶段）
  * @param {FormData} formData - 包含 files, project_name, additional_context
  * @returns {Promise}
  */

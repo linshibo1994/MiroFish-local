@@ -119,6 +119,9 @@ const envSetupStatus = ref('processing') // processing | completed | error
 // Polling timers
 let pollTimer = null
 let graphPollTimer = null
+let graphPollCount = 0
+const GRAPH_BUILD_POLL_INTERVAL_MS = 60000
+const GRAPH_BUILD_MAX_POLL_COUNT = 3
 
 // --- Computed Layout Styles ---
 const leftPanelStyle = computed(() => {
@@ -391,22 +394,36 @@ const startBuildGraph = async () => {
 }
 
 const startGraphPolling = () => {
-  addLog('Started polling for graph data...')
-  fetchGraphData()
-  graphPollTimer = setInterval(fetchGraphData, 10000)
+  if (graphPollTimer) return
+  graphPollCount = 0
+  addLog('图谱构建中，降低全量图谱刷新频率以减少后端压力。')
+  graphPollTimer = setInterval(async () => {
+    graphPollCount += 1
+    await fetchGraphData({ skipBuilding: true, quiet: true })
+    if (graphPollCount >= GRAPH_BUILD_MAX_POLL_COUNT) {
+      stopGraphPolling()
+      addLog('构建阶段全量图谱低频刷新已暂停，完成后会自动加载最终图谱。')
+    }
+  }, GRAPH_BUILD_POLL_INTERVAL_MS)
 }
 
-const fetchGraphData = async () => {
+const fetchGraphData = async (options = {}) => {
   try {
     // Refresh project info to check for graph_id
     const projRes = await getProject(currentProjectId.value)
     if (projRes.success && projRes.data.graph_id) {
+      projectData.value = projRes.data
+      if (options.skipBuilding && projRes.data.status === 'graph_building') {
+        return
+      }
       const gRes = await getGraphData(projRes.data.graph_id)
       if (gRes.success) {
         graphData.value = gRes.data
         const nodeCount = gRes.data.node_count || gRes.data.nodes?.length || 0
         const edgeCount = gRes.data.edge_count || gRes.data.edges?.length || 0
-        addLog(`Graph data refreshed. Nodes: ${nodeCount}, Edges: ${edgeCount}`)
+        if (!options.quiet) {
+          addLog(`Graph data refreshed. Nodes: ${nodeCount}, Edges: ${edgeCount}`)
+        }
       }
     }
   } catch (err) {
@@ -493,6 +510,7 @@ const stopGraphPolling = () => {
     graphPollTimer = null
     addLog('Graph polling stopped.')
   }
+  graphPollCount = 0
 }
 
 onMounted(() => {

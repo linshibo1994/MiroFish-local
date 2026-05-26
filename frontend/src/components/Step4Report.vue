@@ -395,6 +395,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, h, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { getAgentLog, getConsoleLog } from '../api/report'
+import { translateEntityType } from '../utils/entityTranslations.js'
 
 const router = useRouter()
 
@@ -1061,7 +1062,7 @@ const InsightDisplay = {
             (expandedEntities.value ? props.result.entities : props.result.entities.slice(0, 12)).map((entity, i) => 
               h('div', { class: 'entity-tag', key: i, title: entity.summary || '' }, [
                 h('span', { class: 'entity-name' }, entity.name),
-                h('span', { class: 'entity-type' }, entity.type),
+                h('span', { class: 'entity-type' }, translateEntityType(entity.type)),
                 entity.relatedFactsCount > 0 && h('span', { class: 'entity-fact-count' }, `${entity.relatedFactsCount}条`)
               ])
             )
@@ -1249,7 +1250,7 @@ const PanoramaDisplay = {
             (expandedEntities.value ? props.result.entities : props.result.entities.slice(0, 8)).map((entity, i) => 
               h('div', { class: 'entity-tag', key: i }, [
                 h('span', { class: 'entity-name' }, entity.name),
-                entity.type && h('span', { class: 'entity-type' }, entity.type)
+                entity.type && h('span', { class: 'entity-type' }, translateEntityType(entity.type))
               ])
             )
           ) : h('div', { class: 'empty-state' }, '暂无涉及实体'),

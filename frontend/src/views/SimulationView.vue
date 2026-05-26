@@ -3,7 +3,7 @@
     <!-- Header -->
     <header class="app-header">
       <div class="header-left">
-        <div class="brand" @click="router.push('/')">NEWSPOWER</div>
+        <div class="brand" @click="router.push('/')">传播推演</div>
       </div>
       
       <div class="header-center">
@@ -57,6 +57,7 @@
           @next-step="handleNextStep"
           @add-log="addLog"
           @update-status="updateStatus"
+          @simulation-created="handleSimulationCreated"
         />
       </div>
     </main>
@@ -70,6 +71,7 @@ import GraphPanel from '../components/GraphPanel.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
 import { getProject, getGraphData } from '../api/graph'
 import { getSimulation, stopSimulation, getEnvStatus, closeSimulationEnv } from '../api/simulation'
+import { BUILD_INFO } from '../utils/buildInfo'
 
 const route = useRoute()
 const router = useRouter()
@@ -125,6 +127,11 @@ const addLog = (msg) => {
 
 const updateStatus = (status) => {
   currentStatus.value = status
+}
+
+const handleSimulationCreated = (simulationId) => {
+  currentSimulationId.value = simulationId || currentSimulationId.value
+  addLog(`模拟实例同步完成: ${currentSimulationId.value}`)
 }
 
 // --- Layout Methods ---
@@ -288,6 +295,7 @@ const refreshGraph = () => {
 
 onMounted(async () => {
   addLog('SimulationView 初始化')
+  addLog(`前端版本: ${BUILD_INFO.gitSha} (${BUILD_INFO.buildTime})`)
   
   // 检查并关闭正在运行的模拟（用户从 Step 3 返回时）
   await checkAndStopRunningSimulation()
@@ -431,4 +439,3 @@ onMounted(async () => {
   border-right: 1px solid #EAEAEA;
 }
 </style>
-

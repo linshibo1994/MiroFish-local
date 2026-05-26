@@ -253,6 +253,11 @@ def create_simulation():
         data = request.get_json() or {}
         
         project_id = data.get('project_id')
+        logger.info(
+            "收到 /api/simulation/create 请求: project_id=%s, graph_id=%s",
+            project_id,
+            data.get('graph_id')
+        )
         if not project_id:
             return jsonify({
                 "success": False,
@@ -297,6 +302,13 @@ def create_simulation():
             graph_backend=resolved_backend,
             enable_twitter=data.get('enable_twitter', True),
             enable_reddit=data.get('enable_reddit', True),
+        )
+        logger.info(
+            "/api/simulation/create 完成: simulation_id=%s, project_id=%s, graph_id=%s, backend=%s",
+            state.simulation_id,
+            state.project_id,
+            state.graph_id,
+            state.graph_backend,
         )
         
         return jsonify({
@@ -563,6 +575,17 @@ def prepare_simulation():
         strict_real_mode = data.get('strict_real_mode', True)
         allow_group_agents = data.get('allow_group_agents', True)
         min_source_count = data.get('min_source_count', 1)
+        logger.info(
+            "/api/simulation/prepare 参数: simulation_id=%s, project_id=%s, graph_id=%s, "
+            "use_real_profiles=%s, strict_real_mode=%s, allow_group_agents=%s, min_source_count=%s",
+            simulation_id,
+            state.project_id,
+            state.graph_id,
+            use_real_profiles,
+            strict_real_mode,
+            allow_group_agents,
+            min_source_count,
+        )
         
         # ========== 同步获取实体数量（在后台任务启动前） ==========
         # 这样前端在调用prepare后立即就能获取到预期Agent总数

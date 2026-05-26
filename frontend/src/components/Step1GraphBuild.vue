@@ -5,7 +5,7 @@
         <div class="card-header">
           <div class="step-info">
             <span class="step-num">01</span>
-            <span class="step-title">现实种子输入</span>
+            <span class="step-title">现实事件输入</span>
           </div>
           <div class="step-status">
             <span v-if="seedResult" class="badge success">已分析</span>
@@ -16,10 +16,10 @@
 
         <div class="card-content">
           <p class="description">
-            选择一种现实种子来源。联网搜索与文件上传互斥，同一次分析请求不会混合提交。
+            选择一种现实事件来源。联网搜索与文件上传互斥，同一次分析请求不会混合提交。
           </p>
 
-          <div class="mode-switcher" role="tablist" aria-label="现实种子输入方式">
+          <div class="mode-switcher" role="tablist" aria-label="现实事件输入方式">
             <button
               type="button"
               class="mode-btn"
@@ -99,7 +99,7 @@
 
           <button type="button" class="action-btn" :disabled="!canAnalyze" @click="analyzeSeed">
             <span v-if="seedAnalyzing" class="spinner-sm"></span>
-            {{ seedAnalyzing ? '分析现实种子...' : '分析现实种子' }}
+            {{ seedAnalyzing ? '分析现实事件...' : '分析现实事件' }}
           </button>
 
           <p v-if="localError" class="error-text">{{ localError }}</p>
@@ -110,7 +110,7 @@
         <div class="card-header">
           <div class="step-info">
             <span class="step-num">02</span>
-            <span class="step-title">种子摘要与建议</span>
+            <span class="step-title">事件摘要与建议</span>
           </div>
           <div class="step-status">
             <span class="badge success">{{ suggestions.length }} 条建议</span>
@@ -119,7 +119,7 @@
 
         <div class="card-content">
           <div class="summary-panel">
-            <div class="panel-title">现实种子摘要</div>
+            <div class="panel-title">现实事件摘要</div>
             <pre class="summary-text">{{ seedSummary }}</pre>
           </div>
 
@@ -188,7 +188,7 @@
         <div class="card-content">
           <p class="api-note" style="display:none">POST /api/graph/ontology/generate</p>
           <p class="description">
-            确认模拟提示词后，基于已保存的现实种子文本生成图谱本体。
+            确认模拟提示词后，基于已保存的现实事件文本生成图谱本体。
           </p>
 
           <button type="button" class="action-btn" :disabled="!canGenerateOntology" @click="handleGenerateOntology">
@@ -213,7 +213,7 @@
                   class="entity-tag clickable"
                   @click="selectOntologyItem(entity, 'entity')"
                 >
-                  {{ entity.name }}
+                  {{ translateEntityType(entity.name) }}
                 </span>
               </div>
             </div>
@@ -227,7 +227,7 @@
                   class="entity-tag clickable"
                   @click="selectOntologyItem(rel, 'relation')"
                 >
-                  {{ rel.name }}
+                  {{ translateRelationType(rel.name) }}
                 </span>
               </div>
             </div>
@@ -237,7 +237,7 @@
             <div class="detail-header">
               <div class="detail-title-group">
                 <span class="detail-type-badge">{{ selectedOntologyItem.itemType === 'entity' ? '实体' : '关系' }}</span>
-                <span class="detail-name">{{ selectedOntologyItem.name }}</span>
+                <span class="detail-name">{{ selectedOntologyItem.itemType === 'entity' ? translateEntityType(selectedOntologyItem.name) : translateRelationType(selectedOntologyItem.name) }}</span>
               </div>
               <button class="close-btn" @click="selectedOntologyItem = null">×</button>
             </div>
@@ -263,9 +263,9 @@
                 <span class="section-label">连接关系</span>
                 <div class="conn-list">
                   <div v-for="(conn, idx) in selectedOntologyItem.source_targets" :key="idx" class="conn-item">
-                    <span class="conn-node">{{ conn.source }}</span>
+                    <span class="conn-node">{{ translateEntityType(conn.source) }}</span>
                     <span class="conn-arrow">→</span>
-                    <span class="conn-node">{{ conn.target }}</span>
+                    <span class="conn-node">{{ translateEntityType(conn.target) }}</span>
                   </div>
                 </div>
               </div>
@@ -335,6 +335,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { analyzeUploadedSeed, generateOntology, searchSeedByKeyword } from '../api/graph'
+import { translateEntityType, translateRelationType } from '../utils/entityTranslations.js'
 
 const props = defineProps({
   currentPhase: { type: Number, default: -1 },
@@ -500,7 +501,7 @@ const analyzeSeed = async () => {
     }
     emit('add-log', `Seed analyzed for project ${seedResult.value.project_id || 'unknown'}.`)
   } catch (err) {
-    localError.value = err.message || '现实种子分析失败'
+    localError.value = err.message || '现实事件分析失败'
     emit('add-log', `Seed analysis failed: ${localError.value}`)
   } finally {
     seedAnalyzing.value = false

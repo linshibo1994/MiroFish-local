@@ -3,7 +3,7 @@
     <!-- Header -->
     <header class="app-header">
       <div class="header-left">
-        <div class="brand" @click="router.push('/')">NEWSPOWER</div>
+        <div class="brand" @click="router.push('/')">传播推演</div>
       </div>
       
       <div class="header-center">

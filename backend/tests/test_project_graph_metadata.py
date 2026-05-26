@@ -1,3 +1,4 @@
+from app.config import Config
 from app.models.project import Project, ProjectStatus
 
 
@@ -39,3 +40,5 @@ def test_project_from_dict_backward_compatible():
     assert restored.graph_backend is None
     assert restored.graph_provider is None
     assert restored.graph_schema_version is None
+    assert restored.chunk_size == Config.DEFAULT_CHUNK_SIZE
+    assert restored.chunk_overlap == Config.DEFAULT_CHUNK_OVERLAP

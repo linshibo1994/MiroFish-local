@@ -8,7 +8,7 @@
 2. **联网搜索必须走后端 API 集成博查 Web Search API，不使用开发期搜索工具作为产品能力。**
 3. **原方案未覆盖当前真实前端入口：`Home.vue -> pendingUpload -> MainView.vue`。**
 4. **原方案对人物/机构/群体的 schema 区分不够严格，缺少 `Group` 兜底类型。**
-5. **补充了代码审查边界：当前“现实种子提取”并不是独立产物，而是由文件解析、本体生成和图谱 episode 抽取共同完成。**
+5. **补充了代码审查边界：当前“现实事件提取”并不是独立产物，而是由文件解析、本体生成和图谱 episode 抽取共同完成。**
 
 ---
 
@@ -85,7 +85,7 @@ Home.vue
 1. `extracted_text.txt` 是后续 `/api/graph/build` 和 Step2 `prepare` 的基础输入，文件模式新增 summary/suggestions 时不能替代或丢弃它。
 2. 当前 `analysis_summary` 只是 ontology 生成结果的一部分，不等同于新增的 `seed_summary_md`。
 3. 当前代码没有 `seed_sources`、`simulation_suggestions`、`entity_hints` 的持久化字段，这些都是本次新增能力。
-4. 当前“现实种子提取”没有独立服务；它隐含在 LLM 本体分析和后续图谱抽取中。本次新增 `SeedAnalysisService` 时，应作为前置分析产物补充，而不是绕过原本建图链路。
+4. 当前“现实事件提取”没有独立服务；它隐含在 LLM 本体分析和后续图谱抽取中。本次新增 `SeedAnalysisService` 时，应作为前置分析产物补充，而不是绕过原本建图链路。
 5. Step1 中所谓“个体与群体记忆注入”在当前代码里主要表现为把分块文本作为 episode 写入 Zep/Graphiti 图谱；模拟运行中的动态图谱记忆更新属于后续阶段，不是当前 Step1 的独立接口。
 
 ---
@@ -98,7 +98,7 @@ Step1 改造后必须按以下子步骤运行：
 
 ```text
 Step1 图谱构建
-├── 01 现实种子输入
+├── 01 现实事件输入
 │   ├── 搜索词输入（联网查询模式）
 │   └── 文件上传（本地材料模式）
 │       说明：两种模式只能二选一，不能混合提交
@@ -121,7 +121,7 @@ Step1 图谱构建
 | 生成 2-3 条模拟提示词建议 | 无论来自文件上传还是关键词搜索，都必须在 Step1-02 展示 suggestions |
 | 支持选建议，也支持自然语言输入 | Step1-02 提供“建议卡片 + 文本框”双模式 |
 | 可以用 agent/服务来做搜索总结 | 新增 `SeedAnalysisService`，服务化编排 |
-| 后续仍要调用现实种子提取、GraphRAG 构建、记忆注入 | `文件上传分析或关键词搜索 -> ontology/generate -> build` |
+| 后续仍要调用现实事件提取、GraphRAG 构建、记忆注入 | `文件上传分析或关键词搜索 -> ontology/generate -> build` |
 | 要能区分联网查询还是拖拽上传 | `seed_input_mode` 只允许记录为 `web_search` 或 `file_upload` |
 | 人物/机构/群体区分必须准确 | 改造 `OntologyGenerator` 的 schema 与校验规则 |
 
@@ -140,7 +140,7 @@ Home.vue
   └── 点击“启动引擎”后进入 /process/new
           ↓
 MainView.vue
-  └── 在 Step1 内完成输入模式选择 / 种子分析 / 建议选择 / 本体生成
+  └── 在 Step1 内完成输入模式选择 / 事件分析 / 建议选择 / 本体生成
 ```
 
 兼容策略：
@@ -153,12 +153,12 @@ MainView.vue
 `frontend/src/components/Step1GraphBuild.vue` 改为交互组件，建议结构如下：
 
 ```text
-01 / 现实种子输入
+01 / 现实事件输入
   - Tab 或分段控件：联网搜索 / 文件上传
   - 联网搜索 Tab：搜索关键词输入框
   - 文件上传 Tab：文件拖拽上传区
   - Tab 切换时带轻量过渡动画，并清空另一种模式的临时输入
-  - “分析现实种子”按钮
+  - “分析现实事件”按钮
 
 02 / 模拟提示词
   - AI 推荐 2-3 条建议
@@ -203,7 +203,7 @@ const ontologyGenerating = ref(false)
 
 ### 4.2.1 文件上传模式：复用现有上传分析接口
 
-文件上传模式优先复用当前已有的 multipart 上传、文件解析与现实种子提取链路，降低改造风险。当前入口是：
+文件上传模式优先复用当前已有的 multipart 上传、文件解析与现实事件提取链路，降低改造风险。当前入口是：
 
 ```text
 POST /api/graph/ontology/generate
@@ -335,7 +335,7 @@ legacy multipart request
 
 ---
 
-## 4.3 种子分析服务设计
+## 4.3 事件分析服务设计
 
 ### 4.3.1 服务拆分
 
@@ -624,7 +624,7 @@ uploads/projects/<project_id>/
 |---|---|
 | `frontend/src/views/Home.vue` | 调整为进入引擎入口，移除“文件+提示词同时必填”限制 |
 | `frontend/src/store/pendingUpload.js` | 降级为兼容层或删除 |
-| `frontend/src/views/MainView.vue` | 增加现实种子分析与 ontology generate 两段状态流 |
+| `frontend/src/views/MainView.vue` | 增加现实事件分析与 ontology generate 两段状态流 |
 | `frontend/src/components/Step1GraphBuild.vue` | 改为交互组件 |
 | `frontend/src/api/graph.js` | 新增 `searchSeedByKeyword()`，重写 `generateOntology()` 参数 |
 | `backend/app/api/graph.py` | 新增关键词搜索接口，调整 `ontology/generate` 支持文件分析与本体生成两阶段 |
@@ -668,7 +668,7 @@ uploads/projects/<project_id>/
 
 1. 搜索词模式可独立完成：输入“张雪机车事件”可生成 `seed_summary_md` 和 2-3 条建议。
 2. 文件模式可独立完成：上传 PDF/MD/TXT 后也可生成摘要与建议。
-3. 前后端均拒绝混合输入：同一次现实种子分析请求不得同时包含 `search_query` 与 `files`。
+3. 前后端均拒绝混合输入：同一次现实事件分析请求不得同时包含 `search_query` 与 `files`。
 4. Step1-01 的关键词输入区与文件拖拽上传区可通过 Tab/分段控件切换，切换过程有过渡动画。
 5. Step1-02 允许“选建议 + 改写”，也允许完全手动输入。
 6. 本体生成必须在用户确认模拟提示词后才发生。

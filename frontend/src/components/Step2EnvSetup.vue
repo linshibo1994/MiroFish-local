@@ -22,6 +22,10 @@
 
           <div v-if="activeSimulationId" class="info-card">
             <div class="info-row">
+              <span class="info-label">前端版本</span>
+              <span class="info-value mono">{{ BUILD_INFO.gitSha }} / {{ BUILD_INFO.buildTime }}</span>
+            </div>
+            <div class="info-row">
               <span class="info-label">项目ID</span>
               <span class="info-value mono">{{ projectData?.project_id }}</span>
             </div>
@@ -36,6 +40,24 @@
             <div class="info-row">
               <span class="info-label">任务ID</span>
               <span class="info-value mono">{{ taskId || '异步任务已完成' }}</span>
+            </div>
+          </div>
+          <div v-else class="info-card">
+            <div class="info-row">
+              <span class="info-label">前端版本</span>
+              <span class="info-value mono">{{ BUILD_INFO.gitSha }} / {{ BUILD_INFO.buildTime }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">项目ID</span>
+              <span class="info-value mono">{{ projectData?.project_id || '等待项目数据' }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">图谱ID</span>
+              <span class="info-value mono">{{ projectData?.graph_id || '等待图谱构建完成' }}</span>
+            </div>
+            <div class="info-row">
+              <span class="info-label">模拟ID</span>
+              <span class="info-value mono">尚未创建</span>
             </div>
           </div>
         </div>
@@ -58,7 +80,7 @@
         <div class="card-content">
           <p class="api-note" style="display:none">POST /api/simulation/prepare</p>
           <p class="description">
-            结合上下文，自动调用工具从知识图谱梳理实体与关系，初始化模拟个体，并基于现实种子赋予他们独特的行为与记忆
+            结合上下文，自动调用工具从知识图谱梳理实体与关系，初始化模拟个体，并基于现实事件赋予他们独特的行为与记忆
           </p>
 
           <!-- Profiles Stats -->
@@ -73,7 +95,7 @@
             </div>
             <div class="stat-card">
               <span class="stat-value">{{ totalTopicsCount }}</span>
-              <span class="stat-label">现实种子当前关联话题数</span>
+              <span class="stat-label">现实事件当前关联话题数</span>
             </div>
           </div>
 
@@ -130,7 +152,7 @@
         <div class="card-content">
           <p class="api-note" style="display:none">POST /api/simulation/prepare</p>
           <p class="description">
-            LLM 根据模拟需求与现实种子，智能设置世界时间流速、推荐算法、每个个体的活跃时间段、发言频率、事件触发等参数
+            LLM 根据模拟需求与现实事件，智能设置世界时间流速、推荐算法、每个个体的活跃时间段、发言频率、事件触发等参数
           </p>
           
           <!-- Config Preview -->
@@ -440,7 +462,7 @@
             <div class="rounds-header">
               <div class="header-left">
                 <span class="section-title">模拟轮数设定</span>
-                <span class="section-desc">NewsPower 自动规划推演现实 <span class="desc-highlight">{{ simulationConfig?.time_config?.total_simulation_hours || '-' }}</span> 小时，每轮代表现实 <span class="desc-highlight">{{ simulationConfig?.time_config?.minutes_per_round || '-' }}</span> 分钟时间流逝</span>
+                <span class="section-desc">传播推演 自动规划推演现实 <span class="desc-highlight">{{ simulationConfig?.time_config?.total_simulation_hours || '-' }}</span> 小时，每轮代表现实 <span class="desc-highlight">{{ simulationConfig?.time_config?.minutes_per_round || '-' }}</span> 分钟时间流逝</span>
               </div>
               <label class="switch-control">
                 <input type="checkbox" v-model="useCustomRounds">
@@ -572,7 +594,7 @@
 
           <!-- 关注话题 -->
           <div class="modal-section" v-if="selectedProfile.interested_topics?.length">
-            <span class="section-label">现实种子关联话题</span>
+            <span class="section-label">现实事件关联话题</span>
             <div class="topics-grid">
               <span 
                 v-for="topic in selectedProfile.interested_topics" 
@@ -598,7 +620,7 @@
               </div>
               <div class="dimension-card">
                 <span class="dim-title">独特记忆印记</span>
-                <span class="dim-desc">基于现实种子形成的记忆</span>
+                <span class="dim-desc">基于现实事件形成的记忆</span>
               </div>
               <div class="dimension-card">
                 <span class="dim-title">社会关系网络</span>
@@ -640,6 +662,8 @@ import {
   getSimulationProfilesRealtime,
   getSimulationConfigRealtime 
 } from '../api/simulation'
+import { BUILD_INFO } from '../utils/buildInfo'
+import { translateEntityType, translateRelationType } from '../utils/entityTranslations.js'
 
 const props = defineProps({
   simulationId: String,  // 从父组件传入
@@ -728,38 +752,6 @@ const getAgentUsername = (agentId) => {
     return profile?.username || `agent_${agentId}`
   }
   return `agent_${agentId}`
-}
-
-// 实体类型英文到中文翻译映射
-const entityTypeTranslations = {
-  'INDUSTRYASSOCIATION': '行业协会',
-  'MEDIAOUTLET': '媒体机构',
-  'GOVERNMENTAGENCY': '政府机构',
-  'LAWENFORCEMENTOFFICER': '执法人员',
-  'LAWENFORCEMENT': '执法机构',
-  'NEWSMEDIA': '新闻媒体',
-  'GOVERNMENTOFFICIAL': '政府官员',
-  'INDUSTRYEXPERT': '行业专家',
-  'PUBLICFIGURE': '公众人物',
-  'INTERNETINFLUENCER': '网络红人',
-  'CITIZENORGANIZATION': '公民组织',
-  'THINKTANK': '智库机构',
-  'JOURNALIST': '记者',
-  'POLITICIAN': '政治家',
-  'ACTIVIST': '活动人士',
-  'INDUSTRYLEADER': '行业领袖',
-  'GOVERNMENT': '政府',
-  'MEDIA': '媒体',
-  'INDUSTRY': '行业',
-  'COMPANY': '公司',
-  'NGO': '非政府组织',
-  'ACADEMIC': '学术机构'
-}
-
-const translateEntityType = (type) => {
-  if (!type) return '未知'
-  const upperType = type.toUpperCase().replace(/[\s_-]/g, '')
-  return entityTypeTranslations[upperType] || entityTypeTranslations[type.toUpperCase()] || type
 }
 
 // 立场英文到中文翻译映射
@@ -913,7 +905,7 @@ const startPrepareSimulation = async () => {
         expectedTotal.value = res.data.expected_entities_count
         addLog(`从Zep图谱读取到 ${res.data.expected_entities_count} 个实体`)
         if (res.data.entity_types && res.data.entity_types.length > 0) {
-          addLog(`  └─ 实体类型: ${res.data.entity_types.join(', ')}`)
+          addLog(`  └─ 实体类型: ${res.data.entity_types.map(t => translateEntityType(t)).join(', ')}`)
         }
       }
       

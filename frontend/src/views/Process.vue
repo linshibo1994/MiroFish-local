@@ -446,6 +446,9 @@ const graphSvg = ref(null)
 
 // 轮询定时器
 let pollTimer = null
+let graphPollCount = 0
+const GRAPH_BUILD_POLL_INTERVAL_MS = 60000
+const GRAPH_BUILD_MAX_POLL_COUNT = 3
 
 // 计算属性
 const statusClass = computed(() => {
@@ -700,7 +703,7 @@ const startBuildGraph = async () => {
       // 保存 task_id 用于轮询
       const taskId = response.data.task_id
       
-      // 启动图谱数据轮询（独立于任务状态轮询）
+      // 启动低频图谱数据轮询（独立于任务状态轮询）
       startGraphPolling()
       
       // 启动任务状态轮询
@@ -721,13 +724,17 @@ let graphPollTimer = null
 
 // 启动图谱数据轮询
 const startGraphPolling = () => {
-  // 立即获取一次
-  fetchGraphData()
-  
-  // 每 10 秒自动获取一次图谱数据
+  if (graphPollTimer) return
+  graphPollCount = 0
+
+  // 构建中只做低频、有限次检查；完成后再加载完整图谱。
   graphPollTimer = setInterval(async () => {
-    await fetchGraphData()
-  }, 10000)
+    graphPollCount += 1
+    await fetchGraphData({ skipBuilding: true })
+    if (graphPollCount >= GRAPH_BUILD_MAX_POLL_COUNT) {
+      stopGraphPolling()
+    }
+  }, GRAPH_BUILD_POLL_INTERVAL_MS)
 }
 
 // 手动刷新图谱
@@ -743,10 +750,11 @@ const stopGraphPolling = () => {
     clearInterval(graphPollTimer)
     graphPollTimer = null
   }
+  graphPollCount = 0
 }
 
 // 获取图谱数据
-const fetchGraphData = async () => {
+const fetchGraphData = async (options = {}) => {
   try {
     // 先获取项目信息以获取 graph_id
     const projectResponse = await getProject(currentProjectId.value)
@@ -754,6 +762,9 @@ const fetchGraphData = async () => {
     if (projectResponse.success && projectResponse.data.graph_id) {
       const graphId = projectResponse.data.graph_id
       projectData.value = projectResponse.data
+      if (options.skipBuilding && projectResponse.data.status === 'graph_building') {
+        return
+      }
       
       // 获取图谱数据
       const graphResponse = await getGraphData(graphId)
