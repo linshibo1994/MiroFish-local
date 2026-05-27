@@ -4,6 +4,16 @@ from app.services.real_entity_resolver import RealEntityResolver, RealEntitySour
 from app.services.zep_entity_reader import EntityNode
 
 
+def make_entity(uuid, name, label="Person"):
+    return EntityNode(
+        uuid=uuid,
+        name=name,
+        labels=["Entity", label],
+        summary=f"{name} is a public entity with enough graph context for verification.",
+        attributes={},
+    )
+
+
 class FailingSearchService:
     def search(self, *args, **kwargs):
         raise AssertionError("unsupported 节点不应该调用外部搜索")
@@ -120,13 +130,7 @@ def test_short_names_are_not_rejected_before_search(monkeypatch):
 
 
 def test_default_real_entity_resolution_uses_llm_web_search(monkeypatch):
-    entity = EntityNode(
-        uuid="person-1",
-        name="Alice Example",
-        labels=["Entity", "Person"],
-        summary="A public person with enough context.",
-        attributes={},
-    )
+    entity = make_entity("person-1", "Alice Example")
 
     class UnexpectedSearchService:
         def search(self, *args, **kwargs):
@@ -174,6 +178,218 @@ def test_default_real_entity_resolution_uses_llm_web_search(monkeypatch):
 
     assert result.verification_status == VERIFIED
     assert result.source_citations[0]["url"] == "https://example.com/alice"
+
+
+def test_batch_real_entity_resolution_uses_one_llm_web_request(monkeypatch):
+    entities = [
+        make_entity("person-1", "Alice Example"),
+        make_entity("org-1", "Beta News", "Organization"),
+    ]
+
+    class UnexpectedSearchService:
+        def search(self, *args, **kwargs):
+            raise AssertionError("批量 LLM 联网结果充足时不应该调用显式搜索服务")
+
+    class FakeCompletions:
+        calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            user_prompt = kwargs["messages"][1]["content"]
+            assert "entity_uuid: person-1" in user_prompt
+            assert "entity_uuid: org-1" in user_prompt
+
+            class Response:
+                class Choice:
+                    class Message:
+                        content = json.dumps({
+                            "entities": [
+                                {
+                                    "entity_uuid": "person-1",
+                                    "entity_name": "Alice Example",
+                                    "sources": [
+                                        {
+                                            "title": "Alice Example public profile",
+                                            "url": "https://example.com/alice",
+                                            "snippet": "Alice Example is a public entity with enough graph context.",
+                                        }
+                                    ],
+                                },
+                                {
+                                    "entity_uuid": "org-1",
+                                    "entity_name": "Beta News",
+                                    "sources": [
+                                        {
+                                            "title": "Beta News official profile",
+                                            "url": "https://example.com/beta-news",
+                                            "snippet": "Beta News is a public entity with enough graph context.",
+                                        }
+                                    ],
+                                },
+                            ]
+                        })
+
+                    message = Message()
+
+                choices = [Choice()]
+
+            return Response()
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    monkeypatch.setattr("app.services.real_entity_resolver.Config.LLM_WEB_SEARCH_API_KEY", "test-key")
+    monkeypatch.setattr("app.services.real_entity_resolver.Config.LLM_WEB_SEARCH_VALIDATE_LINKS", False)
+    resolver = RealEntityResolver(
+        search_service=UnexpectedSearchService(),
+        llm_web_search_client=FakeClient(),
+        batch_size=30,
+    )
+
+    results = resolver.resolve_entities(entities)
+
+    assert [result.entity_uuid for result in results] == ["person-1", "org-1"]
+    assert [result.verification_status for result in results] == [VERIFIED, VERIFIED]
+    assert len(FakeChat.completions.calls) == 1
+
+
+def test_batch_real_entity_resolution_skips_unsupported_nodes(monkeypatch):
+    unsupported_entity = EntityNode(
+        uuid="entity-1",
+        name="Entity",
+        labels=["Entity"],
+        summary="",
+        attributes={},
+    )
+    searchable_entity = make_entity("person-1", "Alice Example")
+    second_searchable_entity = make_entity("org-1", "Beta News", "Organization")
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            user_prompt = kwargs["messages"][1]["content"]
+            assert "entity_uuid: entity-1" not in user_prompt
+            assert "entity_uuid: person-1" in user_prompt
+            assert "entity_uuid: org-1" in user_prompt
+
+            class Response:
+                class Choice:
+                    class Message:
+                        content = json.dumps({
+                            "entities": [
+                                {
+                                    "entity_uuid": "person-1",
+                                    "entity_name": "Alice Example",
+                                    "sources": [
+                                        {
+                                            "title": "Alice Example public profile",
+                                            "url": "https://example.com/alice",
+                                            "snippet": "Alice Example is a public entity with enough graph context.",
+                                        }
+                                    ],
+                                },
+                                {
+                                    "entity_uuid": "org-1",
+                                    "entity_name": "Beta News",
+                                    "sources": [
+                                        {
+                                            "title": "Beta News official profile",
+                                            "url": "https://example.com/beta-news",
+                                            "snippet": "Beta News is a public entity with enough graph context.",
+                                        }
+                                    ],
+                                },
+                            ]
+                        })
+
+                    message = Message()
+
+                choices = [Choice()]
+
+            return Response()
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    monkeypatch.setattr("app.services.real_entity_resolver.Config.LLM_WEB_SEARCH_API_KEY", "test-key")
+    monkeypatch.setattr("app.services.real_entity_resolver.Config.LLM_WEB_SEARCH_VALIDATE_LINKS", False)
+    resolver = RealEntityResolver(llm_web_search_client=FakeClient(), batch_size=30)
+
+    results = resolver.resolve_entities([unsupported_entity, searchable_entity, second_searchable_entity])
+
+    assert [result.entity_uuid for result in results] == ["entity-1", "person-1", "org-1"]
+    assert results[0].verification_status == UNSUPPORTED
+    assert results[1].verification_status == VERIFIED
+    assert results[2].verification_status == VERIFIED
+
+
+def test_batch_real_entity_resolution_falls_back_when_entity_missing(monkeypatch):
+    entities = [
+        make_entity("person-1", "Alice Example"),
+        make_entity("person-2", "Bob Example"),
+    ]
+
+    class FakeCompletions:
+        calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            user_prompt = kwargs["messages"][1]["content"]
+            if "待验证实体:" in user_prompt:
+                content = {
+                    "entities": [
+                        {
+                            "entity_uuid": "person-1",
+                            "entity_name": "Alice Example",
+                            "sources": [
+                                {
+                                    "title": "Alice Example public profile",
+                                    "url": "https://example.com/alice",
+                                    "snippet": "Alice Example is a public entity with enough graph context.",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            else:
+                assert "实体名称: Bob Example" in user_prompt
+                content = {
+                    "sources": [
+                        {
+                            "title": "Bob Example public profile",
+                            "url": "https://example.com/bob",
+                            "snippet": "Bob Example is a public entity with enough graph context.",
+                        }
+                    ]
+                }
+
+            message = type("Message", (), {"content": json.dumps(content)})()
+            choice = type("Choice", (), {"message": message})()
+            return type("Response", (), {"choices": [choice]})()
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    monkeypatch.setattr("app.services.real_entity_resolver.Config.LLM_WEB_SEARCH_API_KEY", "test-key")
+    monkeypatch.setattr("app.services.real_entity_resolver.Config.LLM_WEB_SEARCH_VALIDATE_LINKS", False)
+    resolver = RealEntityResolver(llm_web_search_client=FakeClient(), batch_size=30)
+
+    results = resolver.resolve_entities(entities)
+
+    assert [result.verification_status for result in results] == [VERIFIED, VERIFIED]
+    assert [result.source_citations[0]["url"] for result in results] == [
+        "https://example.com/alice",
+        "https://example.com/bob",
+    ]
+    assert len(FakeChat.completions.calls) == 2
 
 
 def test_llm_source_validation_only_filters_invalid_urls(monkeypatch):

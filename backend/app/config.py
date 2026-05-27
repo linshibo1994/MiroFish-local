@@ -43,6 +43,7 @@ class Config:
     LLM_WEB_SEARCH_MODEL = os.environ.get('LLM_WEB_SEARCH_MODEL') or LLM_MODEL_NAME
     LLM_WEB_SEARCH_STRATEGY = os.environ.get('LLM_WEB_SEARCH_STRATEGY', 'max')
     LLM_WEB_SEARCH_VALIDATE_LINKS = os.environ.get('LLM_WEB_SEARCH_VALIDATE_LINKS', 'true').lower() in {'1', 'true', 'yes', 'on'}
+    REAL_ENTITY_BATCH_SIZE = int(os.environ.get('REAL_ENTITY_BATCH_SIZE', '30'))
     
     # Zep配置
     ZEP_API_KEY = os.environ.get('ZEP_API_KEY')

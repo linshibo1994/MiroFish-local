@@ -8,7 +8,7 @@ verified / ambiguous / unverified / unsupported 四类状态。没有足够上�
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
 from openai import OpenAI
@@ -122,16 +122,58 @@ class RealEntityResolver:
         min_source_count: int = 1,
         allow_group_agents: bool = True,
         llm_web_search_client: Optional[Any] = None,
+        batch_size: Optional[int] = None,
     ):
         self.min_source_count = max(1, int(min_source_count or 1))
         self.allow_group_agents = allow_group_agents
+        self.batch_size = max(1, int(batch_size or Config.REAL_ENTITY_BATCH_SIZE or 1))
         # 真实资料验证默认只使用 LLM 联网；search_service 仅保留给测试或显式离线注入。
         self.search_service = search_service
         self.llm_web_search_client = llm_web_search_client
 
     def resolve_entities(self, entities: Sequence[EntityNode]) -> List[ResolvedRealEntity]:
         """批量解析实体，保持输入顺序。"""
-        return [self.resolve_entity(entity) for entity in entities]
+        if not entities:
+            return []
+
+        resolved: List[Optional[ResolvedRealEntity]] = [None] * len(entities)
+        searchable_items: List[Tuple[int, EntityNode, str, str]] = []
+
+        for index, entity in enumerate(entities):
+            entity_type = entity.get_entity_type() or "Entity"
+            raw_query = self._build_search_query(entity, entity_type)
+            unsupported_reason = self._unsupported_reason(entity, entity_type)
+            if unsupported_reason:
+                resolved[index] = self._result(
+                    entity,
+                    entity_type,
+                    UNSUPPORTED,
+                    skip_reason=unsupported_reason,
+                    raw_query=raw_query,
+                )
+                continue
+            searchable_items.append((index, entity, entity_type, raw_query))
+
+        if not searchable_items:
+            return [item for item in resolved if item is not None]
+
+        if self.batch_size <= 1 or len(searchable_items) == 1:
+            for index, entity, entity_type, raw_query in searchable_items:
+                sources = self._search_with_llm_web(entity, entity_type, raw_query)
+                resolved[index] = self._resolve_from_sources(entity, entity_type, raw_query, sources)
+            return [item for item in resolved if item is not None]
+
+        for start in range(0, len(searchable_items), self.batch_size):
+            batch = searchable_items[start:start + self.batch_size]
+            batch_sources = self._search_with_llm_web_batch(batch)
+            for index, entity, entity_type, raw_query in batch:
+                sources = batch_sources.get(entity.uuid)
+                if sources is None:
+                    logger.info("LLM批量联网查询缺少实体结果，回退单实体查询: entity=%s", entity.name)
+                    sources = self._search_with_llm_web(entity, entity_type, raw_query)
+                resolved[index] = self._resolve_from_sources(entity, entity_type, raw_query, sources)
+
+        return [item for item in resolved if item is not None]
 
     def resolve_entity(self, entity: EntityNode) -> ResolvedRealEntity:
         """解析单个实体。"""
@@ -142,8 +184,19 @@ class RealEntityResolver:
         if unsupported_reason:
             return self._result(entity, entity_type, UNSUPPORTED, skip_reason=unsupported_reason, raw_query=raw_query)
 
-        search_error = ""
         sources = self._search_with_llm_web(entity, entity_type, raw_query)
+        return self._resolve_from_sources(entity, entity_type, raw_query, sources)
+
+    def _resolve_from_sources(
+        self,
+        entity: EntityNode,
+        entity_type: str,
+        raw_query: str,
+        sources: Sequence[RealEntitySource],
+    ) -> ResolvedRealEntity:
+        """根据联网来源判定实体真实性状态。"""
+        search_error = ""
+        sources = list(sources or [])
         matched_sources = self._filter_matching_sources(entity.name, sources)
         if len(matched_sources) < self.min_source_count:
             try:
@@ -306,6 +359,79 @@ class RealEntityResolver:
             logger.warning("LLM联网查询失败: entity=%s, error=%s", entity.name, exc)
             return []
 
+    def _search_with_llm_web_batch(
+        self,
+        batch_items: Sequence[Tuple[int, EntityNode, str, str]],
+    ) -> Dict[str, List[RealEntitySource]]:
+        """批量使用 LLM 联网搜索获取可引用真实来源。"""
+        if not batch_items:
+            return {}
+        if not Config.LLM_WEB_SEARCH_API_KEY:
+            logger.warning("LLM_WEB_SEARCH_API_KEY/LLM_API_KEY 未配置，跳过LLM批量联网查询")
+            return {entity.uuid: [] for _, entity, _, _ in batch_items}
+
+        try:
+            client = self.llm_web_search_client or OpenAI(
+                api_key=Config.LLM_WEB_SEARCH_API_KEY,
+                base_url=Config.LLM_WEB_SEARCH_BASE_URL,
+            )
+            prompt = self._build_llm_web_search_batch_prompt(batch_items)
+            response = client.chat.completions.create(
+                model=Config.LLM_WEB_SEARCH_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是严谨的真实资料检索助手。必须基于联网搜索结果逐个验证实体，"
+                            "每个实体只返回可公开引用的来源；没有可靠来源时返回空 sources 数组，"
+                            "禁止编造事实或链接。"
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.1,
+                extra_body={
+                    "enable_search": True,
+                    "search_options": {
+                        "forced_search": True,
+                        "search_strategy": Config.LLM_WEB_SEARCH_STRATEGY,
+                    },
+                },
+            )
+            raw_text = self._extract_response_text(response)
+            parsed_items = self._parse_llm_batch_sources(raw_text)
+            requested_uuids = {entity.uuid for _, entity, _, _ in batch_items}
+            uuid_by_name = {
+                entity.name.strip(): entity.uuid
+                for _, entity, _, _ in batch_items
+                if entity.name and entity.name.strip()
+            }
+            uuid_by_lower_name = {name.lower(): uuid for name, uuid in uuid_by_name.items()}
+
+            sources_by_uuid: Dict[str, List[RealEntitySource]] = {}
+            for item in parsed_items:
+                entity_uuid = str(item.get("entity_uuid") or "").strip()
+                entity_name = str(item.get("entity_name") or "").strip()
+                if entity_uuid not in requested_uuids:
+                    entity_uuid = uuid_by_name.get(entity_name) or uuid_by_lower_name.get(entity_name.lower(), "")
+                if not entity_uuid or entity_uuid not in requested_uuids:
+                    continue
+                sources = self._normalize_sources({"results": item.get("sources") or []})
+                sources_by_uuid[entity_uuid] = self._validate_llm_sources(sources)
+
+            total_sources = sum(len(sources) for sources in sources_by_uuid.values())
+            logger.info(
+                "LLM批量联网查询完成: requested=%s, returned=%s, sources=%s",
+                len(batch_items),
+                len(sources_by_uuid),
+                total_sources,
+            )
+            return sources_by_uuid
+        except Exception as exc:
+            logger.warning("LLM批量联网查询失败: requested=%s, error=%s", len(batch_items), exc)
+            return {}
+
     def _build_llm_web_search_prompt(self, entity: EntityNode, entity_type: str, query: str) -> str:
         context_parts = []
         if entity.summary:
@@ -331,6 +457,46 @@ class RealEntityResolver:
             "\"published_at\":\"...\"}]}"
         )
 
+    def _build_llm_web_search_batch_prompt(
+        self,
+        batch_items: Sequence[Tuple[int, EntityNode, str, str]],
+    ) -> str:
+        entity_lines = []
+        for _, entity, entity_type, query in batch_items:
+            context_parts = []
+            if entity.summary:
+                context_parts.append(f"摘要: {entity.summary[:240]}")
+            if entity.attributes:
+                context_parts.append(f"属性: {str(entity.attributes)[:240]}")
+            if entity.related_edges:
+                facts = [edge.get("fact") or edge.get("edge_name") for edge in entity.related_edges[:4]]
+                facts = [fact for fact in facts if fact]
+                if facts:
+                    context_parts.append("关系: " + "；".join(facts)[:240])
+            context = " | ".join(context_parts) or "无额外图谱上下文"
+            entity_lines.append(
+                (
+                    f"- entity_uuid: {entity.uuid}\n"
+                    f"  entity_name: {entity.name}\n"
+                    f"  entity_type: {entity_type}\n"
+                    f"  query: {query}\n"
+                    f"  context: {context}"
+                )
+            )
+
+        return (
+            "请对下面多个图谱实体逐个联网查询并验证其是否对应真实人物、机构或可验证群体。"
+            "每个实体都必须出现在返回 JSON 的 entities 数组中，保持原 entity_uuid。"
+            "只返回可以公开引用的真实来源，不要编造来源；如果某个实体无法找到可靠来源，"
+            "该实体返回空 sources 数组。\n\n"
+            "待验证实体:\n"
+            + "\n".join(entity_lines)
+            + "\n\n返回 JSON：{\"entities\":[{\"entity_uuid\":\"...\",\"entity_name\":\"...\","
+            "\"sources\":[{\"title\":\"...\",\"url\":\"https://...\","
+            "\"snippet\":\"能证明实体身份或事件关联的简短事实\",\"site_name\":\"...\","
+            "\"published_at\":\"...\"}]}]}"
+        )
+
     def _extract_response_text(self, response: Any) -> str:
         choices = getattr(response, "choices", []) or []
         if choices:
@@ -341,22 +507,58 @@ class RealEntityResolver:
         return getattr(response, "output_text", "") or ""
 
     def _parse_llm_sources(self, raw_text: str) -> List[Dict[str, Any]]:
+        data = self._load_json_object(raw_text)
+        sources = data.get("sources") if isinstance(data, dict) else None
+        return sources if isinstance(sources, list) else []
+
+    def _parse_llm_batch_sources(self, raw_text: str) -> List[Dict[str, Any]]:
+        data = self._load_json_object(raw_text)
+        if not isinstance(data, dict):
+            return []
+
+        entities = data.get("entities") or data.get("results") or data.get("entity_results")
+        if isinstance(entities, dict):
+            return [
+                {
+                    "entity_uuid": str(entity_uuid),
+                    "entity_name": "",
+                    "sources": sources if isinstance(sources, list) else [],
+                }
+                for entity_uuid, sources in entities.items()
+            ]
+        if not isinstance(entities, list):
+            return []
+
+        parsed_items = []
+        for item in entities:
+            if not isinstance(item, dict):
+                continue
+            sources = item.get("sources") if isinstance(item.get("sources"), list) else []
+            parsed_items.append(
+                {
+                    "entity_uuid": item.get("entity_uuid") or item.get("uuid") or item.get("entity_id") or item.get("id") or "",
+                    "entity_name": item.get("entity_name") or item.get("name") or "",
+                    "sources": sources,
+                }
+            )
+        return parsed_items
+
+    def _load_json_object(self, raw_text: str) -> Dict[str, Any]:
         import json
 
         if not raw_text:
-            return []
+            return {}
         try:
             data = json.loads(raw_text)
         except json.JSONDecodeError:
             match = re.search(r"\{[\s\S]*\}", raw_text)
             if not match:
-                return []
+                return {}
             try:
                 data = json.loads(match.group())
             except json.JSONDecodeError:
-                return []
-        sources = data.get("sources") if isinstance(data, dict) else None
-        return sources if isinstance(sources, list) else []
+                return {}
+        return data if isinstance(data, dict) else {}
 
     def _merge_sources(
         self,
