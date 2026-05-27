@@ -413,6 +413,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { chatWithReport, getReport, getAgentLog } from '../api/report'
 import { interviewAgents, getSimulationProfilesRealtime } from '../api/simulation'
+import { sanitizeReportContent } from '../utils/reportContent'
 
 const props = defineProps({
   reportId: String,
@@ -553,7 +554,7 @@ const formatTime = (timestamp) => {
 const renderMarkdown = (content) => {
   if (!content) return ''
   
-  let processedContent = content.replace(/^##\s+.+\n+/, '')
+  let processedContent = sanitizeReportContent(content).replace(/^##\s+.+\n+/, '')
   let html = processedContent.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="code-block"><code>$2</code></pre>')
   html = html.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
   html = html.replace(/^#### (.+)$/gm, '<h5 class="md-h5">$1</h5>')
@@ -871,7 +872,7 @@ const loadAgentLogs = async () => {
         }
         
         if (log.action === 'section_complete' && log.section_index < 100 && log.details?.content) {
-          generatedSections.value[log.section_index] = log.details.content
+          generatedSections.value[log.section_index] = sanitizeReportContent(log.details.content)
         }
       })
       

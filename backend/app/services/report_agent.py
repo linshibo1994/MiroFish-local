@@ -243,14 +243,15 @@ class ReportLogger:
     ):
         """记录章节/子章节内容生成完成（仅记录内容，不代表整个章节完成）"""
         action = "subsection_content" if is_subsection else "section_content"
+        clean_content = ReportContentSanitizer.clean_report_content(content)
         self.log(
             action=action,
             stage="generating",
             section_title=section_title,
             section_index=section_index,
             details={
-                "content": content,  # 完整内容，不截断
-                "content_length": len(content),
+                "content": clean_content,  # 完整内容，不截断
+                "content_length": len(clean_content),
                 "tool_calls_count": tool_calls_count,
                 "is_subsection": is_subsection,
                 "message": f"{'子章节' if is_subsection else '主章节'} {section_title} 内容生成完成"
@@ -269,14 +270,15 @@ class ReportLogger:
         
         前端应监听此日志来判断一个章节是否真正完成，并获取完整内容
         """
+        clean_content = ReportContentSanitizer.clean_report_content(full_content)
         self.log(
             action="section_complete",
             stage="generating",
             section_title=section_title,
             section_index=section_index,
             details={
-                "content": full_content,  # 完整章节内容（含子章节），不截断
-                "content_length": len(full_content),
+                "content": clean_content,  # 完整章节内容（含子章节），不截断
+                "content_length": len(clean_content),
                 "subsection_count": subsection_count,
                 "message": f"章节 {section_title} 完整生成完成（含 {subsection_count} 个子章节）"
             }
@@ -417,7 +419,7 @@ class ReportSection:
         """转换为Markdown格式"""
         md = f"{'#' * level} {self.title}\n\n"
         if self.content:
-            md += f"{self.content}\n\n"
+            md += f"{ReportContentSanitizer.clean_report_content(self.content)}\n\n"
         for sub in self.subsections:
             md += sub.to_markdown(level + 1)
         return md
@@ -473,6 +475,142 @@ class Report:
             "completed_at": self.completed_at,
             "error": self.error
         }
+
+
+class ReportContentSanitizer:
+    """报告正文清洗器，负责移除模型工具协议与非正文思考残留。"""
+
+    TOOL_NAME_ALIASES = {
+        "insightforge": "insight_forge",
+        "insight_forge": "insight_forge",
+        "panoramasearch": "panorama_search",
+        "panorama_search": "panorama_search",
+        "quicksearch": "quick_search",
+        "quick_search": "quick_search",
+        "interviewagents": "interview_agents",
+        "interview_agents": "interview_agents",
+        "searchgraph": "search_graph",
+        "search_graph": "search_graph",
+        "getgraphstatistics": "get_graph_statistics",
+        "get_graph_statistics": "get_graph_statistics",
+        "getentitysummary": "get_entity_summary",
+        "get_entity_summary": "get_entity_summary",
+        "getsimulationcontext": "get_simulation_context",
+        "get_simulation_context": "get_simulation_context",
+        "getentitiesbytype": "get_entities_by_type",
+        "get_entities_by_type": "get_entities_by_type",
+    }
+
+    @classmethod
+    def normalize_tool_name(cls, tool_name: str) -> str:
+        """将模型输出的工具名归一到项目内部工具名。"""
+        normalized = str(tool_name or "").strip()
+        if normalized.startswith("functions."):
+            normalized = normalized.split(".", 1)[1]
+        key = re.sub(r"[^a-z0-9_]", "", normalized.lower())
+        return cls.TOOL_NAME_ALIASES.get(key, normalized)
+
+    @classmethod
+    def extract_structured_tool_calls(cls, response: str) -> List[Dict[str, Any]]:
+        """解析 OpenAI 兼容模型可能直接吐出的结构化工具调用文本。"""
+        if not response or ("tool_call_begin" not in response and "toolcallbegin" not in response):
+            return []
+
+        tool_calls = []
+        patterns = [
+            re.compile(
+                r"<\|tool_call_begin\|>\s*"
+                r"(?:functions\.)?(?P<name>[A-Za-z_][\w]*)"
+                r"(?::\d+)?\s*"
+                r"<\|tool_call_argument_begin\|>"
+                r"(?P<args>[\s\S]*?)"
+                r"<\|tool_call_end\|>",
+                re.DOTALL,
+            ),
+            re.compile(
+                r"<toolcallbegin/>\s*"
+                r"(?:functions\.)?(?P<name>[A-Za-z_][\w]*)"
+                r"(?::\d+)?\s*"
+                r"<toolcallargumentbegin/>"
+                r"(?P<args>[\s\S]*?)"
+                r"<toolcallend/>",
+                re.DOTALL | re.IGNORECASE,
+            ),
+        ]
+        for pattern in patterns:
+            for match in pattern.finditer(response):
+                raw_args = match.group("args").strip()
+                try:
+                    parameters = json.loads(raw_args) if raw_args else {}
+                except json.JSONDecodeError:
+                    parameters = {}
+                if not isinstance(parameters, dict):
+                    parameters = {}
+                tool_calls.append({
+                    "name": cls.normalize_tool_name(match.group("name")),
+                    "parameters": parameters,
+                })
+        return tool_calls
+
+    @classmethod
+    def remove_tool_protocol(cls, content: str) -> str:
+        """移除报告正文中不应展示的工具协议块。"""
+        if not content:
+            return content
+
+        cleaned = str(content)
+        patterns = [
+            r"<\|tool_calls_section_begin\|>[\s\S]*?<\|tool_calls_section_end\|>",
+            r"<\|tool_call_begin\|>[\s\S]*?<\|tool_call_end\|>",
+            r"<tool_call>[\s\S]*?</tool_call>",
+            r"<toolcallsection/begin/>[\s\S]*?<toolcallsection/end/>",
+            r"<toolcallbegin/>[\s\S]*?<toolcallend/>",
+            r"\[TOOL_CALL\][^\n]*(?:\n|$)",
+        ]
+        for pattern in patterns:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+
+        cleaned = re.sub(r"</?think>", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"<\|[^|>]*tool[^|>]*\|>", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"</?toolcall[^>]*>", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
+
+    @classmethod
+    def strip_non_content_prefix(cls, content: str) -> str:
+        """去掉工具调度语气和 Final Answer 标记，只保留报告正文。"""
+        if not content:
+            return content
+
+        cleaned = str(content).strip()
+        cleaned = re.sub(r"(?m)^\s*(?:Final Answer|最终答案|最终回答)\s*[:：]\s*", "", cleaned, flags=re.IGNORECASE)
+
+        orchestration_patterns = [
+            r"(?m)^\s*(?:我需要|让我|现在|首先|接下来|我将)[^\n。！？]*?(?:调用|使用)[^\n。！？]*?(?:工具|检索|搜索)[^\n]*$",
+            r"(?m)^\s*(?:Thought|Action|Observation)\s*[:：][^\n]*$",
+        ]
+        for pattern in orchestration_patterns:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).strip()
+        return cleaned
+
+    @classmethod
+    def clean_report_content(cls, content: str) -> str:
+        """清洗即将保存或展示的报告正文。"""
+        cleaned = cls.remove_tool_protocol(content or "")
+        cleaned = cls.strip_non_content_prefix(cleaned)
+        cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
+
+    @classmethod
+    def extract_final_answer(cls, response: str) -> str:
+        """从 LLM 原始响应中提取最终答案段落。"""
+        if not response:
+            return response
+        matches = list(re.finditer(r"(?:Final Answer|最终答案|最终回答)\s*[:：]", response, flags=re.IGNORECASE))
+        if not matches:
+            return response
+        return response[matches[-1].end():].strip()
 
 
 class ReportAgent:
@@ -767,12 +905,18 @@ class ReportAgent:
         [TOOL_CALL] tool_name(param1="value1", param2="value2")
         """
         tool_calls = []
+
+        # 格式0: OpenAI 兼容模型直接输出的结构化工具调用文本
+        # <|tool_call_begin|>functions.quicksearch:1<|tool_call_argument_begin|>{...}<|tool_call_end|>
+        tool_calls.extend(ReportContentSanitizer.extract_structured_tool_calls(response))
         
         # 格式1: XML风格
         xml_pattern = r'<tool_call>\s*(\{.*?\})\s*</tool_call>'
         for match in re.finditer(xml_pattern, response, re.DOTALL):
             try:
                 call_data = json.loads(match.group(1))
+                if isinstance(call_data, dict) and call_data.get("name"):
+                    call_data["name"] = ReportContentSanitizer.normalize_tool_name(call_data["name"])
                 tool_calls.append(call_data)
             except json.JSONDecodeError:
                 pass
@@ -789,7 +933,7 @@ class ReportAgent:
                 params[param_match.group(1)] = param_match.group(2)
             
             tool_calls.append({
-                "name": tool_name,
+                "name": ReportContentSanitizer.normalize_tool_name(tool_name),
                 "parameters": params
             })
         
@@ -1195,7 +1339,7 @@ class ReportAgent:
             
             # 检查是否有工具调用和最终答案
             has_tool_calls = bool(self._parse_tool_calls(response))
-            has_final_answer = "Final Answer:" in response
+            has_final_answer = bool(re.search(r"(?:Final Answer|最终答案|最终回答)\s*[:：]", response, flags=re.IGNORECASE))
             
             # 记录 LLM 响应日志
             if self.report_logger:
@@ -1227,7 +1371,9 @@ class ReportAgent:
                     continue
                 
                 # 提取最终答案
-                final_answer = response.split("Final Answer:")[-1].strip()
+                final_answer = ReportContentSanitizer.clean_report_content(
+                    ReportContentSanitizer.extract_final_answer(response)
+                )
                 logger.info(f"章节 {section.title} 生成完成（工具调用: {tool_calls_count}次）")
                 
                 # 记录章节内容生成完成日志（注意：这只是内容完成，不代表整个章节完成）
@@ -1339,10 +1485,9 @@ class ReportAgent:
             max_tokens=4096
         )
         
-        if "Final Answer:" in response:
-            final_answer = response.split("Final Answer:")[-1].strip()
-        else:
-            final_answer = response
+        final_answer = ReportContentSanitizer.clean_report_content(
+            ReportContentSanitizer.extract_final_answer(response)
+        )
         
         # 记录章节内容生成完成日志（注意：这只是内容完成，不代表整个章节完成）
         is_subsection = section_index >= 100
@@ -1940,6 +2085,7 @@ class ReportManager:
                 if i >= from_line:
                     try:
                         log_entry = json.loads(line.strip())
+                        log_entry = cls._sanitize_agent_log_entry(log_entry)
                         logs.append(log_entry)
                     except json.JSONDecodeError:
                         # 跳过解析失败的行
@@ -1965,6 +2111,25 @@ class ReportManager:
         """
         result = cls.get_agent_log(report_id, from_line=0)
         return result["logs"]
+
+    @classmethod
+    def _sanitize_agent_log_entry(cls, log_entry: Dict[str, Any]) -> Dict[str, Any]:
+        """清洗日志中会直接进入前端报告正文的内容字段。"""
+        if not isinstance(log_entry, dict):
+            return log_entry
+
+        details = log_entry.get("details")
+        if not isinstance(details, dict):
+            return log_entry
+
+        if log_entry.get("action") in {"section_content", "subsection_content", "section_complete"}:
+            content = details.get("content")
+            if isinstance(content, str):
+                clean_content = ReportContentSanitizer.clean_report_content(content)
+                details["content"] = clean_content
+                details["content_length"] = len(clean_content)
+
+        return log_entry
     
     @classmethod
     def save_outline(cls, report_id: str, outline: ReportOutline) -> None:
@@ -2092,7 +2257,7 @@ class ReportManager:
         if not content:
             return content
         
-        content = content.strip()
+        content = ReportContentSanitizer.clean_report_content(content)
         lines = content.split('\n')
         cleaned_lines = []
         skip_next_empty = False
@@ -2197,7 +2362,7 @@ class ReportManager:
             if filename.startswith('section_') and filename.endswith('.md'):
                 file_path = os.path.join(folder, filename)
                 with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
+                    content = cls._clean_persisted_markdown(f.read())
                 
                 # 从文件名解析章节索引
                 parts = filename.replace('.md', '').split('_')
@@ -2213,6 +2378,13 @@ class ReportManager:
                 })
         
         return sections
+
+    @classmethod
+    def _clean_persisted_markdown(cls, content: str) -> str:
+        """清洗已落盘的章节或完整报告内容，兼容历史脏数据。"""
+        if not content:
+            return content
+        return ReportContentSanitizer.clean_report_content(content)
     
     @classmethod
     def assemble_full_report(cls, report_id: str, outline: ReportOutline) -> str:
@@ -2373,12 +2545,15 @@ class ReportManager:
                 empty_count = 0
                 result_lines.append(line)
         
-        return '\n'.join(result_lines)
+        return cls._clean_persisted_markdown('\n'.join(result_lines))
     
     @classmethod
     def save_report(cls, report: Report) -> None:
         """保存报告元信息和完整报告"""
         cls._ensure_report_folder(report.report_id)
+
+        if report.markdown_content:
+            report.markdown_content = cls._clean_persisted_markdown(report.markdown_content)
         
         # 保存元信息JSON
         with open(cls._get_report_path(report.report_id), 'w', encoding='utf-8') as f:
@@ -2439,6 +2614,7 @@ class ReportManager:
             if os.path.exists(full_report_path):
                 with open(full_report_path, 'r', encoding='utf-8') as f:
                     markdown_content = f.read()
+        markdown_content = cls._clean_persisted_markdown(markdown_content)
         
         return Report(
             report_id=data['report_id'],

@@ -396,6 +396,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick, h, reactive } f
 import { useRouter } from 'vue-router'
 import { getAgentLog, getConsoleLog } from '../api/report'
 import { translateEntityType } from '../utils/entityTranslations.js'
+import { sanitizeReportContent } from '../utils/reportContent'
 
 const router = useRouter()
 
@@ -1854,7 +1855,7 @@ const renderMarkdown = (content) => {
   if (!content) return ''
   
   // 去掉开头的二级标题（## xxx），因为章节标题已在外层显示
-  let processedContent = content.replace(/^##\s+.+\n+/, '')
+  let processedContent = sanitizeReportContent(content).replace(/^##\s+.+\n+/, '')
   
   // 处理代码块
   let html = processedContent.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="code-block"><code>$2</code></pre>')
@@ -1989,7 +1990,7 @@ const fetchAgentLog = async () => {
             const mainIndex = getMainSectionIndex(log.section_index)
             // 只有主章节完成时（section_index < 100）才更新内容和清除 loading
             if (!isSubsection(log.section_index) && log.details?.content) {
-              generatedSections.value[mainIndex] = log.details.content
+              generatedSections.value[mainIndex] = sanitizeReportContent(log.details.content)
               // 自动展开刚生成的章节
               expandedContent.value.add(mainIndex - 1)
               currentSectionIndex.value = null
