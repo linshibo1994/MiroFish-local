@@ -114,6 +114,12 @@ class RealEntityResolver:
         "mediaoutlet",
         "company",
         "institution",
+        "government",
+        "agency",
+        "regulatoryagency",
+        "distributionplatform",
+        "socialmediaplatform",
+        "platform",
     }
 
     def __init__(
@@ -264,8 +270,12 @@ class RealEntityResolver:
         if entity_type_lower in self.GROUP_AGENT_TYPES and not self.allow_group_agents:
             return "群体实体未启用 allow_group_agents"
 
+        is_named_organization = entity_type_lower in self.ORGANIZATION_TYPES and bool((entity.name or "").strip())
         has_specific_label = any(label not in {"entity", "node"} for label in labels)
         has_context = self._has_sufficient_context(entity)
+
+        if is_named_organization:
+            return ""
 
         if not has_specific_label and not has_context:
             return "默认 Entity 节点缺少足够上下文"
@@ -665,7 +675,12 @@ class RealEntityResolver:
         matched = []
         for source in sources:
             haystack = f"{source.title} {source.snippet}".lower()
-            if all(token in haystack for token in name_tokens):
+            normalized_name = entity_name.lower().strip()
+            if normalized_name and normalized_name in haystack:
+                matched.append(source)
+            elif all(token in haystack for token in name_tokens):
+                matched.append(source)
+            elif len(name_tokens) >= 2 and sum(1 for token in name_tokens if token in haystack) >= 2:
                 matched.append(source)
         return matched
 

@@ -118,7 +118,7 @@
                 <div class="profile-meta">
                   <span class="profile-profession">{{ profile.profession || '未知职业' }}</span>
                 </div>
-                <p class="profile-bio">{{ profile.bio || '暂无简介' }}</p>
+                <p class="profile-bio">{{ cleanDisplayText(profile.bio) || '暂无简介' }}</p>
                 <div v-if="profile.interested_topics?.length" class="profile-topics">
                   <span 
                     v-for="topic in profile.interested_topics.slice(0, 3)" 
@@ -589,7 +589,7 @@
           <!-- 简介 -->
           <div class="modal-section">
             <span class="section-label">人设简介</span>
-            <p class="section-bio">{{ selectedProfile.bio || '暂无简介' }}</p>
+            <p class="section-bio">{{ cleanDisplayText(selectedProfile.bio) || '暂无简介' }}</p>
           </div>
 
           <!-- 关注话题 -->
@@ -605,7 +605,7 @@
           </div>
 
           <!-- 详细人设 -->
-          <div class="modal-section" v-if="selectedProfile.persona">
+          <div class="modal-section" v-if="selectedProfilePersona">
             <span class="section-label">详细人设背景</span>
             
             <!-- 人设维度概览 -->
@@ -629,7 +629,7 @@
             </div>
 
             <div class="persona-content">
-              <p class="section-persona">{{ selectedProfile.persona }}</p>
+              <p class="section-persona">{{ selectedProfilePersona }}</p>
             </div>
           </div>
         </div>
@@ -775,6 +775,20 @@ const totalTopicsCount = computed(() => {
   }, 0)
 })
 
+const cleanDisplayText = (text) => {
+  if (!text) return ''
+
+  return String(text)
+    .replace(/\s*资料来源[：:][\s\S]*$/u, '')
+    .replace(/https?:\/\/[^\s<>"'，。；、）)】\]]+/gu, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
+}
+
+const selectedProfilePersona = computed(() => cleanDisplayText(selectedProfile.value?.persona))
+
 // Methods
 const addLog = (msg) => {
   emit('add-log', msg)
@@ -795,13 +809,6 @@ const handleStartSimulation = () => {
   }
   
   emit('next-step', params)
-}
-
-const truncateBio = (bio) => {
-  if (bio.length > 80) {
-    return bio.substring(0, 80) + '...'
-  }
-  return bio
 }
 
 const selectProfile = (profile) => {
@@ -1494,10 +1501,8 @@ onUnmounted(() => {
   color: #444;
   line-height: 1.6;
   margin: 0 0 10px 0;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .profile-topics {

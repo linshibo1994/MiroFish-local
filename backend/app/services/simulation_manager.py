@@ -287,7 +287,8 @@ class SimulationManager:
             progress_callback: 进度回调函数 (stage, progress, message)
             parallel_profile_count: 并行生成人设的数量，默认3
             use_real_profiles: 是否启用真实资料验证画像
-            strict_real_mode: 严格真实模式，正式Profile只允许 verified
+            strict_real_mode: 兼容旧调用的参数。当前流程不因未 verified 阻断生成，
+                未核验实体会降级为基于图谱和事件上下文的虚拟人设
             allow_group_agents: 是否允许机构/群体实体进入Agent，默认 true
             min_source_count: verified 所需最少来源数
             
@@ -356,8 +357,6 @@ class SimulationManager:
                 resolved_results = resolver.resolve_entities(filtered.entities)
                 verified_results = [item for item in resolved_results if item.verification_status == VERIFIED]
                 skipped_results = [item for item in resolved_results if item.verification_status != VERIFIED]
-                verified_uuids = {item.entity_uuid for item in verified_results}
-
                 state.verification_candidate_count = len(resolved_results)
                 state.verification_verified_count = len(verified_results)
                 state.verification_skipped_count = len(skipped_results)
@@ -378,19 +377,18 @@ class SimulationManager:
                 if progress_callback:
                     progress_callback(
                         "verifying_entities", 100,
-                        f"验证完成，verified={len(verified_results)}, skipped={len(skipped_results)}",
+                        f"验证完成，verified={len(verified_results)}, fallback={len(skipped_results)}",
                         current=len(resolved_results),
                         total=len(resolved_results)
                     )
 
                 if not verified_results:
-                    state.status = SimulationStatus.FAILED
-                    state.error = "真实实体验证后没有 verified 实体，已拒绝生成正式Profile"
-                    self._save_simulation_state(state)
-                    return state
+                    logger.warning(
+                        "真实实体验证没有 verified 实体，将使用图谱上下文和事件信息生成虚拟人设: simulation_id=%s",
+                        simulation_id,
+                    )
 
-                entities_for_profiles = [entity for entity in filtered.entities if entity.uuid in verified_uuids]
-                resolved_by_uuid = {item.entity_uuid: item for item in verified_results}
+                resolved_by_uuid = {item.entity_uuid: item for item in resolved_results}
                 self._save_simulation_state(state)
             
             # ========== 阶段2: 生成Agent Profile ==========
@@ -440,7 +438,7 @@ class SimulationManager:
                 realtime_output_path=realtime_output_path,  # 实时保存路径
                 output_platform=realtime_platform,  # 输出格式
                 resolved_real_entities=resolved_by_uuid if use_real_profiles else None,
-                strict_real_mode=strict_real_mode if use_real_profiles else False,
+                strict_real_mode=False,
             )
             
             state.profiles_count = len(profiles)
