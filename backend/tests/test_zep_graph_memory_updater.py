@@ -115,6 +115,9 @@ def test_graphiti_activity_uses_json_episode_and_persists_outbox(tmp_path, monke
     record = saved[activity.build_activity_id()]
     assert record["status"] == "sent"
     assert record["episode_type"] == "json"
+    assert record["activity"]["action_args"] == {"query": "graphiti"}
+    assert record["agent_id"] == 7
+    assert record["round_num"] == 2
 
 
 def test_default_backend_uses_configured_graphiti_json_episode(tmp_path, monkeypatch):
@@ -238,3 +241,107 @@ def test_invalid_timestamp_fails_instead_of_falling_back_to_now(tmp_path, monkey
     record = saved[activity.build_activity_id()]
     assert record["status"] == "failed"
     assert "isoformat" in record["last_error"] or "timestamp" in record["last_error"]
+
+
+def test_replay_failed_outbox_rehydrates_legacy_record_from_actions(tmp_path, monkeypatch):
+    fake_client = FakeClient()
+    monkeypatch.setattr(
+        "app.services.zep_graph_memory_updater.get_zep_client",
+        lambda backend=None: fake_client,
+    )
+    monkeypatch.setattr(
+        "app.services.zep_graph_memory_updater.SIMULATION_DATA_DIR",
+        str(tmp_path),
+    )
+
+    sim_dir = tmp_path / "sim_replay"
+    reddit_dir = sim_dir / "reddit"
+    reddit_dir.mkdir(parents=True)
+
+    activity = AgentActivity(
+        platform="reddit",
+        agent_id=8,
+        agent_name="Bob",
+        action_type="CREATE_COMMENT",
+        action_args={"content": "reply"},
+        round_num=4,
+        timestamp="2026-06-01T02:03:04Z",
+    )
+    action_record = {
+        "round": activity.round_num,
+        "timestamp": activity.timestamp,
+        "agent_id": activity.agent_id,
+        "agent_name": activity.agent_name,
+        "action_type": activity.action_type,
+        "action_args": activity.action_args,
+        "success": True,
+    }
+    (reddit_dir / "actions.jsonl").write_text(
+        json.dumps(action_record, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    outbox_path = sim_dir / "graph_memory_outbox.json"
+    outbox_path.write_text(
+        json.dumps(
+            {
+                activity.build_activity_id(): {
+                    "status": "failed",
+                    "platform": "reddit",
+                    "action_type": "CREATE_COMMENT",
+                    "agent_name": "Bob",
+                    "timestamp": activity.timestamp,
+                    "last_error": "Connection error.",
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    updater = ZepGraphMemoryUpdater("graph_replay", backend="graphiti", simulation_id="sim_replay")
+    stats = updater.replay_failed_outbox()
+
+    assert stats["hydrated_count"] == 1
+    assert stats["attempted"] == 1
+    assert stats["sent"] == 1
+    assert stats["failed"] == 0
+    assert len(fake_client.calls) == 1
+    payload = json.loads(fake_client.calls[0]["data"])
+    assert payload["action_args"] == {"content": "reply"}
+
+    saved = json.loads(outbox_path.read_text(encoding="utf-8"))
+    record = saved[activity.build_activity_id()]
+    assert record["status"] == "sent"
+    assert record["activity"]["action_args"] == {"content": "reply"}
+
+
+def test_replay_failed_outbox_reports_missing_payload(tmp_path, monkeypatch):
+    fake_client = FakeClient()
+    monkeypatch.setattr(
+        "app.services.zep_graph_memory_updater.get_zep_client",
+        lambda backend=None: fake_client,
+    )
+    monkeypatch.setattr(
+        "app.services.zep_graph_memory_updater.SIMULATION_DATA_DIR",
+        str(tmp_path),
+    )
+
+    sim_dir = tmp_path / "sim_missing_payload"
+    sim_dir.mkdir(parents=True)
+    outbox_path = sim_dir / "graph_memory_outbox.json"
+    outbox_path.write_text(
+        json.dumps({"activity_1": {"status": "failed", "last_error": "Connection error."}}),
+        encoding="utf-8",
+    )
+
+    updater = ZepGraphMemoryUpdater(
+        "graph_missing_payload",
+        backend="graphiti",
+        simulation_id="sim_missing_payload",
+    )
+    stats = updater.replay_failed_outbox()
+
+    assert stats["attempted"] == 0
+    assert stats["missing_payload"] == 1
+    assert fake_client.calls == []

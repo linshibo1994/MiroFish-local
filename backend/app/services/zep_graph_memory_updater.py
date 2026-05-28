@@ -42,6 +42,19 @@ class AgentActivity:
     round_num: int
     timestamp: str
 
+    @classmethod
+    def from_action_dict(cls, data: Dict[str, Any], platform: str) -> "AgentActivity":
+        """从 actions.jsonl 的一条动作记录恢复 activity。"""
+        return cls(
+            platform=platform,
+            agent_id=data.get("agent_id", 0),
+            agent_name=data.get("agent_name", ""),
+            action_type=data.get("action_type", ""),
+            action_args=data.get("action_args", {}),
+            round_num=data.get("round", data.get("round_num", 0)),
+            timestamp=data.get("timestamp", utc_now_iso()),
+        )
+
     def build_activity_id(self) -> str:
         """为 activity 生成稳定幂等 ID。"""
         canonical_args = json.dumps(self.action_args or {}, ensure_ascii=False, sort_keys=True)
@@ -346,6 +359,99 @@ class ZepGraphMemoryUpdater:
                 e,
             )
 
+    def _iter_activity_log_records(self):
+        if not self.simulation_id:
+            return
+
+        sim_dir = os.path.join(SIMULATION_DATA_DIR, self.simulation_id)
+        for platform in ("twitter", "reddit"):
+            log_path = os.path.join(sim_dir, platform, "actions.jsonl")
+            if not os.path.exists(log_path):
+                continue
+            try:
+                with open(log_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if "event_type" in data:
+                            continue
+                        activity = AgentActivity.from_action_dict(data, platform)
+                        if activity.action_type == "DO_NOTHING":
+                            continue
+                        yield activity
+            except Exception as e:
+                logger.warning(
+                    "读取 activity 日志用于 outbox 恢复失败: simulation_id=%s, platform=%s, error=%s",
+                    self.simulation_id,
+                    platform,
+                    e,
+                )
+
+    def _hydrate_outbox_from_action_logs(self) -> int:
+        """用 actions.jsonl 回填旧 outbox 缺失的可重放字段。"""
+        if not self._outbox_path:
+            return 0
+
+        hydrated = 0
+        for activity in self._iter_activity_log_records() or []:
+            activity_id = activity.build_activity_id()
+            with self._outbox_lock:
+                record = self._outbox.get(activity_id)
+            if not record or record.get("status") == "sent":
+                continue
+            if record.get("activity"):
+                continue
+
+            try:
+                request = self._build_episode_request(activity)
+            except Exception as e:
+                self._mark_outbox_record(activity_id, last_error=str(e))
+                continue
+
+            self._mark_outbox_record(
+                activity_id,
+                activity=activity.to_episode_payload(),
+                graph_id=self.graph_id,
+                simulation_id=self.simulation_id,
+                platform=activity.platform,
+                action_type=activity.action_type,
+                agent_name=activity.agent_name,
+                timestamp=activity.timestamp,
+                round_num=activity.round_num,
+                reference_time=request["reference_time_iso"],
+                episode_type=request["episode_type"],
+                payload_preview=request["payload_preview"],
+            )
+            hydrated += 1
+
+        return hydrated
+
+    def _activity_from_outbox_record(self, activity_id: str, record: Dict[str, Any]) -> Optional[AgentActivity]:
+        payload = record.get("activity") or {}
+        if not isinstance(payload, dict):
+            payload = {}
+
+        platform = payload.get("platform") or record.get("platform")
+        action_type = payload.get("action_type") or record.get("action_type")
+        timestamp = payload.get("timestamp") or record.get("timestamp")
+        if not platform or not action_type or not timestamp:
+            return None
+
+        return AgentActivity(
+            platform=platform,
+            agent_id=payload.get("agent_id", record.get("agent_id", 0)),
+            agent_name=payload.get("agent_name", record.get("agent_name", "")),
+            action_type=action_type,
+            action_args=payload.get("action_args", record.get("action_args", {})) or {},
+            round_num=payload.get("round_num", record.get("round_num", 0)),
+            timestamp=timestamp,
+        )
+
     def _is_activity_sent(self, activity_id: str) -> bool:
         with self._outbox_lock:
             record = self._outbox.get(activity_id)
@@ -572,9 +678,12 @@ class ZepGraphMemoryUpdater:
             graph_id=self.graph_id,
             simulation_id=self.simulation_id,
             platform=activity.platform,
+            agent_id=activity.agent_id,
             action_type=activity.action_type,
             agent_name=activity.agent_name,
             timestamp=activity.timestamp,
+            round_num=activity.round_num,
+            activity=activity.to_episode_payload(),
             reference_time=request["reference_time_iso"],
             episode_type=request["episode_type"],
             payload_preview=request["payload_preview"],
@@ -642,6 +751,71 @@ class ZepGraphMemoryUpdater:
                     e,
                 )
                 time.sleep(self.RETRY_DELAY)
+
+    def replay_failed_outbox(
+        self,
+        statuses: Optional[List[str]] = None,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        重新发送 outbox 中失败或未完成的活动。
+
+        旧版本 outbox 可能没有保存 action_args，本方法会先尝试从 actions.jsonl
+        回填可重放字段，再逐条走原有幂等发送逻辑。
+        """
+        statuses = statuses or ["failed"]
+        hydrated_count = self._hydrate_outbox_from_action_logs()
+
+        with self._outbox_lock:
+            candidates = [
+                (activity_id, dict(record))
+                for activity_id, record in self._outbox.items()
+                if record.get("status") in statuses
+            ]
+
+        if limit is not None and limit > 0:
+            candidates = candidates[:limit]
+
+        stats = {
+            "simulation_id": self.simulation_id,
+            "graph_id": self.graph_id,
+            "backend": self.backend,
+            "statuses": statuses,
+            "hydrated_count": hydrated_count,
+            "attempted": 0,
+            "sent": 0,
+            "failed": 0,
+            "skipped": 0,
+            "missing_payload": 0,
+        }
+
+        for activity_id, record in candidates:
+            activity = self._activity_from_outbox_record(activity_id, record)
+            if not activity:
+                stats["missing_payload"] += 1
+                self._mark_outbox_record(
+                    activity_id,
+                    status="failed",
+                    last_error="缺少可重放 activity payload，请确认 actions.jsonl 未被清理",
+                )
+                continue
+
+            if activity.build_activity_id() != activity_id:
+                stats["skipped"] += 1
+                self._mark_outbox_record(
+                    activity_id,
+                    status="failed",
+                    last_error="activity payload 与 outbox activity_id 不匹配",
+                )
+                continue
+
+            stats["attempted"] += 1
+            if self._send_single_activity(activity):
+                stats["sent"] += 1
+            else:
+                stats["failed"] += 1
+
+        return stats
     
     def _flush_remaining(self):
         """发送队列和缓冲区中剩余的活动"""

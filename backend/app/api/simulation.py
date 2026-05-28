@@ -13,6 +13,7 @@ from ..services.zep_entity_reader import ZepEntityReader
 from ..services.oasis_profile_generator import OasisProfileGenerator
 from ..services.simulation_manager import SimulationManager, SimulationStatus
 from ..services.simulation_runner import SimulationRunner, RunnerStatus
+from ..services.zep_graph_memory_updater import ZepGraphMemoryUpdater
 from ..utils.logger import get_logger
 from ..models.project import ProjectManager
 
@@ -1985,6 +1986,84 @@ def get_agent_stats(simulation_id: str):
         
     except Exception as e:
         logger.error(f"获取Agent统计失败: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/graph-memory/replay', methods=['POST'])
+def replay_graph_memory_outbox(simulation_id: str):
+    """
+    重放图谱记忆写回 outbox 中的失败记录。
+
+    请求（JSON）：
+        {
+            "statuses": ["failed"],  // 可选，默认只重放 failed
+            "limit": 100             // 可选，限制本次重放数量
+        }
+    """
+    try:
+        data = request.get_json() or {}
+        statuses = data.get("statuses") or ["failed"]
+        limit = data.get("limit")
+
+        if not isinstance(statuses, list) or not all(isinstance(s, str) for s in statuses):
+            return jsonify({
+                "success": False,
+                "error": "statuses 必须是字符串数组"
+            }), 400
+
+        if limit is not None:
+            try:
+                limit = int(limit)
+            except (ValueError, TypeError):
+                return jsonify({
+                    "success": False,
+                    "error": "limit 必须是整数"
+                }), 400
+            if limit <= 0:
+                limit = None
+
+        manager = SimulationManager()
+        state = manager.get_simulation(simulation_id)
+        if not state:
+            return jsonify({
+                "success": False,
+                "error": f"模拟不存在: {simulation_id}"
+            }), 404
+
+        _hydrate_simulation_graph_context(manager, state)
+        if not state.graph_id:
+            return jsonify({
+                "success": False,
+                "error": "模拟缺少 graph_id，无法重放图谱写回"
+            }), 400
+
+        backend = state.graph_backend or Config.ZEP_BACKEND
+        backend_error = _ensure_backend_available(backend)
+        if backend_error:
+            return backend_error
+
+        updater = ZepGraphMemoryUpdater(
+            state.graph_id,
+            backend=backend,
+            simulation_id=simulation_id,
+        )
+        result = updater.replay_failed_outbox(statuses=statuses, limit=limit)
+
+        return jsonify({
+            "success": (
+                result.get("failed", 0) == 0
+                and result.get("missing_payload", 0) == 0
+                and result.get("skipped", 0) == 0
+            ),
+            "data": result
+        })
+
+    except Exception as e:
+        logger.error(f"重放图谱记忆 outbox 失败: {str(e)}")
         return jsonify({
             "success": False,
             "error": str(e),
