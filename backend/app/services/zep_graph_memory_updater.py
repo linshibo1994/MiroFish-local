@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from queue import Queue, Empty
 
 from ..utils.logger import get_logger
+from ..utils.neo4j_errors import format_neo4j_auth_error, is_neo4j_auth_error
 from ..utils.time_utils import utc_now_iso, parse_iso_datetime
 from .zep_factory import get_zep_client
 from .zep_adapter import ZepClientAdapter
@@ -318,6 +319,7 @@ class ZepGraphMemoryUpdater:
         self._total_items_sent = 0  # 成功发送到Zep的活动条数
         self._failed_count = 0      # 发送失败的批次数
         self._skipped_count = 0     # 被过滤跳过的活动数（DO_NOTHING）
+        self._auth_error: Optional[str] = None  # Neo4j 认证错误会触发本轮写回熔断
         
         logger.info(f"ZepGraphMemoryUpdater 初始化完成: graph_id={graph_id}, batch_size={self.BATCH_SIZE}")
 
@@ -672,6 +674,20 @@ class ZepGraphMemoryUpdater:
             )
             return True
 
+        if self._auth_error:
+            self._mark_outbox_record(
+                activity_id,
+                status="blocked",
+                last_error=self._auth_error,
+            )
+            logger.warning(
+                "跳过活动写回：Neo4j 认证错误熔断中: graph_id=%s, activity_id=%s, error=%s",
+                self.graph_id,
+                activity_id,
+                self._auth_error,
+            )
+            return False
+
         self._mark_outbox_record(
             activity_id,
             status="pending",
@@ -711,6 +727,30 @@ class ZepGraphMemoryUpdater:
                 )
                 return True
             except Exception as e:
+                if self.backend == "graphiti" and is_neo4j_auth_error(e):
+                    self._auth_error = format_neo4j_auth_error(e)
+                    self._mark_outbox_record(
+                        activity_id,
+                        status="blocked",
+                        attempt_count=attempt,
+                        last_error=self._auth_error,
+                    )
+                    logger.error(
+                        "发送活动到Zep失败：检测到 Neo4j 认证错误，停止本轮重试: "
+                        "graph_id=%s, platform=%s, agent=%s, action=%s, "
+                        "timestamp=%s, attempt=%s/%s, activity_id=%s, error=%s",
+                        self.graph_id,
+                        activity.platform,
+                        activity.agent_name,
+                        activity.action_type,
+                        activity.timestamp,
+                        attempt,
+                        self.MAX_RETRIES,
+                        activity_id,
+                        self._auth_error,
+                    )
+                    return False
+
                 if attempt >= self.MAX_RETRIES:
                     self._mark_outbox_record(
                         activity_id,
@@ -763,7 +803,7 @@ class ZepGraphMemoryUpdater:
         旧版本 outbox 可能没有保存 action_args，本方法会先尝试从 actions.jsonl
         回填可重放字段，再逐条走原有幂等发送逻辑。
         """
-        statuses = statuses or ["failed"]
+        statuses = statuses or ["failed", "blocked"]
         hydrated_count = self._hydrate_outbox_from_action_logs()
 
         with self._outbox_lock:

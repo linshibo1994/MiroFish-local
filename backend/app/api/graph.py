@@ -17,6 +17,7 @@ from ..services.seed_analysis_service import SeedAnalysisService
 from ..services.text_processor import TextProcessor
 from ..utils.file_parser import FileParser
 from ..utils.logger import get_logger
+from ..utils.neo4j_errors import format_neo4j_auth_error, is_neo4j_auth_error
 from ..models.task import TaskManager, TaskStatus
 from ..models.project import ProjectManager, ProjectStatus
 
@@ -774,6 +775,12 @@ def get_graph_data(graph_id: str):
         })
         
     except Exception as e:
+        if is_neo4j_auth_error(e):
+            logger.error(f"获取图谱数据失败：{format_neo4j_auth_error(e)}")
+            return jsonify({
+                "success": False,
+                "error": format_neo4j_auth_error(e)
+            }), 503
         return jsonify({
             "success": False,
             "error": str(e),

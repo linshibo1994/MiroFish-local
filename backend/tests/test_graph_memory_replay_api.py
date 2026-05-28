@@ -72,6 +72,24 @@ def test_replay_graph_memory_outbox_api(monkeypatch):
     }
 
 
+def test_replay_graph_memory_outbox_api_defaults_to_failed_and_blocked(monkeypatch):
+    app = create_app()
+    client = app.test_client()
+
+    monkeypatch.setattr(simulation_api, "SimulationManager", FakeSimulationManager)
+    monkeypatch.setattr(simulation_api, "ZepGraphMemoryUpdater", FakeUpdater)
+
+    response = client.post(
+        "/api/simulation/sim_replay_api/graph-memory/replay",
+        json={},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["success"] is True
+    assert payload["data"]["statuses"] == ["failed", "blocked"]
+
+
 def test_replay_graph_memory_outbox_api_validates_statuses():
     app = create_app()
     client = app.test_client()

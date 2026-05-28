@@ -2006,7 +2006,7 @@ def replay_graph_memory_outbox(simulation_id: str):
     """
     try:
         data = request.get_json() or {}
-        statuses = data.get("statuses") or ["failed"]
+        statuses = data.get("statuses") or ["failed", "blocked"]
         limit = data.get("limit")
 
         if not isinstance(statuses, list) or not all(isinstance(s, str) for s in statuses):

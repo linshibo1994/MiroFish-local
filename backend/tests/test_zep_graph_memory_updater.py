@@ -24,6 +24,10 @@ class FakeClient:
         return "episode_1"
 
 
+class FakeNeo4jAuthError(Exception):
+    code = "Neo.ClientError.Security.Unauthorized"
+
+
 def test_send_single_activity_retries_and_preserves_reference_time(monkeypatch):
     fake_client = FakeClient(failures_before_success=1)
     monkeypatch.setattr(
@@ -51,6 +55,66 @@ def test_send_single_activity_retries_and_preserves_reference_time(monkeypatch):
     second_time = fake_client.calls[1]["reference_time"]
     assert first_time == second_time
     assert first_time == datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+
+
+def test_neo4j_auth_error_blocks_retries_and_following_activities(tmp_path, monkeypatch):
+    class AuthFailingClient:
+        def __init__(self):
+            self.calls = []
+
+        def add_episode(self, graph_id, data, episode_type="text", reference_time=None):
+            self.calls.append(
+                {
+                    "graph_id": graph_id,
+                    "data": data,
+                    "episode_type": episode_type,
+                    "reference_time": reference_time,
+                }
+            )
+            raise FakeNeo4jAuthError("authentication failure")
+
+    fake_client = AuthFailingClient()
+    monkeypatch.setattr(
+        "app.services.zep_graph_memory_updater.get_zep_client",
+        lambda backend=None: fake_client,
+    )
+    monkeypatch.setattr(
+        "app.services.zep_graph_memory_updater.SIMULATION_DATA_DIR",
+        str(tmp_path),
+    )
+    monkeypatch.setattr("app.services.zep_graph_memory_updater.time.sleep", lambda _: None)
+
+    updater = ZepGraphMemoryUpdater("graph_auth", backend="graphiti", simulation_id="sim_auth")
+    first = AgentActivity(
+        platform="twitter",
+        agent_id=1,
+        agent_name="Alice",
+        action_type="CREATE_POST",
+        action_args={"content": "hello"},
+        round_num=1,
+        timestamp="2026-01-02T03:04:05Z",
+    )
+    second = AgentActivity(
+        platform="twitter",
+        agent_id=2,
+        agent_name="Bob",
+        action_type="CREATE_POST",
+        action_args={"content": "blocked"},
+        round_num=1,
+        timestamp="2026-01-02T03:04:06Z",
+    )
+
+    assert updater._send_single_activity(first) is False
+    assert updater._send_single_activity(second) is False
+    assert len(fake_client.calls) == 1
+
+    outbox_path = tmp_path / "sim_auth" / "graph_memory_outbox.json"
+    saved = json.loads(outbox_path.read_text(encoding="utf-8"))
+    assert saved[first.build_activity_id()]["status"] == "blocked"
+    assert saved[first.build_activity_id()]["attempt_count"] == 1
+    assert "Neo4j 认证失败" in saved[first.build_activity_id()]["last_error"]
+    assert saved[second.build_activity_id()]["status"] == "blocked"
+    assert "Neo4j 认证失败" in saved[second.build_activity_id()]["last_error"]
 
 
 def test_send_batch_activities_tracks_partial_success(monkeypatch):

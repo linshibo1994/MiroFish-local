@@ -23,6 +23,38 @@ def test_graph_data_requires_project_metadata(monkeypatch):
     assert "图谱未绑定到任何项目元数据" in data["error"]
 
 
+def test_graph_data_reports_neo4j_auth_error(monkeypatch):
+    app = create_app()
+    client = app.test_client()
+
+    class Project:
+        graph_backend = "graphiti"
+
+    class FakeNeo4jAuthError(Exception):
+        code = "Neo.ClientError.Security.AuthenticationRateLimit"
+
+    class FakeGraphBuilderService:
+        def __init__(self, backend=None):
+            self.backend = backend
+
+        def get_graph_data(self, graph_id):
+            raise FakeNeo4jAuthError("too many invalid auth attempts")
+
+    monkeypatch.setattr(
+        graph_api.ProjectManager,
+        "get_project_by_graph_id",
+        lambda graph_id: Project(),
+    )
+    monkeypatch.setattr(graph_api, "GraphBuilderService", FakeGraphBuilderService)
+
+    response = client.get("/api/graph/data/graph_auth")
+
+    assert response.status_code == 503
+    data = response.get_json()
+    assert data["success"] is False
+    assert "Neo4j 认证失败" in data["error"]
+
+
 def test_report_search_tool_requires_project_metadata(monkeypatch):
     app = create_app()
     client = app.test_client()
