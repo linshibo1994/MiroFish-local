@@ -3,13 +3,13 @@
     <!-- Header -->
     <header class="app-header">
       <div class="header-left">
-        <div class="brand" @click="router.push('/')">NEWSPOWER</div>
+        <div class="brand" @click="router.push('/')">传播推演</div>
       </div>
-      
+
       <div class="header-center">
         <div class="view-switcher">
-          <button 
-            v-for="mode in ['graph', 'split', 'workbench']" 
+          <button
+            v-for="mode in ['graph', 'split', 'workbench']"
             :key="mode"
             class="switch-btn"
             :class="{ active: viewMode === mode }"
@@ -33,55 +33,78 @@
       </div>
     </header>
 
-    <!-- Main Content Area -->
-    <main class="content-area">
-      <!-- Left Panel: Graph -->
-      <div class="panel-wrapper left" :style="leftPanelStyle">
-        <GraphPanel 
-          :graphData="graphData"
-          :loading="graphLoading"
-          :currentPhase="currentPhase"
-          @refresh="refreshGraph"
-          @toggle-maximize="toggleMaximize('graph')"
-        />
-      </div>
+    <!-- Workspace: sidebar + content -->
+    <div class="workspace">
+      <!-- 历史侧边栏（仅 Step 1 时显示） -->
+      <aside v-if="currentStep === 1" class="history-sidebar">
+        <div class="sidebar-header">
+          <span class="sidebar-brand">MiroFish</span>
+          <button class="new-chat-btn" @click="startNewSession">+ 新建对话</button>
+        </div>
+        <div class="sidebar-list">
+          <div v-if="sessions.length === 0" class="sidebar-empty">暂无历史记录</div>
+          <div
+            v-for="session in sessions"
+            :key="session.projectId"
+            class="sidebar-item"
+            :class="{ active: currentProjectId === session.projectId }"
+            @click="router.push('/process/' + session.projectId)"
+          >
+            <span class="sidebar-item-title">{{ session.title }}</span>
+            <span class="sidebar-item-date">{{ new Date(session.createdAt).toLocaleDateString('zh-CN') }}</span>
+          </div>
+        </div>
+      </aside>
 
-      <!-- Right Panel: Step Components -->
-      <div class="panel-wrapper right" :style="rightPanelStyle">
-        <!-- Step 1: 图谱构建 -->
-        <Step1GraphBuild 
-          v-if="currentStep === 1"
-          :currentPhase="currentPhase"
-          :projectData="projectData"
-          :pendingUpload="pendingUploadState"
-          :ontologyProgress="ontologyProgress"
-          :buildProgress="buildProgress"
-          :graphData="graphData"
-          :systemLogs="systemLogs"
-          @ontology-generated="handleOntologyGenerated"
-          @add-log="addLog"
-          @next-step="handleNextStep"
-        />
-        <!-- Step 2: 环境搭建 -->
-        <Step2EnvSetup
-          v-else-if="currentStep === 2"
-          :simulationId="currentSimulationId"
-          :projectData="projectData"
-          :graphData="graphData"
-          :systemLogs="systemLogs"
-          @go-back="handleGoBack"
-          @next-step="handleNextStep"
-          @add-log="addLog"
-          @update-status="updateEnvStatus"
-          @simulation-created="handleSimulationCreated"
-        />
-      </div>
-    </main>
+      <!-- Main Content Area -->
+      <main class="content-area">
+        <!-- Left Panel: Graph (Step 2+ 时显示) -->
+        <div v-if="currentStep > 1" class="panel-wrapper left" :style="leftPanelStyle">
+          <GraphPanel
+            :graphData="graphData"
+            :loading="graphLoading"
+            :currentPhase="currentPhase"
+            @refresh="refreshGraph"
+            @toggle-maximize="toggleMaximize('graph')"
+          />
+        </div>
+
+        <!-- Right Panel: Step Components -->
+        <div class="panel-wrapper right" :style="rightPanelStyle">
+          <!-- Step 1: 图谱构建 -->
+          <Step1GraphBuild
+            v-if="currentStep === 1"
+            :currentPhase="currentPhase"
+            :projectData="projectData"
+            :pendingUpload="pendingUploadState"
+            :buildProgress="buildProgress"
+            :graphData="graphData"
+            :systemLogs="systemLogs"
+            @ontology-generated="handleOntologyGenerated"
+            @add-log="addLog"
+            @next-step="handleNextStep"
+          />
+          <!-- Step 2: 环境搭建 -->
+          <Step2EnvSetup
+            v-else-if="currentStep === 2"
+            :simulationId="currentSimulationId"
+            :projectData="projectData"
+            :graphData="graphData"
+            :systemLogs="systemLogs"
+            @go-back="handleGoBack"
+            @next-step="handleNextStep"
+            @add-log="addLog"
+            @update-status="updateEnvStatus"
+            @simulation-created="handleSimulationCreated"
+          />
+        </div>
+      </main>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import GraphPanel from '../components/GraphPanel.vue'
 import Step1GraphBuild from '../components/Step1GraphBuild.vue'
@@ -89,6 +112,7 @@ import Step2EnvSetup from '../components/Step2EnvSetup.vue'
 import { getProject, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
 import { createSimulation } from '../api/simulation'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
+import { getSessions, addSession } from '../store/sessionHistory'
 
 const route = useRoute()
 const router = useRouter()
@@ -116,6 +140,33 @@ const pendingUploadState = ref(null)
 const simulationCreating = ref(false)
 const envSetupStatus = ref('processing') // processing | completed | error
 
+// 历史会话
+const sessions = ref(getSessions())
+
+const refreshSessions = () => {
+  sessions.value = getSessions()
+}
+
+const startNewSession = () => {
+  if (route.params.projectId === 'new') {
+    // 已在新建页面，手动重置状态
+    currentStep.value = 1
+    currentPhase.value = -1
+    projectData.value = null
+    graphData.value = null
+    currentSimulationId.value = ''
+    ontologyProgress.value = null
+    buildProgress.value = null
+    systemLogs.value = []
+    error.value = ''
+    stopPolling()
+    stopGraphPolling()
+    handleNewProject()
+  } else {
+    router.push('/process/new')
+  }
+}
+
 // Polling timers
 let pollTimer = null
 let graphPollTimer = null
@@ -125,12 +176,16 @@ const GRAPH_BUILD_MAX_POLL_COUNT = 3
 
 // --- Computed Layout Styles ---
 const leftPanelStyle = computed(() => {
+  // Step 1 时隐藏图谱面板，让 Step1GraphBuild 占满右侧
+  if (currentStep.value === 1) return { width: '0%', opacity: 0, pointerEvents: 'none' }
   if (viewMode.value === 'graph') return { width: '100%', opacity: 1, transform: 'translateX(0)' }
   if (viewMode.value === 'workbench') return { width: '0%', opacity: 0, transform: 'translateX(-20px)' }
   return { width: '50%', opacity: 1, transform: 'translateX(0)' }
 })
 
 const rightPanelStyle = computed(() => {
+  // Step 1 时右侧面板占满全部宽度
+  if (currentStep.value === 1) return { width: '100%', opacity: 1, transform: 'translateX(0)' }
   if (viewMode.value === 'workbench') return { width: '100%', opacity: 1, transform: 'translateX(0)' }
   if (viewMode.value === 'graph') return { width: '0%', opacity: 0, transform: 'translateX(20px)' }
   return { width: '50%', opacity: 1, transform: 'translateX(0)' }
@@ -161,7 +216,8 @@ const statusText = computed(() => {
 
 // --- Helpers ---
 const addLog = (msg) => {
-  const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '.' + new Date().getMilliseconds().toString().padStart(3, '0')
+  const now = new Date()
+  const time = now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '.' + now.getMilliseconds().toString().padStart(3, '0')
   systemLogs.value.push({ time, msg })
   // Keep last 100 logs
   if (systemLogs.value.length > 100) {
@@ -266,6 +322,15 @@ const handleOntologyGenerated = async (data) => {
   error.value = ''
   clearPendingUpload()
   pendingUploadState.value = null
+
+  // 记录会话历史
+  addSession({
+    id: data.project_id,
+    title: (data.seed_summary_md || '新会话').slice(0, 40),
+    projectId: data.project_id,
+    createdAt: Date.now()
+  })
+  refreshSessions()
 
   router.replace({ name: 'Process', params: { projectId: data.project_id } })
   addLog(`Ontology generated successfully for project ${data.project_id}`)
@@ -517,6 +582,25 @@ onMounted(() => {
   initProject()
 })
 
+watch(() => route.params.projectId, (newId, oldId) => {
+  if (newId && newId !== oldId) {
+    currentProjectId.value = newId
+    // 重置状态
+    currentStep.value = 1
+    currentPhase.value = -1
+    projectData.value = null
+    graphData.value = null
+    currentSimulationId.value = ''
+    ontologyProgress.value = null
+    buildProgress.value = null
+    systemLogs.value = []
+    error.value = ''
+    stopPolling()
+    stopGraphPolling()
+    initProject()
+  }
+})
+
 onUnmounted(() => {
   stopPolling()
   stopGraphPolling()
@@ -639,6 +723,12 @@ onUnmounted(() => {
 @keyframes pulse { 50% { opacity: 0.5; } }
 
 /* Content */
+.workspace {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
 .content-area {
   flex: 1;
   display: flex;
@@ -655,5 +745,92 @@ onUnmounted(() => {
 
 .panel-wrapper.left {
   border-right: 1px solid #EAEAEA;
+}
+
+/* 历史侧边栏 */
+.history-sidebar {
+  width: 240px;
+  min-width: 240px;
+  background: #FFFFFF;
+  border-right: 1px solid #EAEAEA;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  padding: 16px;
+  border-bottom: 1px solid #EAEAEA;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sidebar-brand {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 800;
+  font-size: 16px;
+  color: #1677FF;
+}
+
+.new-chat-btn {
+  background: linear-gradient(135deg, #1677FF, #6366F1);
+  color: #FFF;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.new-chat-btn:hover {
+  opacity: 0.88;
+}
+
+.sidebar-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.sidebar-empty {
+  text-align: center;
+  color: #9CA3AF;
+  font-size: 13px;
+  padding: 24px 16px;
+}
+
+.sidebar-item {
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sidebar-item:hover {
+  background: #F3F4F6;
+}
+
+.sidebar-item.active {
+  background: #EFF6FF;
+}
+
+.sidebar-item-title {
+  font-size: 13px;
+  color: #1A1A2E;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-item-date {
+  font-size: 11px;
+  color: #9CA3AF;
 }
 </style>
