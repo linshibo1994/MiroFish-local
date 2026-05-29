@@ -1,7 +1,7 @@
 """
 图谱类型翻译服务
 
-维护实体类型和关系类型的中英文互译表。翻译表使用 JSON 文件持久化，
+维护实体类型、关系类型和图谱属性键的中英文互译表。翻译表使用 JSON 文件持久化，
 用于本体生成、图谱展示和 Agent 人设生成等链路。
 """
 
@@ -52,6 +52,7 @@ class TypeTranslationService:
             "version": data.get("version", 1),
             "entity_types": data.get("entity_types", {}),
             "relation_types": data.get("relation_types", {}),
+            "attribute_keys": data.get("attribute_keys", {}),
         }
 
     @classmethod
@@ -71,6 +72,14 @@ class TypeTranslationService:
         key = cls.normalize_relation_key(type_name)
         key_no_underscore = cls.normalize_key(type_name)
         return relation_types.get(key) or relation_types.get(key_no_underscore) or str(type_name)
+
+    @classmethod
+    def translate_attribute_key(cls, key_name: Any) -> str:
+        if not key_name:
+            return '属性'
+        data = cls.load()
+        key = cls.normalize_key(key_name)
+        return data.get("attribute_keys", {}).get(key) or str(key_name)
 
     @classmethod
     def ensure_ontology_translations(cls, ontology: Dict[str, Any]) -> Dict[str, Any]:
@@ -99,18 +108,25 @@ class TypeTranslationService:
         """给图谱数据附加中文展示字段，并补齐翻译表。"""
         entity_names = []
         relation_names = []
+        attribute_names = []
 
         for node in graph_data.get("nodes", []) or []:
             for label in node.get("labels", []) or []:
                 if label not in ["Entity", "Node"]:
                     entity_names.append(label)
+            attribute_names.extend((node.get("attributes") or {}).keys())
 
         for edge in graph_data.get("edges", []) or []:
             relation_name = edge.get("name") or edge.get("fact_type")
             if relation_name:
                 relation_names.append(relation_name)
+            attribute_names.extend((edge.get("attributes") or {}).keys())
 
-        cls.ensure_translations(entity_names=entity_names, relation_names=relation_names)
+        cls.ensure_translations(
+            entity_names=entity_names,
+            relation_names=relation_names,
+            attribute_names=attribute_names,
+        )
 
         for node in graph_data.get("nodes", []) or []:
             node["label_display_names"] = [
@@ -134,17 +150,20 @@ class TypeTranslationService:
         cls,
         entity_names: Optional[Iterable[str]] = None,
         relation_names: Optional[Iterable[str]] = None,
+        attribute_names: Optional[Iterable[str]] = None,
     ) -> Dict[str, Any]:
         """补齐缺失翻译。"""
         entity_names = [name for name in (entity_names or []) if name]
         relation_names = [name for name in (relation_names or []) if name]
-        if not entity_names and not relation_names:
+        attribute_names = [name for name in (attribute_names or []) if name]
+        if not entity_names and not relation_names and not attribute_names:
             return cls.load()
 
         with cls._lock:
             data = cls._load_locked()
             entity_map = data.setdefault("entity_types", {})
             relation_map = data.setdefault("relation_types", {})
+            attribute_map = data.setdefault("attribute_keys", {})
 
             missing_entities = [
                 name for name in cls._unique(entity_names)
@@ -155,16 +174,21 @@ class TypeTranslationService:
                 if cls.normalize_relation_key(name) not in relation_map
                 and cls.normalize_key(name) not in relation_map
             ]
+            missing_attributes = [
+                name for name in cls._unique(attribute_names)
+                if cls.normalize_key(name) not in attribute_map
+            ]
 
-        if not missing_entities and not missing_relations:
+        if not missing_entities and not missing_relations and not missing_attributes:
             return cls.load()
 
-        generated = cls._generate_translations(missing_entities, missing_relations)
+        generated = cls._generate_translations(missing_entities, missing_relations, missing_attributes)
 
         with cls._lock:
             data = cls._load_locked()
             entity_map = data.setdefault("entity_types", {})
             relation_map = data.setdefault("relation_types", {})
+            attribute_map = data.setdefault("attribute_keys", {})
 
             for name in missing_entities:
                 key = cls.normalize_key(name)
@@ -178,6 +202,13 @@ class TypeTranslationService:
                 relation_map[key] = cls._clean_translation(
                     generated.get("relation_types", {}).get(name),
                     fallback=cls._fallback_relation_translation(name),
+                )
+
+            for name in missing_attributes:
+                key = cls.normalize_key(name)
+                attribute_map[key] = cls._clean_translation(
+                    generated.get("attribute_keys", {}).get(name),
+                    fallback=cls._fallback_attribute_translation(name),
                 )
 
             data["version"] = int(data.get("version", 1)) + 1
@@ -199,21 +230,29 @@ class TypeTranslationService:
         data.setdefault("version", 1)
         data.setdefault("entity_types", {})
         data.setdefault("relation_types", {})
+        data.setdefault("attribute_keys", {})
         cls._cache = data
         return cls._cache
 
     @classmethod
-    def _generate_translations(cls, entity_names: List[str], relation_names: List[str]) -> Dict[str, Any]:
+    def _generate_translations(
+        cls,
+        entity_names: List[str],
+        relation_names: List[str],
+        attribute_names: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         """优先用 LLM 翻译，失败时回退到规则翻译。"""
-        if not entity_names and not relation_names:
-            return {"entity_types": {}, "relation_types": {}}
+        attribute_names = attribute_names or []
+        if not entity_names and not relation_names and not attribute_names:
+            return {"entity_types": {}, "relation_types": {}, "attribute_keys": {}}
 
         try:
             prompt = (
                 "请把知识图谱类型名翻译成简洁中文。"
                 "实体类型翻译为名词短语，关系类型翻译为动词或关系短语。"
-                "只返回 JSON，结构为 {\"entity_types\": {原文: 中文}, \"relation_types\": {原文: 中文}}。\n\n"
-                f"实体类型: {entity_names}\n关系类型: {relation_names}"
+                "属性键翻译为字段名短语，保留原业务含义，例如 orgname 翻译为组织名称。"
+                "只返回 JSON，结构为 {\"entity_types\": {原文: 中文}, \"relation_types\": {原文: 中文}, \"attribute_keys\": {原文: 中文}}。\n\n"
+                f"实体类型: {entity_names}\n关系类型: {relation_names}\n属性键: {attribute_names}"
             )
             result = LLMClient().chat_json(
                 messages=[
@@ -226,10 +265,11 @@ class TypeTranslationService:
             return {
                 "entity_types": result.get("entity_types", {}) if isinstance(result, dict) else {},
                 "relation_types": result.get("relation_types", {}) if isinstance(result, dict) else {},
+                "attribute_keys": result.get("attribute_keys", {}) if isinstance(result, dict) else {},
             }
         except Exception as e:
             logger.warning(f"LLM 生成类型翻译失败，使用规则回退: {e}")
-            return {"entity_types": {}, "relation_types": {}}
+            return {"entity_types": {}, "relation_types": {}, "attribute_keys": {}}
 
     @classmethod
     def _write_locked(cls, data: Dict[str, Any]) -> None:
@@ -309,7 +349,38 @@ class TypeTranslationService:
         return translated or name
 
     @classmethod
+    def _fallback_attribute_translation(cls, name: str) -> str:
+        words = cls._split_type_words(name)
+        known = {
+            "age": "年龄",
+            "area": "地区",
+            "bio": "简介",
+            "category": "分类",
+            "city": "城市",
+            "confidence": "置信度",
+            "country": "国家",
+            "description": "描述",
+            "gender": "性别",
+            "info": "信息",
+            "name": "名称",
+            "occupation": "职业",
+            "org": "组织",
+            "organization": "组织",
+            "person": "人物",
+            "profession": "职业",
+            "region": "地区",
+            "role": "角色",
+            "source": "来源",
+            "summary": "摘要",
+            "type": "类型",
+        }
+        translated = ''.join(known.get(word.lower(), word) for word in words)
+        return translated or name
+
+    @classmethod
     def _split_type_words(cls, name: str) -> List[str]:
         value = str(name or '').replace('_', ' ').replace('-', ' ')
+        value = re.sub(r'([A-Za-z]+)([\u4e00-\u9fff]+)', r'\1 \2', value)
+        value = re.sub(r'([\u4e00-\u9fff]+)([A-Za-z]+)', r'\1 \2', value)
         value = re.sub(r'([a-z])([A-Z])', r'\1 \2', value)
         return [word for word in value.split() if word]

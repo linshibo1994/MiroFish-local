@@ -124,6 +124,7 @@ const fallbackRelationTypeMap = {
 
 let entityTypeMap = { ...fallbackEntityTypeMap }
 let relationTypeMap = { ...fallbackRelationTypeMap }
+let attributeKeyMap = {}
 let translationVersion = 0
 
 const normalizeEntityKey = (str) => {
@@ -155,6 +156,7 @@ export const setGraphTypeTranslations = (payload = {}) => {
     ...fallbackRelationTypeMap,
     ...normalizeIncomingMap(payload.relation_types, 'relation')
   }
+  attributeKeyMap = normalizeIncomingMap(payload.attribute_keys, 'entity')
   translationVersion = payload.version || Date.now()
 }
 
@@ -171,6 +173,12 @@ export const translateRelationType = (type) => {
   const key = normalizeRelationKey(type)
   const keyNoUnderscore = normalizeEntityKey(type)
   return relationTypeMap[key] || relationTypeMap[keyNoUnderscore] || String(type)
+}
+
+export const translateAttributeKey = (key) => {
+  if (!key) return '属性'
+  const normalizedKey = normalizeEntityKey(key)
+  return attributeKeyMap[normalizedKey] || ''
 }
 
 export const translateType = (type, kind = 'entity') => {

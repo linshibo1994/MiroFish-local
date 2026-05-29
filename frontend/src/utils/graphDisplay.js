@@ -1,4 +1,4 @@
-import { translateEntityType, translateRelationType } from './entityTranslations.js'
+import { translateAttributeKey, translateEntityType, translateRelationType } from './entityTranslations.js'
 
 const hiddenAttributeKeys = new Set([
   'name_embedding',
@@ -47,6 +47,8 @@ const propertyLabelMap = {
   role: '角色',
   persona: '人设',
   bio: '简介',
+  orgname: '组织名称',
+  orgtype: '组织类型',
   gender: '性别',
   age: '年龄',
   country: '国家/地区',
@@ -89,6 +91,8 @@ const propertyWordMap = {
   id: '标识'
 }
 
+const hasCjk = (value) => /[\u4e00-\u9fff]/.test(String(value || ''))
+
 const statusValueMap = {
   active: '有效',
   inactive: '无效',
@@ -124,6 +128,9 @@ export const shouldShowGraphAttribute = (key, value) => {
 export const translateGraphPropertyKey = (key) => {
   if (!key) return '属性'
   const normalized = String(key).trim()
+  const backendTranslation = translateAttributeKey(normalized)
+  if (backendTranslation) return backendTranslation
+  if (hasCjk(normalized)) return normalized
   const lower = normalized.toLowerCase()
   return propertyLabelMap[lower] || translateKeyByWords(normalized) || humanizeKey(normalized)
 }

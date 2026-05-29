@@ -3,6 +3,7 @@ from app.api import graph as graph_api
 from app.api import report as report_api
 from app.api import simulation as simulation_api
 from app.services.graph_builder import GraphBuilderService
+from app.services.type_translation_service import TypeTranslationService
 
 
 def test_graph_data_requires_project_metadata(monkeypatch):
@@ -131,3 +132,36 @@ def test_graph_data_sanitizes_internal_embedding_attributes():
         "summary": "可展示摘要",
         "custom_label": "可展示标签",
     }
+
+
+def test_graph_data_translation_payload_includes_attribute_keys(monkeypatch):
+    data = {
+        "version": 1,
+        "entity_types": {"ORGANIZATION": "组织"},
+        "relation_types": {},
+        "attribute_keys": {
+            "ORGNAME": "组织名称",
+            "ORG类型": "组织类型",
+        },
+    }
+
+    monkeypatch.setattr(TypeTranslationService, "_cache", data)
+
+    graph_data = {
+        "nodes": [
+            {
+                "labels": ["Entity", "Organization"],
+                "attributes": {
+                    "orgname": "浙江省十三届人大五次会议",
+                    "org类型": "会议",
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+    translated = TypeTranslationService.ensure_graph_data_translations(graph_data)
+
+    assert translated["type_translations"]["attribute_keys"]["ORGNAME"] == "组织名称"
+    assert translated["type_translations"]["attribute_keys"]["ORG类型"] == "组织类型"
+    assert TypeTranslationService.translate_attribute_key("orgname") == "组织名称"
