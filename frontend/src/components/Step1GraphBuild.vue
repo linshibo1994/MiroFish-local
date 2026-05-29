@@ -446,7 +446,11 @@ const sources = computed(() => {
 })
 
 const seedSummary = computed(() => {
-  return seedResult.value?.seed_full_content_md || seedResult.value?.seed_summary_md || seedResult.value?.analysis_summary || '暂无内容。'
+  const result = seedResult.value || {}
+  if (result.seed_input_mode === 'file_upload') {
+    return result.seed_full_content_md || result.seed_summary_md || result.analysis_summary || '暂无内容。'
+  }
+  return result.seed_summary_md || result.seed_full_content_md || result.analysis_summary || '暂无内容。'
 })
 
 const renderedSummary = computed(() => {

@@ -56,10 +56,7 @@ def _persist_seed_analysis(project, seed_result, sources=None) -> None:
 
     project.seed_summary_md = seed_result.seed_summary_md
     if project.seed_input_mode == 'web_search':
-        project.seed_full_content_md = SeedAnalysisService._build_search_material(
-            source_dicts,
-            project.search_query or '',
-        )
+        project.seed_full_content_md = seed_result.seed_summary_md
     else:
         project.seed_full_content_md = project.seed_full_content_md or seed_result.seed_summary_md
     project.seed_sources = source_dicts
@@ -275,6 +272,8 @@ def create_seed_from_web_search():
         )
         seed_result.seed_metadata["web_search_provider"] = provider_name
         _persist_seed_analysis(project, seed_result, sources=sources)
+        ProjectManager.save_extracted_text(project.project_id, project.seed_full_content_md)
+        project.total_text_length = len(project.seed_full_content_md or '')
         ProjectManager.save_project(project)
 
         return jsonify({
@@ -408,6 +407,7 @@ def generate_ontology():
             }), 400
 
         project.total_text_length = len(all_text)
+        project.seed_full_content_md = all_text
         ProjectManager.save_extracted_text(project.project_id, all_text)
         seed_result = SeedAnalysisService().analyze_from_text(
             text=all_text,

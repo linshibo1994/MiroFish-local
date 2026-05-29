@@ -27,6 +27,14 @@ class SeedAnalysisService:
     """基于搜索结果或文件文本生成事件摘要和后续模拟建议"""
 
     MAX_MATERIAL_LENGTH = 24000
+    WEB_SEARCH_SUMMARY_TEMPLATE = """联网搜索材料需要整理成一份可直接作为“完整事件内容”的中文 Markdown 文档，风格参考深度新闻全记录：
+1. 标题使用“# 事件/主题全记录”，下设“事件概述”先给出时间、地点、核心主体、关键结果。
+2. 按时间线拆成若干阶段，优先使用“## 一、...”和“### 阶段/争议/影响”组织。
+3. 单独提炼关键人物、组织机构、产品/技术参数、资本/政策/供应链、舆论争议、官方回应等模块；有结构化数据时使用 Markdown 表格。
+4. 每个事实尽量保留可追溯的时间、主体、动作、结果，避免空泛评价。
+5. 末尾给出“总结”或“深远影响”，从个人/企业、产业、政府/监管、舆论传播等角度归纳规律。
+6. 若搜索材料含来源 URL，末尾保留“参考来源”列表；不得编造材料外的新来源。"""
+    FILE_UPLOAD_SUMMARY_TEMPLATE = """上传文件材料只需要生成辅助摘要：提炼核心事实、主要主体、争议变量和后续推演方向即可；完整展示和图谱抽取会使用上传文件解析出的原文。"""
 
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.llm_client = llm_client
@@ -109,16 +117,23 @@ class SeedAnalysisService:
         additional_context: Optional[str],
     ) -> SeedAnalysisResult:
         client = self.llm_client or LLMClient()
+        style_template = (
+            self.WEB_SEARCH_SUMMARY_TEMPLATE
+            if input_mode == "web_search"
+            else self.FILE_UPLOAD_SUMMARY_TEMPLATE
+        )
         prompt = f"""请只基于给定材料生成 Step1 seed 分析，禁止引入材料之外的事实。
 
 输出 JSON，字段：
-- seed_summary_md: Markdown 字符串，概括关键事实、主体、争议/变量；如果材料不足，请明确说明不足。
+- seed_summary_md: Markdown 字符串；如果是联网搜索输入，必须整理成可直接展示和后续图谱抽取使用的完整事件文档；如果是上传文件输入，生成辅助摘要即可。材料不足时请明确说明不足。
 - simulation_suggestions: 2-3 条可用于后续社会模拟需求的中文建议，每条必须来自材料可支撑的信息。
 - entity_hints: 可能进入图谱的主体名称列表，必须是材料中原文出现过的人、组织、机构、平台或媒体名称。
 
 输入类型：{input_mode}
 主题：{topic}
 额外说明：{additional_context or "无"}
+整理模板：
+{style_template}
 
 材料：
 {material}

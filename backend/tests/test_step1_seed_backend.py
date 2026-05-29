@@ -153,7 +153,40 @@ def test_web_search_seed_uses_configured_provider(monkeypatch, tmp_path):
         "summary": False,
     }
     assert data["seed_metadata"]["web_search_provider"] == "bailian"
-    assert "检索词：测试关键词" in data["seed_full_content_md"]
+    assert data["seed_full_content_md"] == "## Seed"
+    assert ProjectManager.get_extracted_text(data["project_id"]) == "## Seed"
+
+
+def test_uploaded_seed_uses_extracted_file_text_as_full_content(monkeypatch, tmp_path):
+    app = create_app()
+    client = app.test_client()
+
+    class FakeSeedAnalysisService:
+        def analyze_from_text(self, text, topic="上传文档", additional_context=None):
+            from app.services.seed_analysis_service import SeedAnalysisResult
+
+            assert "上传正文内容" in text
+            return SeedAnalysisResult(
+                seed_summary_md="## 上传摘要",
+                simulation_suggestions=["建议"],
+                entity_hints=["测试公司"],
+                seed_metadata={},
+            )
+
+    monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", str(tmp_path))
+    monkeypatch.setattr("app.api.graph.SeedAnalysisService", FakeSeedAnalysisService)
+
+    response = client.post(
+        "/api/graph/ontology/generate",
+        data={"files": (io.BytesIO("上传正文内容".encode("utf-8")), "seed.txt")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()["data"]
+    assert data["seed_summary_md"] == "## 上传摘要"
+    assert "上传正文内容" in data["seed_full_content_md"]
+    assert ProjectManager.get_extracted_text(data["project_id"]) == data["seed_full_content_md"]
 
 
 def test_bailian_web_search_parses_sources():
