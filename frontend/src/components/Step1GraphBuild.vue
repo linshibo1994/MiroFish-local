@@ -155,7 +155,7 @@
     </div>
 
     <!-- 阶段2：结果阶段 -->
-    <div v-else-if="seedResult && !ontologyGenerating && currentPhase < 0" class="phase-result">
+    <div v-else-if="seedResult && currentPhase < 0" class="phase-result">
       <div class="result-center">
         <!-- 步骤指示器 -->
         <div class="step-indicator result-indicator">
@@ -232,7 +232,10 @@
             class="primary-btn start-btn"
             :disabled="!canGenerateOntology"
             @click="handleGenerateOntology"
-          >开始推演</button>
+          >
+            <span v-if="ontologyGenerating" class="spinner-sm"></span>
+            {{ ontologyGenerating ? '正在生成本体...' : '开始推演' }}
+          </button>
         </div>
 
         <p v-if="localError" class="error-text">{{ localError }}</p>
@@ -240,7 +243,7 @@
     </div>
 
     <!-- 阶段3：图谱构建工作台 -->
-    <div v-else class="phase-progress workbench-phase">
+    <div v-else-if="currentPhase >= 0" class="phase-progress workbench-phase">
       <div class="scroll-container">
         <div class="step-card completed">
           <div class="step-card-header">
