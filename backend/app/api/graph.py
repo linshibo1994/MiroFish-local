@@ -568,6 +568,13 @@ def build_graph():
                 "success": False,
                 "error": "未找到本体定义"
             }), 400
+
+        extraction_context = {
+            "event_topic": project.search_query or project.name or graph_name,
+            "simulation_requirement": project.simulation_requirement or "",
+            "seed_summary": project.seed_summary_md or project.analysis_summary or "",
+            "entity_hints": project.entity_hints or [],
+        }
         
         # 创建异步任务
         task_manager = TaskManager()
@@ -648,7 +655,8 @@ def build_graph():
                     graph_id, 
                     chunks,
                     batch_size=batch_size,
-                    progress_callback=add_progress_callback
+                    progress_callback=add_progress_callback,
+                    extraction_context=extraction_context,
                 )
                 
                 # 等待Zep处理完成（查询每个episode的processed状态）

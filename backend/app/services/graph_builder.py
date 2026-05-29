@@ -72,7 +72,8 @@ class GraphBuilderService:
         graph_name: str = "MiroFish Graph",
         chunk_size: int = Config.DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = Config.DEFAULT_CHUNK_OVERLAP,
-        batch_size: int = Config.GRAPH_BUILD_BATCH_SIZE
+        batch_size: int = Config.GRAPH_BUILD_BATCH_SIZE,
+        extraction_context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         异步构建图谱
@@ -101,7 +102,7 @@ class GraphBuilderService:
         # 在后台线程中执行构建
         thread = threading.Thread(
             target=self._build_graph_worker,
-            args=(task_id, text, ontology, graph_name, chunk_size, chunk_overlap, batch_size)
+            args=(task_id, text, ontology, graph_name, chunk_size, chunk_overlap, batch_size, extraction_context)
         )
         thread.daemon = True
         thread.start()
@@ -116,7 +117,8 @@ class GraphBuilderService:
         graph_name: str,
         chunk_size: int,
         chunk_overlap: int,
-        batch_size: int
+        batch_size: int,
+        extraction_context: Optional[Dict[str, Any]] = None,
     ):
         """图谱构建工作线程"""
         try:
@@ -159,7 +161,8 @@ class GraphBuilderService:
                     task_id,
                     progress=20 + int(prog * 0.4),  # 20-60%
                     message=msg
-                )
+                ),
+                extraction_context=extraction_context or {"event_topic": graph_name},
             )
             
             # 5. 等待Zep处理完成
@@ -322,7 +325,8 @@ class GraphBuilderService:
         graph_id: str,
         chunks: List[str],
         batch_size: int = Config.GRAPH_BUILD_BATCH_SIZE,
-        progress_callback: Optional[Callable] = None
+        progress_callback: Optional[Callable] = None,
+        extraction_context: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
         """分批添加文本到图谱，返回所有 episode 的 uuid 列表"""
         episode_uuids = []
@@ -342,7 +346,11 @@ class GraphBuilderService:
 
             # 构建 episode 数据（适配器格式）
             episodes = [
-                {"data": chunk, "type": "text", "reference_time": None}
+                {
+                    "data": self._wrap_chunk_with_event_constraints(chunk, extraction_context),
+                    "type": "text",
+                    "reference_time": None,
+                }
                 for chunk in batch_chunks
             ]
 
@@ -363,6 +371,68 @@ class GraphBuilderService:
                 raise
 
         return episode_uuids
+
+    @classmethod
+    def _wrap_chunk_with_event_constraints(
+        cls,
+        chunk: str,
+        extraction_context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """为每个文本块补充事件锚点，约束图谱抽取只保留事件相关主体。"""
+        if not extraction_context:
+            return chunk
+
+        event_topic = cls._compact_context_value(extraction_context.get("event_topic"), 200)
+        simulation_requirement = cls._compact_context_value(
+            extraction_context.get("simulation_requirement"),
+            300,
+        )
+        seed_summary = cls._compact_context_value(extraction_context.get("seed_summary"), 1200)
+        entity_hints = cls._compact_context_list(extraction_context.get("entity_hints"), 30, 600)
+
+        context_lines = []
+        if event_topic:
+            context_lines.append(f"- 事件主题：{event_topic}")
+        if simulation_requirement:
+            context_lines.append(f"- 推演方向：{simulation_requirement}")
+        if entity_hints:
+            context_lines.append(f"- 已知关键主体提示：{entity_hints}")
+        if seed_summary:
+            context_lines.append(f"- 事件摘要：{seed_summary}")
+
+        context_block = "\n".join(context_lines) or "- 事件主题：未提供"
+        return f"""# 图谱实体抽取约束（仅用于判断相关性，不是事实来源）
+{context_block}
+
+硬性规则：
+1. 只抽取“文档文本块”中明确出现，且与事件主题、事件事实或推演方向存在真实关联的实体节点。
+2. 优先覆盖政府/监管、单位、机构、企业/品牌、媒体、组织/协会、意见领袖/网红、社区、公众、主配角、网民/个人、事件本身等关键主体。
+3. 实体关系必须能从文档文本块中的事实支撑；只有背景、广告、推荐、相似案例或无关段落里的实体不要抽取。
+4. 如果某个名称虽然出现在文本块中，但无法说明它和事件或推演方向的关系，必须忽略。
+5. 不要把本约束中的类别词、规则文本或示例当作实体；实体事实只能来自“文档文本块”。
+6. 例如“张雪机车事件”应保留张雪、张雪机车、法国车手瓦伦丁·德比斯、WSBK、820RR-RS等真实相关主体；网易游戏、阴阳师等无关实体即使出现在材料杂讯中也不要入图。
+
+# 文档文本块（唯一事实来源）
+{chunk}"""
+
+    @staticmethod
+    def _compact_context_value(value: Any, limit: int) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        text = " ".join(text.split())
+        return text[:limit]
+
+    @classmethod
+    def _compact_context_list(cls, values: Any, max_items: int, limit: int) -> str:
+        if not values:
+            return ""
+        if isinstance(values, str):
+            items = [values]
+        else:
+            items = [str(item).strip() for item in values if str(item).strip()]
+        text = "、".join(items[:max_items])
+        return cls._compact_context_value(text, limit)
     
     def _wait_for_episodes(
         self,
