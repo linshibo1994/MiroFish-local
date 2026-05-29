@@ -18,6 +18,7 @@ def test_project_seed_fields_roundtrip():
         seed_input_mode="web_search",
         search_query="测试检索",
         seed_summary_md="## 摘要",
+        seed_full_content_md="## 完整内容",
         seed_sources=[{"title": "来源", "url": "https://example.com"}],
         simulation_suggestions=["模拟建议"],
         entity_hints=["测试公司"],
@@ -29,6 +30,7 @@ def test_project_seed_fields_roundtrip():
     assert restored.seed_input_mode == "web_search"
     assert restored.search_query == "测试检索"
     assert restored.seed_summary_md == "## 摘要"
+    assert restored.seed_full_content_md == "## 完整内容"
     assert restored.seed_sources == [{"title": "来源", "url": "https://example.com"}]
     assert restored.simulation_suggestions == ["模拟建议"]
     assert restored.entity_hints == ["测试公司"]
@@ -151,6 +153,7 @@ def test_web_search_seed_uses_configured_provider(monkeypatch, tmp_path):
         "summary": False,
     }
     assert data["seed_metadata"]["web_search_provider"] == "bailian"
+    assert "检索词：测试关键词" in data["seed_full_content_md"]
 
 
 def test_bailian_web_search_parses_sources():
@@ -192,6 +195,33 @@ def test_bailian_freshness_maps_bocha_style_values_to_days():
     assert BailianWebSearchService._freshness_to_days("twoMonths") == 60
     assert BailianWebSearchService._freshness_to_days("14") == 14
     assert BailianWebSearchService._freshness_to_days("") is None
+
+
+def test_bailian_web_search_filters_unusable_sources(monkeypatch):
+    service = BailianWebSearchService(api_key="test-key")
+    sources = [
+        SearchSource(title="可用来源", url="https://example.com/live#fragment", snippet="有效"),
+        SearchSource(title="重复来源", url="https://example.com/live", snippet="重复"),
+        SearchSource(title="搜索页", url="https://example.com/search?q=test", snippet="低价值"),
+        SearchSource(title="已删除", url="https://example.com/deleted", snippet="该内容已被删除"),
+        SearchSource(title="不可访问", url="https://example.com/missing", snippet="有效"),
+    ]
+
+    monkeypatch.setattr(
+        BailianWebSearchService,
+        "_check_live_source",
+        lambda self, source: (
+            source.url == "https://example.com/live",
+            "" if source.url == "https://example.com/live" else "链接不可访问",
+            "<html><body>完整正文片段</body></html>" if source.url == "https://example.com/live" else "",
+        ),
+    )
+
+    filtered = service._filter_live_sources(sources)
+
+    assert len(filtered) == 1
+    assert filtered[0].url == "https://example.com/live"
+    assert "完整正文片段" in filtered[0].summary
 
 
 def test_bocha_search_service_parses_web_pages(monkeypatch):

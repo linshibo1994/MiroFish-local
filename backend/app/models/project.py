@@ -40,6 +40,7 @@ class Project:
     seed_input_mode: Optional[str] = None  # file_upload | web_search
     search_query: Optional[str] = None
     seed_summary_md: Optional[str] = None
+    seed_full_content_md: Optional[str] = None
     seed_sources: List[Dict[str, Any]] = field(default_factory=list)
     simulation_suggestions: List[str] = field(default_factory=list)
     entity_hints: List[str] = field(default_factory=list)
@@ -77,6 +78,7 @@ class Project:
             "seed_input_mode": self.seed_input_mode,
             "search_query": self.search_query,
             "seed_summary_md": self.seed_summary_md,
+            "seed_full_content_md": self.seed_full_content_md,
             "seed_sources": self.seed_sources,
             "simulation_suggestions": self.simulation_suggestions,
             "entity_hints": self.entity_hints,
@@ -112,6 +114,7 @@ class Project:
             seed_input_mode=data.get('seed_input_mode'),
             search_query=data.get('search_query'),
             seed_summary_md=data.get('seed_summary_md'),
+            seed_full_content_md=data.get('seed_full_content_md'),
             seed_sources=data.get('seed_sources', []),
             simulation_suggestions=data.get('simulation_suggestions', []),
             entity_hints=data.get('entity_hints', []),

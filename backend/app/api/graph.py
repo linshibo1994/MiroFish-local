@@ -55,6 +55,13 @@ def _persist_seed_analysis(project, seed_result, sources=None) -> None:
         source_dicts.append(source.to_dict() if hasattr(source, "to_dict") else source)
 
     project.seed_summary_md = seed_result.seed_summary_md
+    if project.seed_input_mode == 'web_search':
+        project.seed_full_content_md = SeedAnalysisService._build_search_material(
+            source_dicts,
+            project.search_query or '',
+        )
+    else:
+        project.seed_full_content_md = project.seed_full_content_md or seed_result.seed_summary_md
     project.seed_sources = source_dicts
     project.simulation_suggestions = seed_result.simulation_suggestions
     project.entity_hints = seed_result.entity_hints
@@ -278,6 +285,7 @@ def create_seed_from_web_search():
                 "seed_input_mode": project.seed_input_mode,
                 "search_query": project.search_query,
                 "seed_summary_md": project.seed_summary_md,
+                "seed_full_content_md": project.seed_full_content_md,
                 "seed_sources": project.seed_sources,
                 "simulation_suggestions": project.simulation_suggestions,
                 "entity_hints": project.entity_hints,
@@ -417,6 +425,7 @@ def generate_ontology():
                 "project_name": project.name,
                 "seed_input_mode": project.seed_input_mode,
                 "seed_summary_md": project.seed_summary_md,
+                "seed_full_content_md": project.seed_full_content_md,
                 "seed_sources": project.seed_sources,
                 "simulation_suggestions": project.simulation_suggestions,
                 "entity_hints": project.entity_hints,

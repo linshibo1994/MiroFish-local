@@ -219,7 +219,7 @@
               rel="noopener noreferrer nofollow"
             >
               <span class="source-title">{{ source.title || source.name || source.url || '未命名来源' }}</span>
-              <span class="source-meta">{{ source.publisher || source.siteName || source.published_at || source.datePublished || '来源记录' }}</span>
+              <span class="source-meta">{{ source.publisher || source.site_name || source.siteName || source.published_at || source.date_published || source.datePublished || '来源记录' }}</span>
             </a>
           </div>
         </div>
@@ -446,7 +446,7 @@ const sources = computed(() => {
 })
 
 const seedSummary = computed(() => {
-  return seedResult.value?.seed_summary_md || seedResult.value?.analysis_summary || '暂无摘要。'
+  return seedResult.value?.seed_full_content_md || seedResult.value?.seed_summary_md || seedResult.value?.analysis_summary || '暂无内容。'
 })
 
 const renderedSummary = computed(() => {
@@ -456,7 +456,7 @@ const renderedSummary = computed(() => {
 })
 
 const formatSuggestion = (text) => {
-  return text.replace(/可模拟/g, '推演')
+  return String(text || '').replace(/可模拟/g, '推演')
 }
 
 const currentProjectId = computed(() => seedResult.value?.project_id || props.projectData?.project_id || '')
@@ -555,6 +555,7 @@ const normalizeSeedResult = (data) => {
   return {
     ...normalized,
     seed_summary_md: normalized.seed_summary_md || normalized.analysis_summary || '',
+    seed_full_content_md: normalized.seed_full_content_md || normalized.full_content_md || '',
     simulation_suggestions: normalized.simulation_suggestions || normalized.suggestions || [],
     seed_sources: normalized.seed_sources || normalized.sources || []
   }
@@ -602,8 +603,9 @@ const buildUploadFormData = () => {
 }
 
 const applySuggestion = (suggestion) => {
+  const cleanSuggestion = formatSuggestion(suggestion)
   selectedSuggestion.value = suggestion
-  simulationRequirement.value = suggestion
+  simulationRequirement.value = cleanSuggestion
 }
 
 const handleGenerateOntology = async () => {

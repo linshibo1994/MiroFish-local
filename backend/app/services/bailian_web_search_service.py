@@ -5,6 +5,7 @@
 import json
 import re
 from typing import Any, Dict, List, Optional
+from urllib import error, parse, request
 
 from openai import OpenAI
 
@@ -30,6 +31,7 @@ class BailianWebSearchService:
         self.base_url = base_url or Config.LLM_WEB_SEARCH_BASE_URL
         self.model = model or Config.LLM_WEB_SEARCH_MODEL
         self.client = client
+        self.validate_links = Config.LLM_WEB_SEARCH_VALIDATE_LINKS
 
     def search(
         self,
@@ -46,6 +48,7 @@ class BailianWebSearchService:
             raise ValueError("LLM_WEB_SEARCH_API_KEY/LLM_API_KEY 未配置")
 
         requested_count = max(1, min(int(count or Config.BOCHA_WEB_SEARCH_MAX_RESULTS), 20))
+        search_count = min(max(requested_count * 2, requested_count), 20)
         client = self.client or OpenAI(api_key=self.api_key, base_url=self.base_url)
         search_options = {
             "forced_search": True,
@@ -67,7 +70,7 @@ class BailianWebSearchService:
                 },
                 {
                     "role": "user",
-                    "content": self._build_prompt(clean_query, requested_count, freshness, summary),
+                    "content": self._build_prompt(clean_query, search_count, freshness, summary),
                 },
             ],
             response_format={"type": "json_object"},
@@ -79,6 +82,7 @@ class BailianWebSearchService:
         )
         raw_text = self._extract_response_text(response)
         sources = self.parse_sources(raw_text)
+        sources = self._filter_live_sources(sources) if self.validate_links else sources
         return sources[:requested_count]
 
     @staticmethod
@@ -109,6 +113,8 @@ class BailianWebSearchService:
 要求：
 - sources 必须来自真实联网搜索结果。
 - url 必须是 http 或 https 开头的完整链接。
+- 优先选择新闻原文、政府/机构公告、企业公告、权威媒体报道，避免搜索结果页、聚合页、论坛搬运页。
+- snippet 和 summary 必须尽量包含具体事实、主体、时间、地点、争议点、数据或进展，不能只写泛泛结论。
 - 不确定发布时间时 date_published 返回空字符串。
 """
 
@@ -176,6 +182,164 @@ class BailianWebSearchService:
     @staticmethod
     def _is_valid_http_url(url: str) -> bool:
         return url.startswith("http://") or url.startswith("https://")
+
+    def _filter_live_sources(self, sources: List[SearchSource]) -> List[SearchSource]:
+        """过滤重复、明显搜索页、不可访问或已删除的来源。"""
+        filtered: List[SearchSource] = []
+        seen_urls = set()
+        for source in sources:
+            normalized_url = self._normalize_url(source.url)
+            if not normalized_url or normalized_url in seen_urls:
+                continue
+            if self._is_low_value_source(normalized_url):
+                logger.info("过滤百炼来源：低价值搜索/聚合页 url=%s", normalized_url)
+                continue
+            if self._looks_deleted_from_metadata(source):
+                logger.info("过滤百炼来源：摘要显示已删除或不存在 url=%s", normalized_url)
+                continue
+
+            source.url = normalized_url
+            is_live, reason, body = self._check_live_source(source)
+            if not is_live:
+                logger.info("过滤百炼来源：%s url=%s", reason, normalized_url)
+                continue
+            if body and not source.summary:
+                source.summary = self._extract_body_excerpt(body)
+
+            seen_urls.add(normalized_url)
+            filtered.append(source)
+        return filtered
+
+    def _check_live_source(self, source: SearchSource) -> tuple[bool, str, str]:
+        body = ""
+        try:
+            try:
+                status, _ = self._request_source_preview(source.url, method="HEAD")
+            except Exception as exc:
+                logger.info("百炼来源 HEAD 校验异常，改用 GET 复核 url=%s, error=%s", source.url, exc)
+            else:
+                if status < 200 or status >= 400:
+                    logger.info("百炼来源 HEAD 校验未通过，改用 GET 复核 url=%s, status=%s", source.url, status)
+            status, body = self._request_source_preview(source.url, method="GET")
+        except Exception as exc:
+            return False, f"链接检查异常: {exc}", ""
+
+        if status < 200 or status >= 400:
+            if self._looks_blocked_from_body(body):
+                return False, f"目标站点拦截后端校验请求 status={status}", body
+            return False, f"链接不可访问 status={status}", body
+        if self._looks_blocked_from_body(body):
+            return False, "目标站点返回拦截页", body
+        if self._looks_deleted_from_body(body):
+            return False, "页面内容提示已删除或不存在", body
+        return True, "", body
+
+    def _request_source_preview(self, url: str, method: str = "GET") -> tuple[int, str]:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        }
+        req = request.Request(url=url, method=method, headers=headers)
+        try:
+            with request.urlopen(req, timeout=Config.BOCHA_LINK_CHECK_TIMEOUT) as resp:
+                status = getattr(resp, "status", resp.getcode())
+                body = ""
+                if method == "GET":
+                    raw_body = resp.read(Config.BOCHA_LINK_CHECK_MAX_BYTES)
+                    body = raw_body.decode("utf-8", errors="ignore")
+                return status, body
+        except error.HTTPError as exc:
+            body = ""
+            if method == "GET":
+                raw_body = exc.read(Config.BOCHA_LINK_CHECK_MAX_BYTES)
+                body = raw_body.decode("utf-8", errors="ignore")
+            return exc.code, body
+
+    @classmethod
+    def _normalize_url(cls, url: str) -> str:
+        clean_url = (url or "").strip()
+        if not cls._is_valid_http_url(clean_url):
+            return ""
+        parsed = parse.urlsplit(clean_url)
+        return parse.urlunsplit((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path, parsed.query, ""))
+
+    @staticmethod
+    def _is_low_value_source(url: str) -> bool:
+        parsed = parse.urlsplit(url)
+        host = parsed.netloc.lower()
+        path = parsed.path.lower()
+        query = parsed.query.lower()
+        if "google." in host or "bing.com" in host or "baidu.com" in host:
+            return True
+        return any(marker in path or marker in query for marker in ("/search", "search?", "query=", "keyword="))
+
+    @classmethod
+    def _looks_deleted_from_metadata(cls, source: SearchSource) -> bool:
+        text = " ".join([source.title, source.snippet, source.summary]).strip()
+        return cls._contains_deleted_marker(text)
+
+    @classmethod
+    def _looks_deleted_from_body(cls, body: str) -> bool:
+        if not body:
+            return False
+        text = re.sub(r"\s+", " ", body[: Config.BOCHA_LINK_CHECK_MAX_BYTES]).strip()
+        return cls._contains_deleted_marker(text)
+
+    @classmethod
+    def _looks_blocked_from_body(cls, body: str) -> bool:
+        if not body:
+            return False
+        text = re.sub(r"\s+", " ", body[: Config.BOCHA_LINK_CHECK_MAX_BYTES]).strip().lower()
+        blocked_patterns = [
+            "waf拦截页面",
+            "web应用防护",
+            "您的请求已中断",
+            "访问拦截",
+            "access denied",
+            "request blocked",
+        ]
+        return any(pattern in text for pattern in blocked_patterns)
+
+    @staticmethod
+    def _contains_deleted_marker(text: str) -> bool:
+        if not text:
+            return False
+        lowered = text.lower()
+        deleted_patterns = [
+            "404 not found",
+            "page not found",
+            "this page has been deleted",
+            "this article has been deleted",
+            "410 gone",
+            "页面不存在",
+            "网页不存在",
+            "文件不存在",
+            "资源不存在",
+            "内容不存在",
+            "该内容已被删除",
+            "文章已删除",
+            "页面已删除",
+            "您访问的页面不存在",
+            "抱歉，您访问的页面不存在",
+            "很抱歉，您访问的页面不存在",
+        ]
+        return any(pattern in lowered for pattern in deleted_patterns)
+
+    @staticmethod
+    def _extract_body_excerpt(body: str) -> str:
+        if not body:
+            return ""
+        text = re.sub(r"<script[\s\S]*?</script>", " ", body, flags=re.IGNORECASE)
+        text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.IGNORECASE)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"&nbsp;|&#160;", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:500]
 
     @staticmethod
     def _freshness_to_days(freshness: Optional[str]) -> Optional[int]:
