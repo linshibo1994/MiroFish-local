@@ -221,11 +221,22 @@ def test_web_search_analysis_generates_markdown_before_auxiliary_json():
     )
 
     assert result.seed_summary_md.startswith("# 张雪峰去世事件全记录")
-    assert result.simulation_suggestions == ["模拟谣言传播与辟谣路径"]
+    assert result.simulation_suggestions == ["推演谣言传播与辟谣路径"]
     assert result.entity_hints == ["张雪峰", "网易"]
     assert result.seed_metadata["analysis_mode"] == "llm"
     assert calls[0] == ("chat", None, 5000)
     assert calls[1] == ("chat_json", None, 1200)
+
+
+def test_seed_suggestions_normalize_simulation_wording():
+    assert SeedAnalysisService._clean_suggestion_list(
+        ["可模拟事件发酵路径", "模拟多方主体回应"],
+        limit=3,
+    ) == ["可推演事件发酵路径", "推演多方主体回应"]
+
+    assert SeedAnalysisService._fallback_suggestions("测试事件", ["主体A"])[0].startswith(
+        "围绕“测试事件”，推演"
+    )
 
 
 def test_bailian_web_search_parses_sources():

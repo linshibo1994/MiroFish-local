@@ -133,7 +133,7 @@ class SeedAnalysisService:
 
 输出 JSON，字段：
 - seed_summary_md: Markdown 字符串；如果是联网搜索输入，必须整理成可直接展示和后续图谱抽取使用的完整事件文档；如果是上传文件输入，生成辅助摘要即可。材料不足时请明确说明不足。
-- simulation_suggestions: 2-3 条可用于后续社会模拟需求的中文建议，每条必须来自材料可支撑的信息。
+- simulation_suggestions: 2-3 条可用于后续舆情推演的中文建议，每条必须来自材料可支撑的信息；不要使用“模拟”字样，统一使用“推演”“追踪”“研判”等表达。
 - entity_hints: 可能进入图谱的主体名称列表，必须是材料中原文出现过的人、组织、机构、平台或媒体名称。
 
 输入类型：{input_mode}
@@ -155,7 +155,7 @@ class SeedAnalysisService:
         )
 
         summary = str(data.get("seed_summary_md") or "").strip()
-        suggestions = self._clean_string_list(data.get("simulation_suggestions"), limit=3)
+        suggestions = self._clean_suggestion_list(data.get("simulation_suggestions"), limit=3)
         hints = self._filter_entity_hints(
             self._clean_string_list(data.get("entity_hints"), limit=30),
             material,
@@ -246,12 +246,13 @@ class SeedAnalysisService:
                         "role": "user",
                         "content": f"""请基于以下整理文档返回 JSON：
 {{
-  "simulation_suggestions": ["2-3条中文推演建议"],
+  "simulation_suggestions": ["2-3条中文舆情推演建议"],
   "entity_hints": ["材料原文出现过的人、组织、机构、平台或媒体名称"]
 }}
 
 要求：
-- simulation_suggestions 必须适合社会传播推演。
+- simulation_suggestions 必须适合舆论走向、传播路径或公众反应推演。
+- 不要使用“模拟”字样，统一使用“推演”“追踪”“研判”等表达。
 - entity_hints 不超过30个，必须来自文档或材料原文。
 
 主题：{topic}
@@ -263,7 +264,7 @@ class SeedAnalysisService:
                 temperature=0.2,
                 max_tokens=1200,
             )
-            suggestions = self._clean_string_list(data.get("simulation_suggestions"), limit=3)
+            suggestions = self._clean_suggestion_list(data.get("simulation_suggestions"), limit=3)
             hints = self._filter_entity_hints(
                 self._clean_string_list(data.get("entity_hints"), limit=30),
                 f"{summary}\n{material}",
@@ -341,6 +342,19 @@ class SeedAnalysisService:
                 break
         return cleaned
 
+    @classmethod
+    def _clean_suggestion_list(cls, value: Any, limit: int) -> List[str]:
+        suggestions = cls._clean_string_list(value, limit=limit)
+        return [cls._normalize_suggestion_text(text) for text in suggestions]
+
+    @staticmethod
+    def _normalize_suggestion_text(text: str) -> str:
+        return (
+            str(text or "")
+            .replace("可模拟", "可推演")
+            .replace("模拟", "推演")
+        )
+
     @staticmethod
     def _filter_entity_hints(hints: Iterable[str], material: str) -> List[str]:
         filtered = []
@@ -389,11 +403,11 @@ class SeedAnalysisService:
         if entity_hints:
             joined = "、".join(entity_hints[:3])
             return [
-                f"围绕“{subject}”，模拟 {joined} 等主体的信息发布、回应与互动路径。",
+                f"围绕“{subject}”，推演 {joined} 等主体的信息发布、回应与互动路径。",
                 f"比较“{subject}”中不同主体在事实披露、立场表达和传播节奏上的影响差异。",
                 f"追踪“{subject}”相关信息在关键主体之间扩散、澄清或争议升级的过程。",
             ]
         return [
-            f"围绕“{subject}”，模拟材料中已出现主体的信息发布、回应与互动路径。",
+            f"围绕“{subject}”，推演材料中已出现主体的信息发布、回应与互动路径。",
             f"比较“{subject}”中不同主体在事实披露、立场表达和传播节奏上的影响差异。",
         ]
