@@ -1,4 +1,5 @@
 import service, { requestWithRetry } from './index'
+import { setGraphTypeTranslations } from '../utils/entityTranslations.js'
 
 /**
  * 联网搜索现实事件
@@ -88,6 +89,22 @@ export function getTaskStatus(taskId) {
 export function getGraphData(graphId) {
   return service({
     url: `/api/graph/data/${graphId}`,
+    method: 'get'
+  }).then(res => {
+    if (res.success && res.data?.type_translations) {
+      setGraphTypeTranslations(res.data.type_translations)
+    }
+    return res
+  })
+}
+
+/**
+ * 获取图谱实体/关系类型翻译表
+ * @returns {Promise}
+ */
+export function getGraphTypeTranslations() {
+  return service({
+    url: '/api/graph/type-translations',
     method: 'get'
   })
 }

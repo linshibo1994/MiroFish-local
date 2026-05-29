@@ -28,6 +28,7 @@ from .zep_entity_reader import EntityNode, ZepEntityReader
 from .zep_factory import get_zep_client
 from .zep_adapter import ZepClientAdapter
 from .real_entity_resolver import ResolvedRealEntity, VERIFIED
+from .type_translation_service import TypeTranslationService
 
 logger = get_logger('mirofish.oasis_profile')
 
@@ -285,6 +286,7 @@ class OasisProfileGenerator:
             OasisAgentProfile
         """
         entity_type = entity.get_entity_type() or "Entity"
+        entity_type_display = TypeTranslationService.translate_entity_type(entity_type)
 
         verified_real_entity = (
             resolved_real_entity
@@ -317,7 +319,7 @@ class OasisProfileGenerator:
                 # 使用LLM生成详细人设
                 profile_data = self._generate_profile_with_llm(
                     entity_name=name,
-                    entity_type=entity_type,
+                    entity_type=entity_type_display,
                     entity_summary=entity.summary,
                     entity_attributes=entity.attributes,
                     context=context
@@ -326,7 +328,7 @@ class OasisProfileGenerator:
                 # 使用规则生成基础人设
                 profile_data = self._generate_profile_rule_based(
                     entity_name=name,
-                    entity_type=entity_type,
+                    entity_type=entity_type_display,
                     entity_summary=entity.summary,
                     entity_attributes=entity.attributes
                 )
@@ -338,12 +340,12 @@ class OasisProfileGenerator:
             user_name=user_name,
             name=name,
             bio=self._clean_profile_text(
-                profile_data.get("bio", f"{entity_type}: {name}"),
+                profile_data.get("bio", f"{entity_type_display}: {name}"),
                 max_chars=240,
                 strip_sources=True,
             ),
             persona=self._clean_profile_text(
-                profile_data.get("persona", entity.summary or f"A {entity_type} named {name}."),
+                profile_data.get("persona", entity.summary or f"{name}是一个{entity_type_display}。"),
                 strip_sources=True,
             ),
             karma=profile_data.get("karma", random.randint(500, 5000)),
@@ -1204,6 +1206,7 @@ class OasisProfileGenerator:
         def generate_single_profile(idx: int, entity: EntityNode) -> tuple:
             """生成单个profile的工作函数"""
             entity_type = entity.get_entity_type() or "Entity"
+            entity_type_display = TypeTranslationService.translate_entity_type(entity_type)
             
             try:
                 profile = self.generate_profile_from_entity(
@@ -1215,7 +1218,7 @@ class OasisProfileGenerator:
                 )
                 
                 # 实时输出生成的人设到控制台和日志
-                self._print_generated_profile(entity.name, entity_type, profile)
+                self._print_generated_profile(entity.name, entity_type_display, profile)
                 
                 return idx, profile, None
                 
@@ -1228,7 +1231,7 @@ class OasisProfileGenerator:
                     user_id=idx,
                     user_name=self._generate_username(entity.name),
                     name=entity.name,
-                    bio=f"{entity_type}: {entity.name}",
+                    bio=f"{entity_type_display}: {entity.name}",
                     persona=entity.summary or f"A participant in social discussions.",
                     source_entity_uuid=entity.uuid,
                     source_entity_type=entity_type,
@@ -1252,6 +1255,7 @@ class OasisProfileGenerator:
             for future in concurrent.futures.as_completed(future_to_entity):
                 idx, entity = future_to_entity[future]
                 entity_type = entity.get_entity_type() or "Entity"
+                entity_type_display = TypeTranslationService.translate_entity_type(entity_type)
                 
                 try:
                     result_idx, profile, error = future.result()
@@ -1270,13 +1274,13 @@ class OasisProfileGenerator:
                         progress_callback(
                             current, 
                             total, 
-                            f"已完成 {current}/{total}: {entity.name}（{entity_type}）"
+                            f"已完成 {current}/{total}: {entity.name}（{entity_type_display}）"
                         )
                     
                     if error:
                         logger.warning(f"[{current}/{total}] {entity.name} 使用备用人设: {error}")
                     else:
-                        logger.info(f"[{current}/{total}] 成功生成人设: {entity.name} ({entity_type})")
+                        logger.info(f"[{current}/{total}] 成功生成人设: {entity.name} ({entity_type_display})")
                         
                 except Exception as e:
                     logger.error(f"处理实体 {entity.name} 时发生异常: {str(e)}")
@@ -1288,7 +1292,7 @@ class OasisProfileGenerator:
                         user_id=idx,
                         user_name=self._generate_username(entity.name),
                         name=entity.name,
-                        bio=f"{entity_type}: {entity.name}",
+                        bio=f"{entity_type_display}: {entity.name}",
                         persona=entity.summary or "A participant in social discussions.",
                         source_entity_uuid=entity.uuid,
                         source_entity_type=entity_type,

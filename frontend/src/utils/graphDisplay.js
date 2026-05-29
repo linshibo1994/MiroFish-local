@@ -137,13 +137,21 @@ export const formatGraphPropertyValue = (key, value) => {
   if (value === null || value === undefined || value === '') return '无'
 
   const lowerKey = String(key || '').toLowerCase()
+  if (lowerKey === 'entity_type_display_name' || lowerKey === 'display_name') {
+    return value
+  }
+
   if (lowerKey === 'labels' || lowerKey === 'label' || lowerKey === 'lable') {
     const labels = Array.isArray(value) ? value : [value]
     return labels.map(translateGraphLabel).join('、')
   }
 
-  if (lowerKey.includes('type')) {
-    return translateEntityType(value) || translateRelationType(value)
+  if (lowerKey === 'fact_type' || lowerKey === 'relation_type' || lowerKey === 'edge_type') {
+    return translateRelationType(value)
+  }
+
+  if (lowerKey === 'entity_type' || lowerKey.endsWith('entity_type')) {
+    return translateEntityType(value)
   }
 
   if (typeof value === 'boolean') {

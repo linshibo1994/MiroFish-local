@@ -12,6 +12,7 @@ from . import graph_bp
 from ..config import Config
 from ..services.ontology_generator import OntologyGenerator
 from ..services.graph_builder import GraphBuilderService
+from ..services.type_translation_service import TypeTranslationService
 from ..services.seed_analysis_service import SeedAnalysisService
 from ..services.web_search_provider import WebSearchProviderFactory
 from ..services.text_processor import TextProcessor
@@ -95,6 +96,7 @@ def _extract_and_store_uploaded_files(project, uploaded_files):
 
 def _save_generated_ontology(project, ontology):
     """保存本体生成结果到项目。"""
+    ontology = TypeTranslationService.ensure_ontology_translations(ontology)
     project.ontology = {
         "entity_types": ontology.get("entity_types", []),
         "edge_types": ontology.get("edge_types", [])
@@ -102,6 +104,15 @@ def _save_generated_ontology(project, ontology):
     project.analysis_summary = ontology.get("analysis_summary", "")
     project.status = ProjectStatus.ONTOLOGY_GENERATED
     ProjectManager.save_project(project)
+
+
+@graph_bp.route('/type-translations', methods=['GET'])
+def get_type_translations():
+    """获取实体类型和关系类型翻译表。"""
+    return jsonify({
+        "success": True,
+        "data": TypeTranslationService.get_public_payload()
+    })
 
 
 # ============== 项目管理接口 ==============
@@ -780,6 +791,7 @@ def get_graph_data(graph_id: str):
 
         builder = GraphBuilderService(backend=backend)
         graph_data = builder.get_graph_data(graph_id)
+        graph_data = TypeTranslationService.ensure_graph_data_translations(graph_data)
         
         return jsonify({
             "success": True,
