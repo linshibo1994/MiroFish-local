@@ -12,8 +12,8 @@ from . import graph_bp
 from ..config import Config
 from ..services.ontology_generator import OntologyGenerator
 from ..services.graph_builder import GraphBuilderService
-from ..services.bocha_search_service import BochaSearchService
 from ..services.seed_analysis_service import SeedAnalysisService
+from ..services.web_search_provider import WebSearchProviderFactory
 from ..services.text_processor import TextProcessor
 from ..utils.file_parser import FileParser
 from ..utils.logger import get_logger
@@ -211,7 +211,7 @@ def reset_project(project_id: str):
 @graph_bp.route('/seed/web-search', methods=['POST'])
 def create_seed_from_web_search():
     """
-    通过博查 Web Search 创建 seed 项目。
+    通过配置的联网搜索 provider 创建 seed 项目。
     """
     try:
         if request.content_type and 'multipart/form-data' in request.content_type:
@@ -236,7 +236,9 @@ def create_seed_from_web_search():
                 "error": "搜索输入和文件输入互斥，请不要在 Web 搜索 seed 中提交 files"
             }), 400
 
-        sources = BochaSearchService().search(
+        provider_name = WebSearchProviderFactory.get_provider_name(data.get('provider'))
+        search_service = WebSearchProviderFactory.create(provider_name)
+        sources = search_service.search(
             query=query,
             count=data.get('count'),
             freshness=data.get('freshness'),
@@ -264,6 +266,7 @@ def create_seed_from_web_search():
             query=query,
             additional_context=additional_context,
         )
+        seed_result.seed_metadata["web_search_provider"] = provider_name
         _persist_seed_analysis(project, seed_result, sources=sources)
         ProjectManager.save_project(project)
 

@@ -44,6 +44,12 @@ class Config:
     LLM_WEB_SEARCH_STRATEGY = os.environ.get('LLM_WEB_SEARCH_STRATEGY', 'max')
     LLM_WEB_SEARCH_VALIDATE_LINKS = os.environ.get('LLM_WEB_SEARCH_VALIDATE_LINKS', 'true').lower() in {'1', 'true', 'yes', 'on'}
     REAL_ENTITY_BATCH_SIZE = int(os.environ.get('REAL_ENTITY_BATCH_SIZE', '30'))
+
+    # 联网搜索 provider 配置
+    # 默认优先使用阿里百炼 OpenAI 兼容模式的 websearch 能力；博查仅在显式启用时使用。
+    USE_BOCHA_WEB_SEARCH = os.environ.get('USE_BOCHA_WEB_SEARCH', 'false').lower() in {'1', 'true', 'yes', 'on'}
+    WEB_SEARCH_PROVIDER = os.environ.get('WEB_SEARCH_PROVIDER', 'bailian').strip().lower()
+    DEFAULT_WEB_SEARCH_PROVIDER = 'bocha' if USE_BOCHA_WEB_SEARCH else (WEB_SEARCH_PROVIDER or 'bailian')
     
     # Zep配置
     ZEP_API_KEY = os.environ.get('ZEP_API_KEY')
