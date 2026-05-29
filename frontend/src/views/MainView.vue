@@ -445,9 +445,9 @@ const handleOntologyGenerated = async (data) => {
   })
   refreshSessions()
 
-  router.replace({ name: 'Process', params: { projectId: data.project_id } })
   addLog(`Ontology generated successfully for project ${data.project_id}`)
   await startBuildGraph()
+  router.replace({ name: 'Process', params: { projectId: data.project_id } })
 }
 
 const handleWorkspaceStarted = (data = {}) => {

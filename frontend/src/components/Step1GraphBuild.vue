@@ -613,13 +613,6 @@ const handleGenerateOntology = async () => {
   if (!canGenerateOntology.value) return
   ontologyGenerating.value = true
   localError.value = ''
-  emit('workspace-started', {
-    project_id: currentProjectId.value,
-    simulation_requirement: simulationRequirement.value.trim(),
-    seed_summary_md: seedResult.value?.seed_summary_md,
-    analysis_summary: seedResult.value?.analysis_summary,
-    search_query: searchQuery.value.trim()
-  })
   emit('add-log', 'Generating ontology from confirmed simulation requirement...')
   try {
     const payload = {
