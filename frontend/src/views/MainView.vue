@@ -1,65 +1,124 @@
 <template>
-  <div class="main-view">
-    <!-- Header -->
-    <header class="app-header">
-      <div class="header-left">
-        <div class="brand" @click="router.push('/')">传播推演</div>
-      </div>
+  <div class="main-view" :class="{ 'landing-mode': isLandingMode }">
 
-      <div class="header-center">
-        <div class="view-switcher">
-          <button
-            v-for="mode in ['graph', 'split', 'workbench']"
-            :key="mode"
-            class="switch-btn"
-            :class="{ active: viewMode === mode }"
-            @click="viewMode = mode"
-          >
-            {{ { graph: '图谱', split: '双栏', workbench: '工作台' }[mode] }}
-          </button>
+    <!-- 薄左侧图标栏（始终显示） -->
+    <aside class="icon-sidebar">
+      <div class="icon-sidebar-top">
+        <button class="icon-btn" title="首页" aria-label="首页" @click="startNewSession">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        </button>
+        <button class="icon-btn" :class="{ active: showHistory }" title="历史记录" aria-label="历史记录" @click="showHistory = !showHistory">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>
+        </button>
+      </div>
+    </aside>
+
+    <!-- 历史记录面板（可切换） -->
+    <aside class="history-panel" :class="{ visible: showHistory }">
+      <div class="history-panel-header">
+        <button class="new-chat-btn" @click="startNewSession">+ 新建对话</button>
+      </div>
+      <div class="history-panel-list">
+        <div v-if="sessions.length === 0" class="history-empty">暂无历史记录</div>
+        <div
+          v-for="session in sessions"
+          :key="session.projectId"
+          class="history-item"
+          :class="{ active: currentProjectId === session.projectId }"
+          @click="navigateToSession(session.projectId)"
+        >
+          <span class="history-item-title">{{ session.title }}</span>
+          <span class="history-item-date">{{ formatDate(session.createdAt) }}</span>
         </div>
       </div>
+    </aside>
 
-      <div class="header-right">
-        <div class="workflow-step">
-          <span class="step-num">Step {{ currentStep }}/5</span>
-          <span class="step-name">{{ stepNames[currentStep - 1] }}</span>
-        </div>
-        <div class="step-divider"></div>
-        <span class="status-indicator" :class="statusClass">
-          <span class="dot"></span>
-          {{ statusText }}
-        </span>
-      </div>
-    </header>
+    <!-- 主内容区 -->
+    <div class="main-content">
 
-    <!-- Workspace: sidebar + content -->
-    <div class="workspace">
-      <!-- 历史侧边栏（仅 Step 1 时显示） -->
-      <aside v-if="currentStep === 1" class="history-sidebar">
-        <div class="sidebar-header">
-          <span class="sidebar-brand">MiroFish</span>
-          <button class="new-chat-btn" @click="startNewSession">+ 新建对话</button>
+      <!-- 首页 Header（简洁模式） -->
+      <header v-if="isLandingMode" class="app-header landing-header">
+        <div class="header-left">
+          <span class="brand">传播推演</span>
         </div>
-        <div class="sidebar-list">
-          <div v-if="sessions.length === 0" class="sidebar-empty">暂无历史记录</div>
-          <div
-            v-for="session in sessions"
-            :key="session.projectId"
-            class="sidebar-item"
-            :class="{ active: currentProjectId === session.projectId }"
-            @click="router.push('/process/' + session.projectId)"
-          >
-            <span class="sidebar-item-title">{{ session.title }}</span>
-            <span class="sidebar-item-date">{{ new Date(session.createdAt).toLocaleDateString('zh-CN') }}</span>
+        <div class="header-right">
+          <div class="status-pill">
+            <span class="pill-step">Step {{ currentStep }}/5</span>
+            <span class="pill-name">{{ stepNames[currentStep - 1] }}</span>
+            <span class="pill-divider">|</span>
+            <span class="pill-dot" :class="statusClass"></span>
+            <span class="pill-status">{{ statusText }}</span>
           </div>
         </div>
-      </aside>
+      </header>
 
-      <!-- Main Content Area -->
-      <main class="content-area">
-        <!-- Left Panel: Graph (Step 2+ 时显示) -->
-        <div v-if="currentStep > 1" class="panel-wrapper left" :style="leftPanelStyle">
+      <!-- 二级页 Header（完整模式） -->
+      <template v-else>
+        <header class="workspace-topbar">
+          <button type="button" class="back-brand-btn" @click="startNewSession" title="返回传播推演">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 18l-6-6 6-6"/></svg>
+            <span>传播推演</span>
+          </button>
+
+          <nav class="workflow-nav" aria-label="推演流程">
+            <span
+              v-for="(name, idx) in stepNames"
+              :key="idx"
+              class="workflow-nav-item"
+              :class="{ active: currentStep === idx + 1, completed: currentStep > idx + 1 }"
+            >
+              {{ name }}
+              <span v-if="idx < stepNames.length - 1" class="workflow-nav-arrow">»</span>
+            </span>
+          </nav>
+
+          <div class="topbar-actions" aria-hidden="true">
+            <span class="topbar-icon-dot"></span>
+            <span class="topbar-avatar"></span>
+          </div>
+        </header>
+
+        <header class="app-header workspace-header">
+          <div class="header-left">
+            <span class="event-title">{{ projectTitle }}</span>
+            <button class="info-icon-btn" title="事件信息">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+            </button>
+          </div>
+          <div class="header-center">
+            <div class="view-switcher">
+              <button v-for="mode in viewModes" :key="mode.key" class="switch-btn" :class="{ active: viewMode === mode.key }" @click="viewMode = mode.key">{{ mode.label }}</button>
+            </div>
+          </div>
+          <div class="header-right">
+            <span class="step-badge">Step {{ currentStep }}/5</span>
+            <span class="step-label">{{ stepNames[currentStep - 1] }}</span>
+            <span class="step-divider"></span>
+            <span class="status-dot" :class="statusClass"></span>
+            <span class="status-text">{{ statusText }}</span>
+          </div>
+        </header>
+      </template>
+
+      <!-- 首页内容区（Step1 输入/结果阶段） -->
+      <div v-if="isLandingMode" class="landing-content">
+        <Step1GraphBuild
+          :currentPhase="currentPhase"
+          :projectData="projectData"
+          :pendingUpload="pendingUploadState"
+          :ontologyProgress="ontologyProgress"
+          :buildProgress="buildProgress"
+          :graphData="graphData"
+          :systemLogs="systemLogs"
+          @ontology-generated="handleOntologyGenerated"
+          @add-log="addLog"
+          @next-step="handleNextStep"
+        />
+      </div>
+
+      <!-- 二级页内容区（进度阶段 + Step2+） -->
+      <div v-else class="workspace-content">
+        <div class="panel-wrapper left" :style="leftPanelStyle">
           <GraphPanel
             :graphData="graphData"
             :loading="graphLoading"
@@ -68,15 +127,13 @@
             @toggle-maximize="toggleMaximize('graph')"
           />
         </div>
-
-        <!-- Right Panel: Step Components -->
         <div class="panel-wrapper right" :style="rightPanelStyle">
-          <!-- Step 1: 图谱构建 -->
           <Step1GraphBuild
             v-if="currentStep === 1"
             :currentPhase="currentPhase"
             :projectData="projectData"
             :pendingUpload="pendingUploadState"
+            :ontologyProgress="ontologyProgress"
             :buildProgress="buildProgress"
             :graphData="graphData"
             :systemLogs="systemLogs"
@@ -84,7 +141,6 @@
             @add-log="addLog"
             @next-step="handleNextStep"
           />
-          <!-- Step 2: 环境搭建 -->
           <Step2EnvSetup
             v-else-if="currentStep === 2"
             :simulationId="currentSimulationId"
@@ -98,7 +154,8 @@
             @simulation-created="handleSimulationCreated"
           />
         </div>
-      </main>
+      </div>
+
     </div>
   </div>
 </template>
@@ -117,14 +174,17 @@ import { getSessions, addSession } from '../store/sessionHistory'
 const route = useRoute()
 const router = useRouter()
 
-// Layout State
-const viewMode = ref('split') // graph | split | workbench
+const viewMode = ref('split')
+const viewModes = [
+  { key: 'graph', label: '图谱' },
+  { key: 'split', label: '双栏' },
+  { key: 'workbench', label: '工作台' }
+]
+const showHistory = ref(false)
 
-// Step State
-const currentStep = ref(1) // 1: 图谱构建, 2: 环境搭建, 3: 开始模拟, 4: 报告生成, 5: 深度互动
-const stepNames = ['图谱构建', '环境搭建', '开始模拟', '报告生成', '深度互动']
+const currentStep = ref(1)
+const stepNames = ['图谱构建', '环境搭建', '双平台推演', '生成报告', '深入对话']
 
-// Data State
 const currentProjectId = ref(route.params.projectId)
 const loading = ref(false)
 const graphLoading = ref(false)
@@ -132,24 +192,39 @@ const error = ref('')
 const projectData = ref(null)
 const graphData = ref(null)
 const currentSimulationId = ref('')
-const currentPhase = ref(-1) // -1: Upload, 0: Ontology, 1: Build, 2: Complete
+const currentPhase = ref(-1)
 const ontologyProgress = ref(null)
 const buildProgress = ref(null)
 const systemLogs = ref([])
 const pendingUploadState = ref(null)
 const simulationCreating = ref(false)
-const envSetupStatus = ref('processing') // processing | completed | error
+const envSetupStatus = ref('processing')
 
-// 历史会话
 const sessions = ref(getSessions())
 
-const refreshSessions = () => {
-  sessions.value = getSessions()
+const isLandingMode = computed(() => currentStep.value === 1 && currentPhase.value < 0 && !projectData.value?.ontology)
+
+const projectTitle = computed(() => {
+  const directTitle = projectData.value?.simulation_requirement || projectData.value?.search_query
+  if (directTitle) return directTitle.slice(0, 54)
+  const summary = projectData.value?.seed_summary_md || projectData.value?.analysis_summary || ''
+  const firstLine = summary.split('\n').map(line => line.replace(/^#+\s*/, '').trim()).find(Boolean)
+  if (firstLine) return firstLine.slice(0, 54)
+  return '事件概述'
+})
+
+const refreshSessions = () => { sessions.value = getSessions() }
+
+const formatDate = (ts) => new Date(ts).toLocaleDateString('zh-CN')
+
+const navigateToSession = (projectId) => {
+  showHistory.value = false
+  router.push('/process/' + projectId)
 }
 
 const startNewSession = () => {
+  showHistory.value = false
   if (route.params.projectId === 'new') {
-    // 已在新建页面，手动重置状态
     currentStep.value = 1
     currentPhase.value = -1
     projectData.value = null
@@ -167,31 +242,25 @@ const startNewSession = () => {
   }
 }
 
-// Polling timers
 let pollTimer = null
 let graphPollTimer = null
 let graphPollCount = 0
 const GRAPH_BUILD_POLL_INTERVAL_MS = 60000
 const GRAPH_BUILD_MAX_POLL_COUNT = 3
 
-// --- Computed Layout Styles ---
 const leftPanelStyle = computed(() => {
-  // Step 1 时隐藏图谱面板，让 Step1GraphBuild 占满右侧
-  if (currentStep.value === 1) return { width: '0%', opacity: 0, pointerEvents: 'none' }
-  if (viewMode.value === 'graph') return { width: '100%', opacity: 1, transform: 'translateX(0)' }
-  if (viewMode.value === 'workbench') return { width: '0%', opacity: 0, transform: 'translateX(-20px)' }
-  return { width: '50%', opacity: 1, transform: 'translateX(0)' }
+  if (viewMode.value === 'graph') return { width: '100%', opacity: 1 }
+  if (viewMode.value === 'workbench') return { width: '0%', opacity: 0, pointerEvents: 'none' }
+  return { width: '50%', opacity: 1 }
 })
 
 const rightPanelStyle = computed(() => {
-  // Step 1 时右侧面板占满全部宽度
-  if (currentStep.value === 1) return { width: '100%', opacity: 1, transform: 'translateX(0)' }
-  if (viewMode.value === 'workbench') return { width: '100%', opacity: 1, transform: 'translateX(0)' }
-  if (viewMode.value === 'graph') return { width: '0%', opacity: 0, transform: 'translateX(20px)' }
-  return { width: '50%', opacity: 1, transform: 'translateX(0)' }
+  if (viewMode.value === 'workbench') return { width: '100%', opacity: 1 }
+  if (viewMode.value === 'graph') return { width: '0%', opacity: 0, pointerEvents: 'none' }
+  return { width: '50%', opacity: 1 }
 })
 
-// --- Status Computed ---
+
 const statusClass = computed(() => {
   if (error.value) return 'error'
   if (simulationCreating.value) return 'processing'
@@ -202,81 +271,53 @@ const statusClass = computed(() => {
 
 const statusText = computed(() => {
   if (error.value) return '错误'
-  if (simulationCreating.value) return '创建模拟实例'
+  if (simulationCreating.value) return '创建中'
   if (currentStep.value === 2) {
     if (envSetupStatus.value === 'error') return '错误'
-    if (envSetupStatus.value === 'completed') return '就绪'
+    if (envSetupStatus.value === 'completed') return 'Ready'
     return '准备中'
   }
-  if (currentPhase.value >= 2) return '就绪'
-  if (currentPhase.value === 1) return '图谱构建中'
-  if (currentPhase.value === 0) return '本体生成中'
+  if (currentPhase.value >= 2) return 'Ready'
+  if (currentPhase.value === 1) return 'Building'
+  if (currentPhase.value === 0) return '生成中'
   return '等待输入'
 })
 
-// --- Helpers ---
 const addLog = (msg) => {
   const now = new Date()
   const time = now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '.' + now.getMilliseconds().toString().padStart(3, '0')
   systemLogs.value.push({ time, msg })
-  // Keep last 100 logs
-  if (systemLogs.value.length > 100) {
-    systemLogs.value.shift()
-  }
+  if (systemLogs.value.length > 100) systemLogs.value.shift()
 }
 
-// --- Layout Methods ---
 const toggleMaximize = (target) => {
-  if (viewMode.value === target) {
-    viewMode.value = 'split'
-  } else {
-    viewMode.value = target
-  }
+  viewMode.value = viewMode.value === target ? 'split' : target
 }
+
 
 const handleNextStep = (params = {}) => {
   if (currentStep.value === 1) {
     enterEnvironmentSetup()
     return
   }
-
   if (currentStep.value === 2) {
     addLog('进入 Step 3: 开始模拟')
-
-    if (params.maxRounds) {
-      addLog(`自定义模拟轮数: ${params.maxRounds} 轮`)
-    } else {
-      addLog('使用自动配置的模拟轮数')
-    }
-
-    const routeParams = {
-      name: 'SimulationRun',
-      params: { simulationId: currentSimulationId.value }
-    }
-
-    if (params.maxRounds) {
-      routeParams.query = { maxRounds: params.maxRounds }
-    }
-
+    const routeParams = { name: 'SimulationRun', params: { simulationId: currentSimulationId.value } }
+    if (params.maxRounds) routeParams.query = { maxRounds: params.maxRounds }
     router.push(routeParams)
     return
   }
-
   if (currentStep.value < 5) {
     currentStep.value++
     addLog(`进入 Step ${currentStep.value}: ${stepNames[currentStep.value - 1]}`)
   }
 }
 
-const updateEnvStatus = (status) => {
-  envSetupStatus.value = status || 'processing'
-}
+const updateEnvStatus = (status) => { envSetupStatus.value = status || 'processing' }
 
 const handleSimulationCreated = (simulationId) => {
   currentSimulationId.value = simulationId || ''
-  if (currentSimulationId.value) {
-    addLog(`模拟实例同步完成: ${currentSimulationId.value}`)
-  }
+  if (currentSimulationId.value) addLog(`模拟实例同步完成: ${currentSimulationId.value}`)
 }
 
 const handleGoBack = () => {
@@ -285,8 +326,6 @@ const handleGoBack = () => {
     addLog(`返回 Step ${currentStep.value}: ${stepNames[currentStep.value - 1]}`)
   }
 }
-
-// --- Data Logic ---
 
 const initProject = async () => {
   addLog('Project view initialized.')
@@ -308,13 +347,13 @@ const handleNewProject = async () => {
   addLog('Step1 ready. Waiting for seed input.')
 }
 
+
 const handleOntologyGenerated = async (data) => {
   if (!data?.project_id) {
     error.value = '本体生成结果缺少 project_id'
     addLog('Error: ontology result missing project_id.')
     return
   }
-
   currentProjectId.value = data.project_id
   projectData.value = data
   currentPhase.value = 0
@@ -323,7 +362,6 @@ const handleOntologyGenerated = async (data) => {
   clearPendingUpload()
   pendingUploadState.value = null
 
-  // 记录会话历史
   addSession({
     id: data.project_id,
     title: (data.seed_summary_md || '新会话').slice(0, 40),
@@ -346,7 +384,6 @@ const loadProject = async () => {
       projectData.value = res.data
       updatePhaseByStatus(res.data.status)
       addLog(`Project loaded. Status: ${res.data.status}`)
-      
       if (res.data.status === 'ontology_generated' && !res.data.graph_id) {
         await startBuildGraph()
       } else if (res.data.status === 'graph_building' && res.data.graph_build_task_id) {
@@ -369,52 +406,36 @@ const loadProject = async () => {
   }
 }
 
+
 const ensureProjectReadyForSimulation = async () => {
   if (!projectData.value?.graph_id && currentProjectId.value && currentProjectId.value !== 'new') {
     const res = await getProject(currentProjectId.value)
-    if (res.success) {
-      projectData.value = res.data
-    } else {
-      throw new Error(res.error || '项目数据加载失败')
-    }
+    if (res.success) projectData.value = res.data
+    else throw new Error(res.error || '项目数据加载失败')
   }
-
-  if (!projectData.value?.project_id) {
-    throw new Error('缺少 project_id，无法创建模拟实例')
-  }
-
-  if (!projectData.value?.graph_id) {
-    throw new Error('项目尚未完成图谱构建，无法进入环境搭建')
-  }
+  if (!projectData.value?.project_id) throw new Error('缺少 project_id，无法创建模拟实例')
+  if (!projectData.value?.graph_id) throw new Error('项目尚未完成图谱构建，无法进入环境搭建')
 }
 
 const enterEnvironmentSetup = async () => {
   if (simulationCreating.value) return
-
   try {
     error.value = ''
     envSetupStatus.value = 'processing'
     await ensureProjectReadyForSimulation()
-
     if (!currentSimulationId.value) {
       simulationCreating.value = true
       addLog('正在创建模拟实例...')
-
       const res = await createSimulation({
         project_id: projectData.value.project_id,
         graph_id: projectData.value.graph_id,
         enable_twitter: true,
         enable_reddit: true
       })
-
-      if (!res.success || !res.data?.simulation_id) {
-        throw new Error(res.error || '创建模拟实例失败')
-      }
-
+      if (!res.success || !res.data?.simulation_id) throw new Error(res.error || '创建模拟实例失败')
       currentSimulationId.value = res.data.simulation_id
       addLog(`模拟实例创建完成: ${currentSimulationId.value}`)
     }
-
     currentStep.value = 2
     addLog(`进入 Step 2: ${stepNames[1]}`)
   } catch (err) {
@@ -428,21 +449,20 @@ const enterEnvironmentSetup = async () => {
 
 const updatePhaseByStatus = (status) => {
   switch (status) {
-    case 'created':
-      currentPhase.value = -1; break;
-    case 'ontology_generated': currentPhase.value = 0; break;
-    case 'graph_building': currentPhase.value = 1; break;
-    case 'graph_completed': currentPhase.value = 2; break;
-    case 'failed': error.value = 'Project failed'; break;
+    case 'created': currentPhase.value = -1; break
+    case 'ontology_generated': currentPhase.value = 0; break
+    case 'graph_building': currentPhase.value = 1; break
+    case 'graph_completed': currentPhase.value = 2; break
+    case 'failed': error.value = 'Project failed'; break
   }
 }
+
 
 const startBuildGraph = async () => {
   try {
     currentPhase.value = 1
     buildProgress.value = { progress: 0, message: 'Starting build...' }
     addLog('Initiating graph build...')
-    
     const res = await buildGraph({ project_id: currentProjectId.value })
     if (res.success) {
       addLog(`Graph build task started. Task ID: ${res.data.task_id}`)
@@ -461,33 +481,28 @@ const startBuildGraph = async () => {
 const startGraphPolling = () => {
   if (graphPollTimer) return
   graphPollCount = 0
-  addLog('图谱构建中，降低全量图谱刷新频率以减少后端压力。')
   graphPollTimer = setInterval(async () => {
     graphPollCount += 1
     await fetchGraphData({ skipBuilding: true, quiet: true })
     if (graphPollCount >= GRAPH_BUILD_MAX_POLL_COUNT) {
       stopGraphPolling()
-      addLog('构建阶段全量图谱低频刷新已暂停，完成后会自动加载最终图谱。')
     }
   }, GRAPH_BUILD_POLL_INTERVAL_MS)
 }
 
 const fetchGraphData = async (options = {}) => {
   try {
-    // Refresh project info to check for graph_id
     const projRes = await getProject(currentProjectId.value)
     if (projRes.success && projRes.data.graph_id) {
       projectData.value = projRes.data
-      if (options.skipBuilding && projRes.data.status === 'graph_building') {
-        return
-      }
+      if (options.skipBuilding && projRes.data.status === 'graph_building') return
       const gRes = await getGraphData(projRes.data.graph_id)
       if (gRes.success) {
         graphData.value = gRes.data
-        const nodeCount = gRes.data.node_count || gRes.data.nodes?.length || 0
-        const edgeCount = gRes.data.edge_count || gRes.data.edges?.length || 0
         if (!options.quiet) {
-          addLog(`Graph data refreshed. Nodes: ${nodeCount}, Edges: ${edgeCount}`)
+          const nc = gRes.data.node_count || gRes.data.nodes?.length || 0
+          const ec = gRes.data.edge_count || gRes.data.edges?.length || 0
+          addLog(`Graph refreshed. Nodes: ${nc}, Edges: ${ec}`)
         }
       }
     }
@@ -496,9 +511,10 @@ const fetchGraphData = async (options = {}) => {
   }
 }
 
+
 const startPollingTask = (taskId) => {
-  pollTaskStatus(taskId)
   pollTimer = setInterval(() => pollTaskStatus(taskId), 2000)
+  pollTaskStatus(taskId)
 }
 
 const pollTaskStatus = async (taskId) => {
@@ -506,25 +522,17 @@ const pollTaskStatus = async (taskId) => {
     const res = await getTaskStatus(taskId)
     if (res.success) {
       const task = res.data
-      
-      // Log progress message if it changed
-      if (task.message && task.message !== buildProgress.value?.message) {
-        addLog(task.message)
-      }
-      
+      if (task.message && task.message !== buildProgress.value?.message) addLog(task.message)
       buildProgress.value = { progress: task.progress || 0, message: task.message }
-      
       if (task.status === 'completed') {
         addLog('Graph build task completed.')
         stopPolling()
-        stopGraphPolling() // Stop polling, do final load
+        stopGraphPolling()
         currentPhase.value = 2
-        
-        // Final load
         const projRes = await getProject(currentProjectId.value)
         if (projRes.success && projRes.data.graph_id) {
-            projectData.value = projRes.data
-            await loadGraph(projRes.data.graph_id)
+          projectData.value = projRes.data
+          await loadGraph(projRes.data.graph_id)
         }
       } else if (task.status === 'failed') {
         stopPolling()
@@ -533,7 +541,16 @@ const pollTaskStatus = async (taskId) => {
       }
     }
   } catch (e) {
-    console.error(e)
+    if (e?.response?.status === 404 || /任务不存在/.test(e?.message || '')) {
+      stopPolling()
+      buildProgress.value = {
+        progress: buildProgress.value?.progress || 0,
+        message: '图谱构建任务记录不存在，请刷新项目状态或重新构建。'
+      }
+      addLog(`图谱构建任务不存在，已停止轮询: ${taskId}`)
+      return
+    }
+    addLog(`查询图谱构建任务失败: ${e.message || '未知错误'}`)
   }
 }
 
@@ -542,50 +559,24 @@ const loadGraph = async (graphId) => {
   addLog(`Loading full graph data: ${graphId}`)
   try {
     const res = await getGraphData(graphId)
-    if (res.success) {
-      graphData.value = res.data
-      addLog('Graph data loaded successfully.')
-    } else {
-      addLog(`Failed to load graph data: ${res.error}`)
-    }
-  } catch (e) {
-    addLog(`Exception loading graph: ${e.message}`)
-  } finally {
-    graphLoading.value = false
-  }
+    if (res.success) { graphData.value = res.data; addLog('Graph data loaded successfully.') }
+    else addLog(`Failed to load graph data: ${res.error}`)
+  } catch (e) { addLog(`Exception loading graph: ${e.message}`) }
+  finally { graphLoading.value = false }
 }
 
 const refreshGraph = () => {
-  if (projectData.value?.graph_id) {
-    addLog('Manual graph refresh triggered.')
-    loadGraph(projectData.value.graph_id)
-  }
+  if (projectData.value?.graph_id) { addLog('Manual graph refresh.'); loadGraph(projectData.value.graph_id) }
 }
 
-const stopPolling = () => {
-  if (pollTimer) {
-    clearInterval(pollTimer)
-    pollTimer = null
-  }
-}
+const stopPolling = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } }
+const stopGraphPolling = () => { if (graphPollTimer) { clearInterval(graphPollTimer); graphPollTimer = null } ; graphPollCount = 0 }
 
-const stopGraphPolling = () => {
-  if (graphPollTimer) {
-    clearInterval(graphPollTimer)
-    graphPollTimer = null
-    addLog('Graph polling stopped.')
-  }
-  graphPollCount = 0
-}
-
-onMounted(() => {
-  initProject()
-})
+onMounted(() => { initProject() })
 
 watch(() => route.params.projectId, (newId, oldId) => {
   if (newId && newId !== oldId) {
     currentProjectId.value = newId
-    // 重置状态
     currentStep.value = 1
     currentPhase.value = -1
     projectData.value = null
@@ -601,179 +592,83 @@ watch(() => route.params.projectId, (newId, oldId) => {
   }
 })
 
-onUnmounted(() => {
-  stopPolling()
-  stopGraphPolling()
-})
+onUnmounted(() => { stopPolling(); stopGraphPolling() })
 </script>
 
 <style scoped>
 .main-view {
   height: 100vh;
   display: flex;
-  flex-direction: column;
-  background: #FFF;
   overflow: hidden;
   font-family: 'Space Grotesk', 'Noto Sans SC', system-ui, sans-serif;
+  background: #FFF;
 }
 
-/* Header */
-.app-header {
-  height: 60px;
-  border-bottom: 1px solid #EAEAEA;
+/* 薄左侧图标栏 */
+.icon-sidebar {
+  width: 56px;
+  min-width: 56px;
+  background: #FAFAFA;
+  border-right: 1px solid #EAEAEA;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: space-between;
-  padding: 0 24px;
-  background: #FFF;
-  z-index: 100;
-  position: relative;
+  padding: 16px 0;
+  z-index: 200;
 }
 
-.header-center {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-}
-
-.brand {
-  font-family: 'JetBrains Mono', monospace;
-  font-weight: 800;
-  font-size: 18px;
-  letter-spacing: 1px;
-  cursor: pointer;
-}
-
-.view-switcher {
+.icon-sidebar-top {
   display: flex;
-  background: #F5F5F5;
-  padding: 4px;
-  border-radius: 6px;
-  gap: 4px;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
 }
 
-.switch-btn {
+.icon-btn {
+  width: 36px;
+  height: 36px;
   border: none;
   background: transparent;
-  padding: 6px 16px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #666;
-  border-radius: 4px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
-  transition: all 0.2s;
+  color: #6B7280;
+  transition: all 0.15s;
 }
 
-.switch-btn.active {
+.icon-btn:hover { background: #F0F0F0; color: #1A1A2E; }
+.icon-btn.active { background: #EFF6FF; color: #1677FF; }
+
+/* 历史面板 */
+.history-panel {
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
   background: #FFF;
-  color: #000;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-}
-
-.status-indicator {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: #666;
-  font-weight: 500;
-}
-
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.workflow-step {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-}
-
-.step-num {
-  font-family: 'JetBrains Mono', monospace;
-  font-weight: 700;
-  color: #999;
-}
-
-.step-name {
-  font-weight: 700;
-  color: #000;
-}
-
-.step-divider {
-  width: 1px;
-  height: 14px;
-  background-color: #E0E0E0;
-}
-
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #CCC;
-}
-
-.status-indicator.processing .dot { background: #FF5722; animation: pulse 1s infinite; }
-.status-indicator.completed .dot { background: #4CAF50; }
-.status-indicator.error .dot { background: #F44336; }
-
-@keyframes pulse { 50% { opacity: 0.5; } }
-
-/* Content */
-.workspace {
-  flex: 1;
-  display: flex;
-  overflow: hidden;
-}
-
-.content-area {
-  flex: 1;
-  display: flex;
-  position: relative;
-  overflow: hidden;
-}
-
-.panel-wrapper {
-  height: 100%;
-  overflow: hidden;
-  transition: width 0.4s cubic-bezier(0.25, 0.8, 0.25, 1), opacity 0.3s ease, transform 0.3s ease;
-  will-change: width, opacity, transform;
-}
-
-.panel-wrapper.left {
   border-right: 1px solid #EAEAEA;
-}
-
-/* 历史侧边栏 */
-.history-sidebar {
-  width: 240px;
-  min-width: 240px;
-  background: #FFFFFF;
-  border-right: 1px solid #EAEAEA;
-  display: flex;
+  transition: width 0.25s ease, min-width 0.25s ease;
+  display: none;
   flex-direction: column;
-  overflow: hidden;
+  z-index: 150;
+  flex-shrink: 0;
 }
 
-.sidebar-header {
+.history-panel.visible {
+  display: flex;
+  width: 260px;
+  min-width: 260px;
+}
+
+.history-panel-header {
   padding: 16px;
   border-bottom: 1px solid #EAEAEA;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.sidebar-brand {
-  font-family: 'JetBrains Mono', monospace;
-  font-weight: 800;
-  font-size: 16px;
-  color: #1677FF;
 }
 
 .new-chat-btn {
+  width: 100%;
   background: linear-gradient(135deg, #1677FF, #6366F1);
   color: #FFF;
   border: none;
@@ -785,24 +680,22 @@ onUnmounted(() => {
   transition: opacity 0.2s;
 }
 
-.new-chat-btn:hover {
-  opacity: 0.88;
-}
+.new-chat-btn:hover { opacity: 0.88; }
 
-.sidebar-list {
+.history-panel-list {
   flex: 1;
   overflow-y: auto;
   padding: 8px;
 }
 
-.sidebar-empty {
+.history-empty {
   text-align: center;
   color: #9CA3AF;
   font-size: 13px;
   padding: 24px 16px;
 }
 
-.sidebar-item {
+.history-item {
   padding: 10px 12px;
   border-radius: 8px;
   cursor: pointer;
@@ -812,15 +705,10 @@ onUnmounted(() => {
   gap: 4px;
 }
 
-.sidebar-item:hover {
-  background: #F3F4F6;
-}
+.history-item:hover { background: #F3F4F6; }
+.history-item.active { background: #EFF6FF; }
 
-.sidebar-item.active {
-  background: #EFF6FF;
-}
-
-.sidebar-item-title {
+.history-item-title {
   font-size: 13px;
   color: #1A1A2E;
   font-weight: 500;
@@ -829,8 +717,318 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-.sidebar-item-date {
-  font-size: 11px;
+.history-item-date { font-size: 11px; color: #9CA3AF; }
+
+/* 主内容区 */
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Header 通用 */
+.app-header {
+  height: 56px;
+  border-bottom: 1px solid #EAEAEA;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  background: #FFF;
+  z-index: 100;
+  flex-shrink: 0;
+}
+
+/* 首页 Header */
+.landing-header .header-left { display: flex; align-items: center; }
+
+.landing-header .brand {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 800;
+  font-size: 16px;
+  color: #1A1A2E;
+}
+
+.landing-header .header-right {
+  display: flex;
+  align-items: center;
+}
+
+.status-pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #FFF;
+  border: 1px solid #EAEAEA;
+  border-radius: 20px;
+  padding: 8px 20px;
+  font-size: 13px;
+  box-shadow: 0 1px 6px rgba(0,0,0,0.04);
+}
+
+.pill-step {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
   color: #9CA3AF;
+}
+
+.pill-name { font-weight: 700; color: #1A1A2E; }
+.pill-divider { color: #D1D5DB; }
+
+.pill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #FFAB91;
+}
+
+.pill-dot.processing { background: #FF5722; animation: pulse 1s infinite; }
+.pill-dot.completed { background: #4CAF50; }
+.pill-dot.error { background: #F44336; }
+
+.pill-status { color: #6B7280; }
+
+/* 二级页顶部流程栏 */
+.workspace-topbar {
+  height: 56px;
+  border-bottom: 1px solid #EAEAEA;
+  background: #FFF;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(180px, 1fr);
+  align-items: center;
+  padding: 0 24px;
+  flex-shrink: 0;
+  z-index: 110;
+}
+
+.back-brand-btn {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  color: #111827;
+  font-size: 18px;
+  font-weight: 800;
+  cursor: pointer;
+  padding: 8px 4px;
+  transition: color 0.2s;
+}
+
+.back-brand-btn:hover {
+  color: #1677FF;
+}
+
+.workflow-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.workflow-nav-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  color: #9CA3AF;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.workflow-nav-item.active {
+  color: #1677FF;
+  background: #EFF6FF;
+  box-shadow: 0 8px 20px rgba(22, 119, 255, 0.12);
+  border-radius: 999px;
+  padding: 8px 18px;
+}
+
+.workflow-nav-item.completed {
+  color: #4B5563;
+}
+
+.workflow-nav-arrow {
+  color: #C7CDD8;
+  font-weight: 500;
+}
+
+.topbar-actions {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.topbar-icon-dot {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #111827;
+  border-radius: 50%;
+  position: relative;
+}
+
+.topbar-icon-dot::after {
+  content: '';
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #EF4444;
+}
+
+.topbar-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #2563EB, #A5B4FC);
+}
+
+/* 二级页 Header */
+.workspace-header .header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.event-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1A1A2E;
+}
+
+.info-icon-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #9CA3AF;
+}
+
+.workspace-header .header-center {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.view-switcher {
+  display: flex;
+  background: #F5F5F5;
+  padding: 3px;
+  border-radius: 6px;
+  gap: 2px;
+}
+
+.switch-btn {
+  border: none;
+  background: transparent;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #666;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.switch-btn.active {
+  background: #FFF;
+  color: #000;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+.workspace-header .header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.step-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  color: #9CA3AF;
+}
+
+.step-label { font-weight: 600; color: #1A1A2E; }
+
+.step-divider {
+  width: 1px;
+  height: 14px;
+  background: #E5E7EB;
+  margin: 0 4px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #CCC;
+}
+
+.status-dot.processing { background: #FF5722; animation: pulse 1s infinite; }
+.status-dot.completed { background: #4CAF50; }
+.status-dot.error { background: #F44336; }
+
+.status-text { color: #6B7280; font-size: 12px; }
+
+@keyframes pulse { 50% { opacity: 0.5; } }
+
+/* 首页内容区 */
+.landing-content {
+  flex: 1;
+  overflow: hidden;
+}
+
+/* 二级页内容区 */
+.workspace-content {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.panel-wrapper {
+  height: 100%;
+  overflow: hidden;
+  transition: width 0.3s ease, opacity 0.3s ease;
+}
+
+.panel-wrapper.left { border-right: 1px solid #EAEAEA; }
+
+@media (max-width: 960px) {
+  .workspace-topbar {
+    grid-template-columns: 1fr;
+    height: auto;
+    gap: 10px;
+    padding: 12px 16px;
+  }
+
+  .back-brand-btn,
+  .topbar-actions {
+    display: none;
+  }
+
+  .workflow-nav {
+    overflow-x: auto;
+    justify-content: flex-start;
+  }
+
+  .workspace-header {
+    padding: 0 16px;
+  }
+
+  .workspace-header .header-center {
+    position: static;
+    transform: none;
+  }
 }
 </style>

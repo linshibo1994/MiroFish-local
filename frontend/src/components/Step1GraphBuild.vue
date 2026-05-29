@@ -6,8 +6,8 @@
       <div class="input-center">
         <!-- 标题区 -->
         <div class="hero-section">
-          <h1 class="hero-title">MiroFish. 传播推演</h1>
-          <p class="hero-subtitle">上传任意报告，即刻推演未来</p>
+          <h1 class="hero-title"><span class="title-news">News</span><span class="title-power">Power</span><span class="title-suffix">. 传播推演</span></h1>
+          <p class="hero-subtitle">输入任意事件，即刻推演未来</p>
           <div class="step-indicator">
             <span class="step-dot active">01 事件背景</span>
             <span class="step-line">———</span>
@@ -17,66 +17,51 @@
 
         <!-- 输入卡片 -->
         <div class="input-card">
-          <div class="input-tabs" role="tablist">
-            <button
-              type="button"
-              class="tab-btn"
-              :class="{ active: inputMode === 'web_search' }"
-              :disabled="isBusy"
-              @click="switchInputMode('web_search')"
-            >输入关键词</button>
-            <button
-              type="button"
-              class="tab-btn"
-              :class="{ active: inputMode === 'file_upload' }"
-              :disabled="isBusy"
-              @click="switchInputMode('file_upload')"
-            >上传文件</button>
-          </div>
-
-          <!-- 关键词模式 -->
-          <div v-if="inputMode === 'web_search'" class="tab-content">
+          <!-- 文字输入区 -->
+          <div class="text-input-section" :class="{ disabled: files.length > 0 }">
             <textarea
               v-model="searchQuery"
               class="keyword-textarea"
-              placeholder="输入事件关键词，例如：张雪机车夺冠事件"
-              :disabled="isBusy"
+              placeholder="请输入你想要推演的主题"
+              :disabled="isBusy || files.length > 0"
+              @input="onTextInput"
             ></textarea>
-            <div class="context-row">
-              <textarea
-                v-model="additionalContext"
-                class="context-textarea"
-                placeholder="补充上下文（可选）：关注的时间线、角色、机构或传播平台"
-                :disabled="isBusy"
-                rows="2"
-              ></textarea>
-            </div>
+            <p v-if="files.length > 0" class="input-disabled-hint">已上传文件，不可输入文字</p>
           </div>
 
-          <!-- 文件上传模式 -->
-          <div v-else class="tab-content">
-            <input
-              ref="fileInput"
-              type="file"
-              multiple
-              accept=".pdf,.md,.txt"
-              class="hidden-input"
-              :disabled="isBusy"
-              @change="handleFileSelect"
-            />
+          <!-- 分隔线 -->
+          <div class="input-divider"></div>
+
+          <!-- 文件上传区 -->
+          <input
+            ref="fileInput"
+            type="file"
+            multiple
+            accept=".pdf,.md,.txt"
+            class="hidden-input"
+            :disabled="isBusy || searchQuery.trim().length > 0"
+            @change="handleFileSelect"
+          />
+          <div class="file-upload-section" :class="{ disabled: searchQuery.trim().length > 0 }">
             <div
               class="upload-zone"
-              :class="{ 'drag-over': isDragOver, 'has-files': files.length > 0 }"
-              @click="triggerFileInput"
+              :class="{ 'drag-over': isDragOver, 'has-files': files.length > 0, disabled: searchQuery.trim().length > 0 }"
+              @click="!searchQuery.trim() && triggerFileInput()"
               @dragover.prevent="handleDragOver"
               @dragleave.prevent="handleDragLeave"
               @drop.prevent="handleDrop"
             >
-              <div v-if="files.length === 0" class="upload-placeholder">
+              <!-- 空状态 -->
+              <div v-if="files.length === 0 && !searchQuery.trim()" class="upload-placeholder">
                 <div class="upload-icon">↑</div>
                 <div class="upload-title">拖拽 PDF / MD / TXT 到这里</div>
                 <div class="upload-hint">或点击选择文件</div>
               </div>
+              <!-- 禁用状态 -->
+              <div v-else-if="searchQuery.trim().length > 0" class="upload-placeholder disabled-placeholder">
+                <div class="upload-hint">已输入文字，不可上传文件</div>
+              </div>
+              <!-- 文件列表 -->
               <div v-else class="file-list">
                 <div v-for="(file, index) in files" :key="`${file.name}-${index}`" class="file-card">
                   <div class="file-info">
@@ -88,26 +73,32 @@
                 </div>
               </div>
             </div>
-            <div class="context-row">
-              <textarea
-                v-model="additionalContext"
-                class="context-textarea"
-                placeholder="补充上下文（可选）：关注的时间线、角色、机构或传播平台"
-                :disabled="isBusy"
-                rows="2"
-              ></textarea>
-            </div>
+            <p v-if="files.length > 0" class="input-disabled-hint upload-hint-text">已上传文件，文字输入已禁用</p>
           </div>
 
-          <button
-            type="button"
-            class="primary-btn"
-            :disabled="!canAnalyze"
-            @click="analyzeSeed"
-          >
-            <span v-if="seedAnalyzing" class="spinner-sm"></span>
-            {{ seedAnalyzing ? '正在分析事件...' : '生成推演方向' }}
-          </button>
+          <!-- 补充上下文（隐藏，仅在有内容时显示） -->
+          <div v-if="additionalContext.trim()" class="context-row">
+            <textarea
+              v-model="additionalContext"
+              class="context-textarea"
+              placeholder="补充上下文（可选）：关注的时间线、角色、机构或传播平台"
+              :disabled="isBusy"
+              rows="2"
+            ></textarea>
+          </div>
+
+          <!-- 提交按钮 -->
+          <div class="submit-row">
+            <button
+              type="button"
+              class="primary-btn submit-btn"
+              :disabled="!canAnalyze"
+              @click="analyzeSeed"
+            >
+              <span v-if="seedAnalyzing" class="spinner-sm"></span>
+              {{ seedAnalyzing ? '正在分析...' : '生成推演方向' }}
+            </button>
+          </div>
 
           <p v-if="localError" class="error-text">{{ localError }}</p>
         </div>
@@ -119,43 +110,43 @@
             <div class="feature-card">
               <span class="feature-icon">◈</span>
               <div class="feature-content">
-                <div class="feature-name">多平台模拟</div>
-                <div class="feature-desc">覆盖微博、微信、抖音等主流平台</div>
+                <div class="feature-name">通用全能，不限场景</div>
+                <div class="feature-desc">适配舆情发酵、事件传播、大众态度演变等各类场景，上传文件即可推演，不局限单一用途</div>
               </div>
             </div>
             <div class="feature-card">
               <span class="feature-icon">◉</span>
               <div class="feature-content">
-                <div class="feature-name">智能体推演</div>
-                <div class="feature-desc">基于真实用户行为模式</div>
+                <div class="feature-name">数据省心，无需预处理</div>
+                <div class="feature-desc">支持各类非结构化资料直接导入，系统自动解析数据、搭建真实模拟场景，上手零门槛</div>
               </div>
             </div>
             <div class="feature-card">
               <span class="feature-icon">◎</span>
               <div class="feature-content">
-                <div class="feature-name">知识图谱</div>
-                <div class="feature-desc">构建事件关系网络</div>
+                <div class="feature-name">超低成本，可高频试错</div>
+                <div class="feature-desc">单次常规推演低至5元，低成本支持多版本方案反复模拟，轻松筛选最优传播策略</div>
               </div>
             </div>
             <div class="feature-card">
               <span class="feature-icon">◆</span>
               <div class="feature-content">
-                <div class="feature-name">实时分析</div>
-                <div class="feature-desc">动态追踪传播路径</div>
+                <div class="feature-name">超大仿真规模，更贴近真实</div>
+                <div class="feature-desc">支持百万级智能体同时模拟，高度还原海量人群的真实互动、传播联动，推演结果更精准</div>
               </div>
             </div>
             <div class="feature-card">
               <span class="feature-icon">◇</span>
               <div class="feature-content">
-                <div class="feature-name">报告生成</div>
-                <div class="feature-desc">自动生成专业分析报告</div>
+                <div class="feature-name">全程自动，一键出结果</div>
+                <div class="feature-desc">从场景搭建、模拟推演到生成专业报告全自动化，无需人工操作，零基础也能用</div>
               </div>
             </div>
             <div class="feature-card">
               <span class="feature-icon">○</span>
               <div class="feature-content">
-                <div class="feature-name">深度互动</div>
-                <div class="feature-desc">支持多轮问答深度分析</div>
+                <div class="feature-name">可交互可追溯，不做盲推演</div>
+                <div class="feature-desc">可和模拟场景里的任意角色对话，也能智能解读报告、深挖细节，决策依据更扎实</div>
               </div>
             </div>
           </div>
@@ -176,11 +167,11 @@
         <!-- 事件摘要卡片 -->
         <div class="result-card">
           <div class="card-header-row" @click="showSummary = !showSummary">
-            <span class="card-section-title">事件摘要</span>
+            <span class="card-section-title">完整事件内容</span>
             <button type="button" class="collapse-btn">{{ showSummary ? '▲' : '▼' }}</button>
           </div>
           <div v-show="showSummary" class="summary-content">
-            <pre class="summary-text">{{ seedSummary }}</pre>
+            <div class="summary-text markdown-body" v-html="renderedSummary"></div>
           </div>
         </div>
 
@@ -196,16 +187,16 @@
               @click="applySuggestion(suggestion)"
             >
               <span class="suggestion-check">{{ selectedSuggestion === suggestion ? '◉' : '○' }}</span>
-              <span class="suggestion-text">{{ suggestion }}</span>
+              <span class="suggestion-text">{{ formatSuggestion(suggestion) }}</span>
             </div>
           </div>
           <!-- 自定义方向 -->
           <div class="custom-direction">
-            <div class="custom-direction-label">自定义方向</div>
+            <div class="custom-direction-label">自定义方向（如不需要推荐的建议，可以自行输入您想要推演的任意方向/主题）</div>
             <textarea
               v-model="simulationRequirement"
               class="direction-textarea"
-              placeholder="选择一条建议，或手动输入你要模拟 / 预测的问题"
+              placeholder="选择一条建议，或手动输入你要推演的问题"
               :disabled="isBusy"
               rows="4"
             ></textarea>
@@ -248,113 +239,151 @@
       </div>
     </div>
 
-    <!-- 阶段3：进度阶段 -->
-    <div v-else class="phase-progress">
-      <div class="progress-center">
-        <!-- spinner 或完成图标 -->
-        <div v-if="currentPhase < 2" class="progress-spinner-wrap">
-          <div class="progress-spinner"></div>
-        </div>
-        <div v-else class="progress-done-icon">✓</div>
-
-        <h2 class="progress-title">
-          {{ currentPhase >= 2 ? '知识图谱构建完成' : ontologyGenerating ? '正在生成本体...' : '正在构建知识图谱...' }}
-        </h2>
-
-        <p class="progress-message">
-          {{ buildProgress?.message || (ontologyGenerating ? '正在生成本体，请稍候...' : '正在处理中，请稍候...') }}
-        </p>
-
-        <div v-if="currentPhase >= 1" class="progress-percent">
-          {{ buildProgress?.progress || 0 }}%
-        </div>
-
-        <!-- 本体预览（currentPhase === 0 && projectData?.ontology） -->
-        <div v-if="currentPhase === 0 && projectData?.ontology" class="ontology-preview">
-          <div class="tags-container" :class="{ dimmed: selectedOntologyItem }">
-            <span class="tag-label">实体类型</span>
-            <div class="tags-list">
-              <span
-                v-for="entity in projectData.ontology.entity_types"
-                :key="entity.name"
-                class="entity-tag clickable"
-                @click="selectOntologyItem(entity, 'entity')"
-              >{{ translateEntityType(entity.name) }}</span>
+    <!-- 阶段3：图谱构建工作台 -->
+    <div v-else class="phase-progress workbench-phase">
+      <div class="scroll-container">
+        <div class="step-card completed">
+          <div class="step-card-header">
+            <div class="step-info">
+              <span class="step-num">01</span>
+              <span class="step-title">本体生成</span>
+            </div>
+            <div class="step-status">
+              <span class="badge success">已完成</span>
             </div>
           </div>
-          <div class="tags-container" :class="{ dimmed: selectedOntologyItem }">
-            <span class="tag-label">关系类型</span>
-            <div class="tags-list">
-              <span
-                v-for="rel in projectData.ontology.edge_types"
-                :key="rel.name"
-                class="entity-tag clickable"
-                @click="selectOntologyItem(rel, 'relation')"
-              >{{ translateRelationType(rel.name) }}</span>
+
+          <div class="step-card-content">
+            <p class="api-note">POST /api/graph/ontology/generate</p>
+            <p class="description">
+              LLM 分析文档内容与模拟需求，提取出现实种子，自动生成合适的本体结构。
+            </p>
+
+            <div v-if="ontologyProgress && currentPhase === 0" class="progress-section">
+              <div class="spinner-sm dark"></div>
+              <span>{{ ontologyProgress.message || '正在生成本体...' }}</span>
             </div>
-          </div>
-        </div>
 
-        <!-- 图谱统计（currentPhase >= 1） -->
-        <div v-if="currentPhase >= 1" class="stats-grid">
-          <div class="stat-card">
-            <span class="stat-value">{{ graphStats.nodes }}</span>
-            <span class="stat-label">实体节点</span>
-          </div>
-          <div class="stat-card">
-            <span class="stat-value">{{ graphStats.edges }}</span>
-            <span class="stat-label">关系边</span>
-          </div>
-          <div class="stat-card">
-            <span class="stat-value">{{ graphStats.types }}</span>
-            <span class="stat-label">实体类型数</span>
-          </div>
-        </div>
-
-        <!-- 完成状态 -->
-        <div v-if="currentPhase >= 2" class="complete-section">
-          <button type="button" class="primary-btn next-btn" @click="emit('next-step')">
-            进入环境搭建 →
-          </button>
-        </div>
-
-        <!-- 本体详情 overlay -->
-        <div v-if="selectedOntologyItem" class="ontology-detail-overlay">
-          <div class="detail-header">
-            <div class="detail-title-group">
-              <span class="detail-type-badge">{{ selectedOntologyItem.itemType === 'entity' ? '实体' : '关系' }}</span>
-              <span class="detail-name">{{ selectedOntologyItem.itemType === 'entity' ? translateEntityType(selectedOntologyItem.name) : translateRelationType(selectedOntologyItem.name) }}</span>
-            </div>
-            <button class="close-btn" @click="selectedOntologyItem = null">×</button>
-          </div>
-          <div class="detail-body">
-            <div class="detail-desc">{{ selectedOntologyItem.description }}</div>
-            <div class="detail-section" v-if="selectedOntologyItem.attributes?.length">
-              <span class="section-label">属性</span>
-              <div class="attr-list">
-                <div v-for="attr in selectedOntologyItem.attributes" :key="attr.name" class="attr-item">
-                  <span class="attr-name">{{ attr.name }}</span>
-                  <span class="attr-type">({{ attr.type }})</span>
-                  <span class="attr-desc">{{ attr.description }}</span>
+            <div v-if="projectData?.ontology" class="ontology-preview">
+              <div class="tags-container" :class="{ dimmed: selectedOntologyItem }">
+                <span class="tag-label">生成的实体类型</span>
+                <div class="tags-list">
+                  <span
+                    v-for="entity in projectData.ontology.entity_types"
+                    :key="entity.name"
+                    class="entity-tag clickable"
+                    @click="selectOntologyItem(entity, 'entity')"
+                  >{{ translateEntityType(entity.name) }}</span>
+                </div>
+              </div>
+              <div class="tags-container" :class="{ dimmed: selectedOntologyItem }">
+                <span class="tag-label">生成的关系类型</span>
+                <div class="tags-list">
+                  <span
+                    v-for="rel in projectData.ontology.edge_types"
+                    :key="rel.name"
+                    class="entity-tag clickable"
+                    @click="selectOntologyItem(rel, 'relation')"
+                  >{{ translateRelationType(rel.name) }}</span>
                 </div>
               </div>
             </div>
-            <div class="detail-section" v-if="selectedOntologyItem.examples?.length">
-              <span class="section-label">示例</span>
-              <div class="example-list">
-                <span v-for="ex in selectedOntologyItem.examples" :key="ex" class="example-tag">{{ ex }}</span>
+
+            <div v-if="selectedOntologyItem" class="ontology-detail-overlay">
+              <div class="detail-header">
+                <div class="detail-title-group">
+                  <span class="detail-type-badge">{{ selectedOntologyItem.itemType === 'entity' ? '实体' : '关系' }}</span>
+                  <span class="detail-name">{{ selectedOntologyItem.itemType === 'entity' ? translateEntityType(selectedOntologyItem.name) : translateRelationType(selectedOntologyItem.name) }}</span>
+                </div>
+                <button class="close-btn" @click="selectedOntologyItem = null">×</button>
               </div>
-            </div>
-            <div class="detail-section" v-if="selectedOntologyItem.source_targets?.length">
-              <span class="section-label">连接关系</span>
-              <div class="conn-list">
-                <div v-for="(conn, idx) in selectedOntologyItem.source_targets" :key="idx" class="conn-item">
-                  <span class="conn-node">{{ translateEntityType(conn.source) }}</span>
-                  <span class="conn-arrow">→</span>
-                  <span class="conn-node">{{ translateEntityType(conn.target) }}</span>
+              <div class="detail-body">
+                <div class="detail-desc">{{ selectedOntologyItem.description }}</div>
+                <div class="detail-section" v-if="selectedOntologyItem.attributes?.length">
+                  <span class="section-label">属性</span>
+                  <div class="attr-list">
+                    <div v-for="attr in selectedOntologyItem.attributes" :key="attr.name" class="attr-item">
+                      <span class="attr-name">{{ attr.name }}</span>
+                      <span class="attr-type">({{ attr.type }})</span>
+                      <span class="attr-desc">{{ attr.description }}</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="detail-section" v-if="selectedOntologyItem.examples?.length">
+                  <span class="section-label">示例</span>
+                  <div class="example-list">
+                    <span v-for="ex in selectedOntologyItem.examples" :key="ex" class="example-tag">{{ ex }}</span>
+                  </div>
+                </div>
+                <div class="detail-section" v-if="selectedOntologyItem.source_targets?.length">
+                  <span class="section-label">连接关系</span>
+                  <div class="conn-list">
+                    <div v-for="(conn, idx) in selectedOntologyItem.source_targets" :key="idx" class="conn-item">
+                      <span class="conn-node">{{ translateEntityType(conn.source) }}</span>
+                      <span class="conn-arrow">→</span>
+                      <span class="conn-node">{{ translateEntityType(conn.target) }}</span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+
+        <div class="step-card" :class="{ active: currentPhase === 1, completed: currentPhase > 1 }">
+          <div class="step-card-header">
+            <div class="step-info">
+              <span class="step-num">02</span>
+              <span class="step-title">图谱构建</span>
+            </div>
+            <div class="step-status">
+              <span v-if="currentPhase > 1" class="badge success">已完成</span>
+              <span v-else class="badge processing">{{ buildProgress?.progress || 0 }}%</span>
+            </div>
+          </div>
+
+          <div class="step-card-content">
+            <p class="api-note">POST /api/graph/build</p>
+            <p class="description">
+              基于生成的本体，将文档自动分块后调用 Zep 构建知识图谱，提取实体和关系，并形成时序记忆与社区摘要。
+            </p>
+            <p v-if="buildProgress?.message" class="progress-message inline">{{ buildProgress.message }}</p>
+
+            <div class="stats-grid">
+              <div class="stat-card">
+                <span class="stat-value">{{ graphStats.nodes }}</span>
+                <span class="stat-label">实体节点</span>
+              </div>
+              <div class="stat-card">
+                <span class="stat-value">{{ graphStats.edges }}</span>
+                <span class="stat-label">关系边</span>
+              </div>
+              <div class="stat-card">
+                <span class="stat-value">{{ graphStats.types }}</span>
+                <span class="stat-label">实体类型数</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step-card" :class="{ active: currentPhase === 2, completed: currentPhase >= 2 }">
+          <div class="step-card-header">
+            <div class="step-info">
+              <span class="step-num">03</span>
+              <span class="step-title">构建完成</span>
+            </div>
+            <div class="step-status">
+              <span v-if="currentPhase >= 2" class="badge accent">进行中</span>
+              <span v-else class="badge pending">等待</span>
+            </div>
+          </div>
+
+          <div class="step-card-content">
+            <p class="api-note">POST /api/simulation/create</p>
+            <p class="description">图谱构建已完成，请进入下一步进行模拟环境搭建。</p>
+            <button type="button" class="action-btn" :disabled="currentPhase < 2" @click="emit('next-step')">
+              进入环境搭建 →
+            </button>
           </div>
         </div>
       </div>
@@ -365,6 +394,7 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { marked } from 'marked'
 import { analyzeUploadedSeed, generateOntology, searchSeedByKeyword } from '../api/graph'
 import { translateEntityType, translateRelationType } from '../utils/entityTranslations.js'
 
@@ -372,6 +402,7 @@ const props = defineProps({
   currentPhase: { type: Number, default: -1 },
   projectData: Object,
   pendingUpload: Object,
+  ontologyProgress: Object,
   buildProgress: Object,
   graphData: Object,
   systemLogs: { type: Array, default: () => [] }
@@ -418,12 +449,21 @@ const seedSummary = computed(() => {
   return seedResult.value?.seed_summary_md || seedResult.value?.analysis_summary || '暂无摘要。'
 })
 
+const renderedSummary = computed(() => {
+  const md = seedSummary.value
+  if (!md) return ''
+  return marked(md)
+})
+
+const formatSuggestion = (text) => {
+  return text.replace(/可模拟/g, '推演')
+}
+
 const currentProjectId = computed(() => seedResult.value?.project_id || props.projectData?.project_id || '')
 
 const canAnalyze = computed(() => {
   if (isBusy.value) return false
-  if (inputMode.value === 'web_search') return searchQuery.value.trim().length > 0
-  return files.value.length > 0
+  return searchQuery.value.trim().length > 0 || files.value.length > 0
 })
 
 const canGenerateOntology = computed(() => {
@@ -457,6 +497,12 @@ const switchInputMode = (mode) => {
   emit('add-log', `Step1 input mode switched to ${mode}.`)
 }
 
+const onTextInput = () => {
+  if (searchQuery.value.trim()) {
+    inputMode.value = 'web_search'
+  }
+}
+
 const triggerFileInput = () => {
   if (!isBusy.value) fileInput.value?.click()
 }
@@ -468,6 +514,9 @@ const addFiles = (newFiles) => {
     return ['pdf', 'md', 'txt'].includes(ext)
   })
   files.value.push(...validFiles)
+  if (files.value.length > 0) {
+    inputMode.value = 'file_upload'
+  }
   if (validFiles.length !== newFiles.length) {
     localError.value = '仅支持 PDF、MD、TXT 文件。'
   } else {
@@ -495,6 +544,9 @@ const handleDrop = (event) => {
 
 const removeFile = (index) => {
   files.value.splice(index, 1)
+  if (files.value.length === 0) {
+    inputMode.value = 'web_search'
+  }
   resetAnalysisResult()
 }
 
@@ -621,7 +673,7 @@ watch(() => props.pendingUpload, (pending) => {
 
 .input-center {
   width: 100%;
-  max-width: 680px;
+  max-width: 780px;
   display: flex;
   flex-direction: column;
   gap: 32px;
@@ -640,12 +692,23 @@ watch(() => props.pendingUpload, (pending) => {
   font-family: 'JetBrains Mono', monospace;
   font-size: 2.5rem;
   font-weight: 800;
+  margin: 0;
+  line-height: 1.2;
+}
+
+.title-news {
+  color: #1A1A2E;
+}
+
+.title-power {
   background: linear-gradient(135deg, #1677FF, #6366F1);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-  margin: 0;
-  line-height: 1.2;
+}
+
+.title-suffix {
+  color: #1A1A2E;
 }
 
 .hero-subtitle {
@@ -688,33 +751,45 @@ watch(() => props.pendingUpload, (pending) => {
   gap: 16px;
 }
 
-.input-tabs {
-  display: flex;
-  border-bottom: 1px solid #E8ECF0;
-  gap: 0;
-}
-
-.tab-btn {
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  padding: 10px 20px;
-  font-size: 14px;
-  font-weight: 600;
-  color: #6B7280;
-  cursor: pointer;
-  transition: color 0.2s, border-color 0.2s;
-  margin-bottom: -1px;
-}
-
-.tab-btn.active {
-  color: #1677FF;
-  border-bottom-color: #1677FF;
-}
-
-.tab-btn:disabled {
+/* 输入区域互斥样式 */
+.text-input-section.disabled .keyword-textarea {
+  background: #F3F4F6;
+  color: #9CA3AF;
   cursor: not-allowed;
+}
+
+.file-upload-section.disabled .upload-zone {
+  border-color: #E5E7EB;
+  background: #F3F4F6;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.input-disabled-hint {
+  font-size: 12px;
+  color: #9CA3AF;
+  margin: 4px 0 0;
+  font-style: italic;
+}
+
+.upload-hint-text {
+  margin-top: 6px;
+}
+
+.input-divider {
+  height: 1px;
+  background: #E8ECF0;
+  margin: 4px 0;
+}
+
+.disabled-placeholder {
   opacity: 0.5;
+}
+
+.upload-zone.disabled {
+  border-color: #E5E7EB;
+  background: #F3F4F6;
+  cursor: not-allowed;
 }
 
 .tab-content {
@@ -885,14 +960,18 @@ watch(() => props.pendingUpload, (pending) => {
 }
 
 /* 主按钮 */
+.submit-row {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .primary-btn {
-  width: 100%;
   background: linear-gradient(135deg, #1677FF, #6366F1);
   color: #FFFFFF;
   border: none;
   border-radius: 8px;
-  padding: 14px;
-  font-size: 15px;
+  padding: 12px 24px;
+  font-size: 14px;
   font-weight: 600;
   cursor: pointer;
   transition: opacity 0.2s;
@@ -1042,16 +1121,34 @@ watch(() => props.pendingUpload, (pending) => {
   border: 1px solid #E8ECF0;
   border-radius: 8px;
   padding: 14px;
-  white-space: pre-wrap;
-  word-break: break-word;
   color: #374151;
   font-size: 13px;
   line-height: 1.7;
-  max-height: 200px;
+  max-height: 300px;
   overflow-y: auto;
   font-family: inherit;
-  margin: 0;
 }
+
+.summary-text :deep(h1),
+.summary-text :deep(h2),
+.summary-text :deep(h3) {
+  font-size: 14px;
+  font-weight: 700;
+  margin: 12px 0 6px;
+  color: #1A1A2E;
+}
+
+.summary-text :deep(h1) { font-size: 16px; }
+
+.summary-text :deep(p) { margin: 6px 0; }
+
+.summary-text :deep(ul),
+.summary-text :deep(ol) {
+  padding-left: 20px;
+  margin: 6px 0;
+}
+
+.summary-text :deep(li) { margin: 3px 0; }
 
 /* 推演方向 */
 .suggestions-list {
@@ -1199,89 +1296,142 @@ watch(() => props.pendingUpload, (pending) => {
   flex: 2;
 }
 
-/* ===== 阶段3：进度 ===== */
-.phase-progress {
-  min-height: 100%;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding: 60px 24px;
+/* ===== 阶段3：图谱构建工作台 ===== */
+.workbench-phase {
+  height: 100%;
+  background: #FAFAFA;
+  overflow: hidden;
 }
 
-.progress-center {
-  width: 100%;
-  max-width: 680px;
+.scroll-container {
+  height: 100%;
+  overflow-y: auto;
+  padding: 16px 24px 24px;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 20px;
+  gap: 14px;
+}
+
+.step-card {
+  background: #FFFFFF;
+  border-radius: 8px;
+  padding: 16px 18px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  border: 1px solid #EAEAEA;
+  transition: border-color 0.2s, box-shadow 0.2s;
   position: relative;
 }
 
-.progress-spinner-wrap {
+.step-card.active {
+  border-color: #FF5722;
+  box-shadow: 0 4px 12px rgba(255, 87, 34, 0.08);
+}
+
+.step-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.step-info {
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 12px;
 }
 
-.progress-spinner {
-  width: 40px;
-  height: 40px;
-  border: 4px solid #EFF6FF;
-  border-top-color: #1677FF;
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-}
-
-.progress-done-icon {
-  width: 48px;
-  height: 48px;
-  background: #10B981;
-  color: #FFFFFF;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 22px;
-  font-weight: 700;
-}
-
-.progress-title {
-  font-size: 1.4rem;
-  font-weight: 700;
-  color: #1A1A2E;
-  margin: 0;
-  text-align: center;
-}
-
-.progress-message {
-  font-size: 14px;
-  color: #6B7280;
-  margin: 0;
-  text-align: center;
-}
-
-.progress-percent {
+.step-num {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 2rem;
+  font-size: 20px;
+  font-weight: 800;
+  color: #D1D5DB;
+}
+
+.step-card.active .step-num,
+.step-card.completed .step-num {
+  color: #111827;
+}
+
+.step-title {
   font-weight: 700;
-  color: #1677FF;
+  font-size: 14px;
+  color: #111827;
+  letter-spacing: 0.2px;
+}
+
+.badge {
+  font-size: 10px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.badge.success {
+  background: #E8F5E9;
+  color: #2E7D32;
+}
+
+.badge.processing,
+.badge.accent {
+  background: #FF5722;
+  color: #FFFFFF;
+}
+
+.badge.pending {
+  background: #F5F5F5;
+  color: #999999;
+}
+
+.step-card-content {
+  position: relative;
+}
+
+.api-note {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: #999999;
+  margin: 0 0 8px;
+}
+
+.description {
+  font-size: 12px;
+  color: #666666;
+  line-height: 1.6;
+  margin: 0 0 12px;
+}
+
+.progress-section {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: #FF5722;
+  margin-bottom: 14px;
+}
+
+.progress-message.inline {
+  text-align: left;
+  color: #6B7280;
+  font-size: 12px;
+  margin: -4px 0 14px;
 }
 
 /* 本体预览 */
 .ontology-preview {
   width: 100%;
   background: #FFFFFF;
-  border-radius: 12px;
-  padding: 20px;
-  border: 1px solid #E8ECF0;
+  border-radius: 8px;
+  padding: 0;
+  border: none;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 8px;
 }
 
 .tags-container {
   transition: opacity 0.3s;
+  margin-top: 4px;
 }
 
 .tags-container.dimmed {
@@ -1291,26 +1441,26 @@ watch(() => props.pendingUpload, (pending) => {
 
 .tag-label {
   display: block;
-  font-size: 11px;
-  color: #9CA3AF;
+  font-size: 10px;
+  color: #AAAAAA;
   margin-bottom: 8px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
 }
 
 .tags-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
 .entity-tag {
-  background: #F3F4F6;
-  border: 1px solid #E5E7EB;
-  padding: 4px 10px;
-  border-radius: 6px;
-  font-size: 12px;
-  color: #374151;
+  background: #F5F5F5;
+  border: 1px solid #EEEEEE;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  color: #333333;
   font-family: 'JetBrains Mono', monospace;
   transition: all 0.2s;
 }
@@ -1320,9 +1470,9 @@ watch(() => props.pendingUpload, (pending) => {
 }
 
 .entity-tag.clickable:hover {
-  background: #EFF6FF;
-  border-color: #1677FF;
-  color: #1677FF;
+  background: #E0E0E0;
+  border-color: #CCCCCC;
+  color: #111827;
 }
 
 /* 图谱统计 */
@@ -1331,41 +1481,57 @@ watch(() => props.pendingUpload, (pending) => {
   grid-template-columns: 1fr 1fr 1fr;
   gap: 12px;
   width: 100%;
+  background: #F9F9F9;
+  padding: 14px 16px;
+  border-radius: 6px;
 }
 
 .stat-card {
-  background: #FFFFFF;
-  border: 1px solid #E8ECF0;
-  border-radius: 10px;
-  padding: 20px;
   text-align: center;
 }
 
 .stat-value {
   display: block;
-  font-size: 2rem;
-  font-weight: 700;
-  color: #1A1A2E;
+  font-size: 20px;
+  font-weight: 800;
+  color: #000000;
   font-family: 'JetBrains Mono', monospace;
 }
 
 .stat-label {
-  font-size: 11px;
-  color: #9CA3AF;
+  font-size: 9px;
+  color: #999999;
   text-transform: uppercase;
   margin-top: 4px;
   display: block;
   letter-spacing: 0.5px;
 }
 
-/* 完成区域 */
-.complete-section {
+.action-btn {
   width: 100%;
-  max-width: 400px;
+  background: #111111;
+  color: #FFFFFF;
+  border: none;
+  padding: 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: opacity 0.2s, background 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-family: inherit;
 }
 
-.next-btn {
-  font-size: 15px;
+.action-btn:hover:not(:disabled) {
+  opacity: 0.82;
+}
+
+.action-btn:disabled {
+  background: #CCCCCC;
+  cursor: not-allowed;
 }
 
 /* 本体详情 overlay */
@@ -1543,12 +1709,21 @@ watch(() => props.pendingUpload, (pending) => {
   flex-shrink: 0;
 }
 
+.spinner-sm.dark {
+  border-color: #FFCCBC;
+  border-top-color: #FF5722;
+}
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
 
 /* 响应式 */
 @media (max-width: 760px) {
+  .scroll-container {
+    padding: 16px;
+  }
+
   .features-grid {
     grid-template-columns: 1fr 1fr;
   }
