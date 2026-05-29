@@ -1550,6 +1550,20 @@ def start_simulation():
             }), 404
 
         force_restarted = False
+        if force:
+            run_state = SimulationRunner.get_run_state(simulation_id)
+            if run_state and run_state.runner_status in [RunnerStatus.RUNNING, RunnerStatus.STARTING]:
+                logger.info(f"强制模式：停止运行中的模拟 {simulation_id}")
+                try:
+                    SimulationRunner.stop_simulation(simulation_id)
+                except Exception as e:
+                    logger.warning(f"停止模拟时出现警告: {str(e)}")
+
+            logger.info(f"强制模式：清理模拟日志 {simulation_id}")
+            cleanup_result = SimulationRunner.cleanup_simulation_logs(simulation_id)
+            if not cleanup_result.get("success"):
+                logger.warning(f"清理日志时出现警告: {cleanup_result.get('errors')}")
+            force_restarted = True
         
         # 智能处理状态：如果准备工作已完成，允许重新启动
         if state.status != SimulationStatus.READY:
@@ -1563,26 +1577,11 @@ def start_simulation():
                     run_state = SimulationRunner.get_run_state(simulation_id)
                     if run_state and run_state.runner_status.value == "running":
                         # 进程确实在运行
-                        if force:
-                            # 强制模式：停止运行中的模拟
-                            logger.info(f"强制模式：停止运行中的模拟 {simulation_id}")
-                            try:
-                                SimulationRunner.stop_simulation(simulation_id)
-                            except Exception as e:
-                                logger.warning(f"停止模拟时出现警告: {str(e)}")
-                        else:
+                        if not force:
                             return jsonify({
                                 "success": False,
                                 "error": f"模拟正在运行中，请先调用 /stop 接口停止，或使用 force=true 强制重新开始"
                             }), 400
-
-                # 如果是强制模式，清理运行日志
-                if force:
-                    logger.info(f"强制模式：清理模拟日志 {simulation_id}")
-                    cleanup_result = SimulationRunner.cleanup_simulation_logs(simulation_id)
-                    if not cleanup_result.get("success"):
-                        logger.warning(f"清理日志时出现警告: {cleanup_result.get('errors')}")
-                    force_restarted = True
 
                 # 进程不存在或已结束，重置状态为 ready
                 logger.info(f"模拟 {simulation_id} 准备工作已完成，重置状态为 ready（原状态: {state.status.value}）")

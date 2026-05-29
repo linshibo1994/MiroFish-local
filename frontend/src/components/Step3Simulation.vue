@@ -91,6 +91,13 @@
       </div>
 
       <div class="action-controls">
+        <button
+          class="action-btn secondary"
+          :disabled="isStarting || isGeneratingReport"
+          @click="restartSimulation"
+        >
+          {{ isStarting ? '启动中...' : '重新推演' }}
+        </button>
         <button 
           class="action-btn primary"
           :disabled="phase !== 2 || isGeneratingReport"
@@ -260,8 +267,8 @@
         </TransitionGroup>
 
         <div v-if="allActions.length === 0" class="waiting-state">
-          <div class="pulse-ring"></div>
-          <span>等待智能体动作...</span>
+          <div v-if="isStarting || runStatus.runner_status === 'running'" class="pulse-ring"></div>
+          <span>{{ emptyStateText }}</span>
         </div>
       </div>
     </div>
@@ -289,7 +296,8 @@ import {
   startSimulation, 
   stopSimulation,
   getRunStatus, 
-  getRunStatusDetail
+  getRunStatusDetail,
+  getSimulationActions
 } from '../api/simulation'
 import { generateReport } from '../api/report'
 
@@ -319,6 +327,7 @@ const runStatus = ref({})
 const allActions = ref([]) // 所有动作（增量累积）
 const actionIds = ref(new Set()) // 用于去重的动作ID集合
 const scrollContainer = ref(null)
+const hasLoadedHistory = ref(false)
 
 // Computed
 // 按时间顺序显示动作（最新的在最后面，即底部）
@@ -354,6 +363,13 @@ const redditElapsedTime = computed(() => {
   return formatElapsedTime(runStatus.value.reddit_current_round || 0)
 })
 
+const emptyStateText = computed(() => {
+  if (isStarting.value) return '正在启动推演...'
+  if (runStatus.value.runner_status === 'running' || runStatus.value.runner_status === 'starting') return '等待智能体动作...'
+  if (hasLoadedHistory.value) return '当前推演暂无动作记录'
+  return '正在加载推演记录...'
+})
+
 // Methods
 const addLog = (msg) => {
   emit('add-log', msg)
@@ -368,13 +384,93 @@ const resetAllState = () => {
   prevTwitterRound.value = 0
   prevRedditRound.value = 0
   startError.value = null
+  hasLoadedHistory.value = false
   isStarting.value = false
   isStopping.value = false
   stopPolling()  // 停止之前可能存在的轮询
 }
 
+const ingestActions = (actions = []) => {
+  let newActionsAdded = 0
+  actions
+    .slice()
+    .reverse()
+    .forEach(action => {
+      const actionId = action.id || `${action.timestamp}-${action.platform}-${action.agent_id}-${action.action_type}-${action.round_num}`
+      if (!actionIds.value.has(actionId)) {
+        actionIds.value.add(actionId)
+        allActions.value.push({
+          ...action,
+          _uniqueId: actionId
+        })
+        newActionsAdded++
+      }
+    })
+  return newActionsAdded
+}
+
+const loadExistingSimulation = async () => {
+  if (!props.simulationId) {
+    addLog('错误：缺少 simulationId')
+    return
+  }
+
+  resetAllState()
+  addLog('正在加载推演历史...')
+
+  try {
+    const [statusRes, actionsRes] = await Promise.all([
+      getRunStatus(props.simulationId),
+      getSimulationActions(props.simulationId, { limit: 10000 })
+    ])
+
+    if (statusRes.success && statusRes.data) {
+      runStatus.value = statusRes.data
+      const status = statusRes.data.runner_status
+      if (status === 'running' || status === 'starting') {
+        phase.value = 1
+        emit('update-status', 'processing')
+        startStatusPolling()
+        startDetailPolling()
+      } else if (status && status !== 'idle') {
+        phase.value = 2
+        emit('update-status', status === 'failed' ? 'error' : 'completed')
+      }
+    }
+
+    const actions = actionsRes.success ? (actionsRes.data?.actions || []) : []
+    ingestActions(actions)
+    hasLoadedHistory.value = true
+
+    const runnerStatus = runStatus.value.runner_status
+    if (actions.length > 0 && runnerStatus !== 'running' && runnerStatus !== 'starting') {
+      phase.value = 2
+      emit('update-status', 'completed')
+      addLog(`已恢复 ${actions.length} 条历史动作`)
+      return
+    }
+
+    if (actions.length > 0) {
+      addLog(`已恢复 ${actions.length} 条历史动作，继续监听运行状态`)
+      return
+    }
+
+    if (!runnerStatus || runnerStatus === 'idle') {
+      addLog('未发现历史动作，自动启动新推演')
+      await doStartSimulation({ force: false })
+    } else {
+      addLog('推演暂无动作记录')
+    }
+  } catch (err) {
+    hasLoadedHistory.value = true
+    startError.value = err.message
+    addLog(`加载推演历史失败: ${err.message}`)
+    emit('update-status', 'error')
+  }
+}
+
 // 启动模拟
-const doStartSimulation = async () => {
+const doStartSimulation = async ({ force = false } = {}) => {
   if (!props.simulationId) {
     addLog('错误：缺少 simulationId')
     return
@@ -392,7 +488,7 @@ const doStartSimulation = async () => {
     const params = {
       simulation_id: props.simulationId,
       platform: 'parallel',
-      force: true,  // 强制重新开始
+      force,
       enable_graph_memory_update: true  // 开启动态图谱更新
     }
     
@@ -414,6 +510,7 @@ const doStartSimulation = async () => {
       
       phase.value = 1
       runStatus.value = res.data
+      hasLoadedHistory.value = true
       
       startStatusPolling()
       startDetailPolling()
@@ -429,6 +526,11 @@ const doStartSimulation = async () => {
   } finally {
     isStarting.value = false
   }
+}
+
+const restartSimulation = async () => {
+  addLog('准备重新推演，将清理旧运行日志...')
+  await doStartSimulation({ force: true })
 }
 
 // 停止模拟
@@ -461,10 +563,12 @@ let statusTimer = null
 let detailTimer = null
 
 const startStatusPolling = () => {
+  if (statusTimer) clearInterval(statusTimer)
   statusTimer = setInterval(fetchRunStatus, 2000)
 }
 
 const startDetailPolling = () => {
+  if (detailTimer) clearInterval(detailTimer)
   detailTimer = setInterval(fetchRunStatusDetail, 3000)
 }
 
@@ -568,24 +672,7 @@ const fetchRunStatusDetail = async () => {
     const res = await getRunStatusDetail(props.simulationId)
     
     if (res.success && res.data) {
-      // 使用 all_actions 获取完整的动作列表
-      const serverActions = res.data.all_actions || []
-      
-      // 增量添加新动作（去重）
-      let newActionsAdded = 0
-      serverActions.forEach(action => {
-        // 生成唯一ID
-        const actionId = action.id || `${action.timestamp}-${action.platform}-${action.agent_id}-${action.action_type}`
-        
-        if (!actionIds.value.has(actionId)) {
-          actionIds.value.add(actionId)
-          allActions.value.push({
-            ...action,
-            _uniqueId: actionId
-          })
-          newActionsAdded++
-        }
-      })
+      ingestActions(res.data.all_actions || [])
       
       // 不自动滚动，让用户自由查看时间轴
       // 新动作会在底部追加
@@ -694,7 +781,7 @@ watch(() => props.systemLogs?.length, () => {
 onMounted(() => {
   addLog('Step3 模拟运行初始化')
   if (props.simulationId) {
-    doStartSimulation()
+    loadExistingSimulation()
   }
 })
 
@@ -898,6 +985,17 @@ onUnmounted(() => {
 
 .action-btn.primary:hover:not(:disabled) {
   background: #333;
+}
+
+.action-btn.secondary {
+  background: #FFF;
+  color: #111827;
+  border: 1px solid #D1D5DB;
+}
+
+.action-btn.secondary:hover:not(:disabled) {
+  background: #F3F4F6;
+  border-color: #9CA3AF;
 }
 
 .action-btn:disabled {

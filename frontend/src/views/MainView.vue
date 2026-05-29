@@ -19,7 +19,29 @@
         <button class="new-chat-btn" @click="startNewSession">+ 新建对话</button>
       </div>
       <div class="history-panel-list">
-        <div v-if="sessions.length === 0" class="history-empty">暂无历史记录</div>
+        <section class="history-section">
+          <div class="history-section-title">推演记录</div>
+          <div v-if="simulationHistoryLoading" class="history-empty">正在加载推演记录...</div>
+          <div v-else-if="simulationHistory.length === 0" class="history-empty">暂无推演记录</div>
+          <div
+            v-for="simulation in simulationHistory"
+            v-else
+            :key="simulation.simulation_id"
+            class="history-item simulation-history-item"
+            :class="{ active: currentSimulationId === simulation.simulation_id }"
+            @click="navigateToSimulation(simulation.simulation_id)"
+          >
+            <div class="history-item-row">
+              <span class="history-item-title">{{ formatSimulationTitle(simulation) }}</span>
+              <span class="simulation-status" :class="simulation.status">{{ formatSimulationStatus(simulation.status) }}</span>
+            </div>
+            <span class="history-item-date">{{ formatDate(simulation.updated_at || simulation.created_at) }}</span>
+          </div>
+        </section>
+
+        <section class="history-section">
+          <div class="history-section-title">项目会话</div>
+          <div v-if="sessions.length === 0" class="history-empty">暂无项目会话</div>
         <div
           v-for="session in sessions"
           :key="session.projectId"
@@ -30,6 +52,7 @@
           <span class="history-item-title">{{ session.title }}</span>
           <span class="history-item-date">{{ formatDate(session.createdAt) }}</span>
         </div>
+        </section>
       </div>
     </aside>
 
@@ -167,7 +190,7 @@ import GraphPanel from '../components/GraphPanel.vue'
 import Step1GraphBuild from '../components/Step1GraphBuild.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
 import { getProject, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
-import { createSimulation } from '../api/simulation'
+import { createSimulation, listSimulations } from '../api/simulation'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
 import { getSessions, addSession } from '../store/sessionHistory'
 
@@ -199,6 +222,8 @@ const systemLogs = ref([])
 const pendingUploadState = ref(null)
 const simulationCreating = ref(false)
 const envSetupStatus = ref('processing')
+const simulationHistory = ref([])
+const simulationHistoryLoading = ref(false)
 
 const sessions = ref(getSessions())
 
@@ -215,11 +240,42 @@ const projectTitle = computed(() => {
 
 const refreshSessions = () => { sessions.value = getSessions() }
 
-const formatDate = (ts) => new Date(ts).toLocaleDateString('zh-CN')
+const formatDate = (ts) => {
+  if (!ts) return '-'
+  const date = typeof ts === 'number' ? new Date(ts) : new Date(ts)
+  if (Number.isNaN(date.getTime())) return '-'
+  return date.toLocaleDateString('zh-CN')
+}
+
+const formatSimulationStatus = (status) => {
+  const labels = {
+    created: '已创建',
+    preparing: '准备中',
+    ready: '就绪',
+    running: '运行中',
+    paused: '已暂停',
+    stopped: '已停止',
+    completed: '已完成',
+    failed: '失败'
+  }
+  return labels[status] || status || '未知'
+}
+
+const formatSimulationTitle = (simulation) => {
+  const created = formatDate(simulation.created_at)
+  const total = Number(simulation.profiles_count || simulation.entities_count || 0)
+  return total > 0 ? `${created} · ${total} 个智能体` : `推演 ${simulation.simulation_id?.slice(-6) || ''}`
+}
 
 const navigateToSession = (projectId) => {
   showHistory.value = false
   router.push('/process/' + projectId)
+}
+
+const navigateToSimulation = (simulationId) => {
+  if (!simulationId) return
+  showHistory.value = false
+  router.push({ name: 'SimulationRun', params: { simulationId } })
 }
 
 const startNewSession = () => {
@@ -344,6 +400,8 @@ const handleNewProject = async () => {
   buildProgress.value = null
   projectData.value = null
   graphData.value = null
+  currentSimulationId.value = ''
+  simulationHistory.value = []
   addLog('Step1 ready. Waiting for seed input.')
 }
 
@@ -394,6 +452,7 @@ const loadProject = async () => {
         currentPhase.value = 2
         await loadGraph(res.data.graph_id)
       }
+      await loadSimulationHistory()
     } else {
       error.value = res.error
       addLog(`Error loading project: ${res.error}`)
@@ -403,6 +462,30 @@ const loadProject = async () => {
     addLog(`Exception in loadProject: ${err.message}`)
   } finally {
     loading.value = false
+  }
+}
+
+const loadSimulationHistory = async () => {
+  if (!currentProjectId.value || currentProjectId.value === 'new') {
+    simulationHistory.value = []
+    return
+  }
+
+  simulationHistoryLoading.value = true
+  try {
+    const res = await listSimulations(currentProjectId.value)
+    if (res.success) {
+      simulationHistory.value = (res.data || []).sort((a, b) => {
+        const at = new Date(a.updated_at || a.created_at || 0).getTime()
+        const bt = new Date(b.updated_at || b.created_at || 0).getTime()
+        return bt - at
+      })
+    }
+  } catch (err) {
+    console.warn('加载推演历史失败:', err)
+    simulationHistory.value = []
+  } finally {
+    simulationHistoryLoading.value = false
   }
 }
 
@@ -434,6 +517,7 @@ const enterEnvironmentSetup = async () => {
       })
       if (!res.success || !res.data?.simulation_id) throw new Error(res.error || '创建模拟实例失败')
       currentSimulationId.value = res.data.simulation_id
+      await loadSimulationHistory()
       addLog(`模拟实例创建完成: ${currentSimulationId.value}`)
     }
     currentStep.value = 2
@@ -582,6 +666,7 @@ watch(() => route.params.projectId, (newId, oldId) => {
     projectData.value = null
     graphData.value = null
     currentSimulationId.value = ''
+    simulationHistory.value = []
     ontologyProgress.value = null
     buildProgress.value = null
     systemLogs.value = []
@@ -688,6 +773,22 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
   padding: 8px;
 }
 
+.history-section {
+  padding-bottom: 12px;
+}
+
+.history-section + .history-section {
+  border-top: 1px solid #F0F0F0;
+  padding-top: 12px;
+}
+
+.history-section-title {
+  padding: 6px 8px;
+  color: #6B7280;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .history-empty {
   text-align: center;
   color: #9CA3AF;
@@ -708,6 +809,13 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
 .history-item:hover { background: #F3F4F6; }
 .history-item.active { background: #EFF6FF; }
 
+.history-item-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
 .history-item-title {
   font-size: 13px;
   color: #1A1A2E;
@@ -718,6 +826,38 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
 }
 
 .history-item-date { font-size: 11px; color: #9CA3AF; }
+
+.simulation-history-item .history-item-title {
+  flex: 1;
+}
+
+.simulation-status {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #F3F4F6;
+  color: #4B5563;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.simulation-status.running,
+.simulation-status.preparing {
+  background: #FFF7ED;
+  color: #C2410C;
+}
+
+.simulation-status.ready,
+.simulation-status.completed,
+.simulation-status.stopped {
+  background: #ECFDF5;
+  color: #047857;
+}
+
+.simulation-status.failed {
+  background: #FEF2F2;
+  color: #B91C1C;
+}
 
 /* 主内容区 */
 .main-content {
