@@ -5,6 +5,7 @@ from app import create_app
 from app.models.project import Project, ProjectManager, ProjectStatus
 from app.services.bailian_web_search_service import BailianWebSearchService
 from app.services.bocha_search_service import BochaSearchService, SearchSource
+from app.services.seed_analysis_service import SeedAnalysisService
 from app.services.web_search_provider import WebSearchProviderFactory
 
 
@@ -187,6 +188,44 @@ def test_uploaded_seed_uses_extracted_file_text_as_full_content(monkeypatch, tmp
     assert data["seed_summary_md"] == "## 上传摘要"
     assert "上传正文内容" in data["seed_full_content_md"]
     assert ProjectManager.get_extracted_text(data["project_id"]) == data["seed_full_content_md"]
+
+
+def test_web_search_analysis_generates_markdown_before_auxiliary_json():
+    calls = []
+
+    class FakeLLMClient:
+        def chat(self, messages, temperature=0.7, max_tokens=4096, response_format=None):
+            calls.append(("chat", response_format, max_tokens))
+            assert response_format is None
+            return "# 张雪峰去世事件全记录\n\n## 事件概述\n材料显示该事件存在来源可疑问题。"
+
+        def chat_json(self, messages, temperature=0.3, max_tokens=4096):
+            calls.append(("chat_json", None, max_tokens))
+            return {
+                "simulation_suggestions": ["模拟谣言传播与辟谣路径"],
+                "entity_hints": ["张雪峰", "网易"],
+            }
+
+    service = SeedAnalysisService(llm_client=FakeLLMClient())
+
+    result = service.analyze_from_sources(
+        sources=[
+            SearchSource(
+                title="张雪峰去世传闻",
+                url="https://example.com/news",
+                snippet="张雪峰 去世 网易 辟谣",
+                site_name="网易",
+            )
+        ],
+        query="张雪峰去世事件",
+    )
+
+    assert result.seed_summary_md.startswith("# 张雪峰去世事件全记录")
+    assert result.simulation_suggestions == ["模拟谣言传播与辟谣路径"]
+    assert result.entity_hints == ["张雪峰", "网易"]
+    assert result.seed_metadata["analysis_mode"] == "llm"
+    assert calls[0] == ("chat", None, 5000)
+    assert calls[1] == ("chat_json", None, 1200)
 
 
 def test_bailian_web_search_parses_sources():

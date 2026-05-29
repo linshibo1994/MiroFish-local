@@ -116,6 +116,13 @@ class SeedAnalysisService:
         topic: str,
         additional_context: Optional[str],
     ) -> SeedAnalysisResult:
+        if input_mode == "web_search":
+            return self._analyze_web_search_with_llm(
+                material=material,
+                topic=topic,
+                additional_context=additional_context,
+            )
+
         client = self.llm_client or LLMClient()
         style_template = (
             self.WEB_SEARCH_SUMMARY_TEMPLATE
@@ -163,6 +170,107 @@ class SeedAnalysisService:
             entity_hints=hints,
             seed_metadata={},
         )
+
+    def _analyze_web_search_with_llm(
+        self,
+        material: str,
+        topic: str,
+        additional_context: Optional[str],
+    ) -> SeedAnalysisResult:
+        """联网搜索场景生成完整 Markdown 文档。
+
+        不把长 Markdown 放进 JSON 字符串，避免模型输出被截断后触发 JSON 解析失败。
+        """
+        client = self.llm_client or LLMClient()
+        summary_prompt = f"""请只基于给定联网搜索材料，整理生成一份可直接作为前端“完整事件内容”展示、也可用于后续图谱实体抽取的中文 Markdown 完整文档。
+
+硬性要求：
+- 只输出 Markdown 正文，不要输出 JSON，不要包裹代码块。
+- 禁止引入材料之外的事实；材料不足或来源可疑时必须在文档中说明。
+- 文档要像深度新闻全记录，而不是简单摘录搜索结果。
+- 保留关键时间、主体、动作、结果、争议、官方回应、影响和风险。
+- 能表格化的信息使用 Markdown 表格。
+
+主题：{topic}
+额外说明：{additional_context or "无"}
+整理模板：
+{self.WEB_SEARCH_SUMMARY_TEMPLATE}
+
+联网搜索材料：
+{material}
+"""
+        summary = client.chat(
+            messages=[
+                {"role": "system", "content": "你是严谨的中文资料整理助手，只能依据输入材料生成结构化 Markdown 文档。"},
+                {"role": "user", "content": summary_prompt},
+            ],
+            temperature=0.2,
+            max_tokens=5000,
+        ).strip()
+
+        if not summary:
+            raise ValueError("LLM 未返回联网搜索整理文档")
+
+        suggestions, hints = self._generate_web_search_auxiliary(
+            client=client,
+            summary=summary,
+            material=material,
+            topic=topic,
+        )
+
+        if not suggestions:
+            suggestions = self._fallback_suggestions(topic, hints)
+        if not hints:
+            hints = self._extract_entity_hints(f"{summary}\n{material}")
+
+        return SeedAnalysisResult(
+            seed_summary_md=summary,
+            simulation_suggestions=suggestions[:3],
+            entity_hints=self._filter_entity_hints(hints, f"{summary}\n{material}")[:30],
+            seed_metadata={},
+        )
+
+    def _generate_web_search_auxiliary(
+        self,
+        client: LLMClient,
+        summary: str,
+        material: str,
+        topic: str,
+    ) -> tuple[List[str], List[str]]:
+        """基于已生成文档提取短建议和实体提示，失败时交给调用方兜底。"""
+        try:
+            data = client.chat_json(
+                messages=[
+                    {"role": "system", "content": "你是严谨的信息抽取助手，只返回 JSON。"},
+                    {
+                        "role": "user",
+                        "content": f"""请基于以下整理文档返回 JSON：
+{{
+  "simulation_suggestions": ["2-3条中文推演建议"],
+  "entity_hints": ["材料原文出现过的人、组织、机构、平台或媒体名称"]
+}}
+
+要求：
+- simulation_suggestions 必须适合社会传播推演。
+- entity_hints 不超过30个，必须来自文档或材料原文。
+
+主题：{topic}
+整理文档：
+{summary[:12000]}
+""",
+                    },
+                ],
+                temperature=0.2,
+                max_tokens=1200,
+            )
+            suggestions = self._clean_string_list(data.get("simulation_suggestions"), limit=3)
+            hints = self._filter_entity_hints(
+                self._clean_string_list(data.get("entity_hints"), limit=30),
+                f"{summary}\n{material}",
+            )
+            return suggestions, hints
+        except Exception:
+            return [], []
 
     def _fallback_analysis(
         self,
