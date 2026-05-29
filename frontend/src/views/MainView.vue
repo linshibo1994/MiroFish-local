@@ -77,29 +77,13 @@
 
       <!-- 二级页 Header（完整模式） -->
       <template v-else>
-        <header class="workspace-topbar">
-          <button type="button" class="back-brand-btn" @click="startNewSession" title="返回传播推演">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 18l-6-6 6-6"/></svg>
-            <span>传播推演</span>
-          </button>
-
-          <nav class="workflow-nav" aria-label="推演流程">
-            <span
-              v-for="(name, idx) in stepNames"
-              :key="idx"
-              class="workflow-nav-item"
-              :class="{ active: currentStep === idx + 1, completed: currentStep > idx + 1 }"
-            >
-              {{ name }}
-              <span v-if="idx < stepNames.length - 1" class="workflow-nav-arrow">»</span>
-            </span>
-          </nav>
-
-          <div class="topbar-actions" aria-hidden="true">
-            <span class="topbar-icon-dot"></span>
-            <span class="topbar-avatar"></span>
-          </div>
-        </header>
+        <WorkflowTopbar
+          :currentStep="currentStep"
+          :projectId="projectData?.project_id || currentProjectId"
+          :simulationId="currentSimulationId"
+          :reportId="currentReportId"
+          @missing-report="handleMissingReportNavigation"
+        />
 
         <header class="app-header workspace-header">
           <div class="header-left">
@@ -191,8 +175,10 @@ import { useRoute, useRouter } from 'vue-router'
 import GraphPanel from '../components/GraphPanel.vue'
 import Step1GraphBuild from '../components/Step1GraphBuild.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
+import WorkflowTopbar from '../components/WorkflowTopbar.vue'
 import { getProject, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
 import { createSimulation, listSimulations } from '../api/simulation'
+import { checkReportStatus } from '../api/report'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
 import { getSessions, addSession } from '../store/sessionHistory'
 
@@ -217,6 +203,7 @@ const error = ref('')
 const projectData = ref(null)
 const graphData = ref(null)
 const currentSimulationId = ref('')
+const currentReportId = ref('')
 const currentPhase = ref(-1)
 const ontologyProgress = ref(null)
 const buildProgress = ref(null)
@@ -288,6 +275,7 @@ const startNewSession = () => {
     projectData.value = null
     graphData.value = null
     currentSimulationId.value = ''
+    currentReportId.value = ''
     ontologyProgress.value = null
     buildProgress.value = null
     systemLogs.value = []
@@ -376,6 +364,32 @@ const updateEnvStatus = (status) => { envSetupStatus.value = status || 'processi
 const handleSimulationCreated = (simulationId) => {
   currentSimulationId.value = simulationId || ''
   if (currentSimulationId.value) addLog(`模拟实例同步完成: ${currentSimulationId.value}`)
+  loadReportContext()
+}
+
+const loadReportContext = async () => {
+  if (!currentSimulationId.value) {
+    currentReportId.value = ''
+    return
+  }
+  try {
+    const res = await checkReportStatus(currentSimulationId.value)
+    currentReportId.value = res.success && res.data?.report_id ? res.data.report_id : ''
+  } catch (err) {
+    currentReportId.value = ''
+  }
+}
+
+const handleMissingReportNavigation = async (targetStep) => {
+  await loadReportContext()
+  if (currentReportId.value) {
+    router.push({
+      name: targetStep === 5 ? 'Interaction' : 'Report',
+      params: { reportId: currentReportId.value }
+    })
+  } else {
+    addLog('当前模拟尚未生成报告，无法跳转到报告或深入对话。')
+  }
 }
 
 const handleGoBack = () => {
@@ -403,6 +417,7 @@ const handleNewProject = async () => {
   projectData.value = null
   graphData.value = null
   currentSimulationId.value = ''
+  currentReportId.value = ''
   simulationHistory.value = []
   addLog('Step1 ready. Waiting for seed input.')
 }
@@ -471,6 +486,7 @@ const loadProject = async () => {
         await loadGraph(res.data.graph_id)
       }
       await loadSimulationHistory()
+      await loadReportContext()
     } else {
       error.value = res.error
       addLog(`Error loading project: ${res.error}`)
@@ -536,6 +552,7 @@ const enterEnvironmentSetup = async () => {
       if (!res.success || !res.data?.simulation_id) throw new Error(res.error || '创建模拟实例失败')
       currentSimulationId.value = res.data.simulation_id
       await loadSimulationHistory()
+      await loadReportContext()
       addLog(`模拟实例创建完成: ${currentSimulationId.value}`)
     }
     currentStep.value = 2
@@ -684,6 +701,7 @@ watch(() => route.params.projectId, (newId, oldId) => {
     projectData.value = null
     graphData.value = null
     currentSimulationId.value = ''
+    currentReportId.value = ''
     simulationHistory.value = []
     ontologyProgress.value = null
     buildProgress.value = null

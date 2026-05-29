@@ -1,9 +1,17 @@
 <template>
   <div class="main-view">
+    <WorkflowTopbar
+      :currentStep="3"
+      :projectId="projectData?.project_id"
+      :simulationId="currentSimulationId"
+      :reportId="currentReportId"
+      @missing-report="handleMissingReportNavigation"
+    />
+
     <!-- Header -->
     <header class="app-header">
       <div class="header-left">
-        <div class="brand" @click="router.push('/')">传播推演</div>
+        <span class="event-title">{{ projectTitle }}</span>
       </div>
       
       <div class="header-center">
@@ -71,8 +79,10 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import GraphPanel from '../components/GraphPanel.vue'
 import Step3Simulation from '../components/Step3Simulation.vue'
+import WorkflowTopbar from '../components/WorkflowTopbar.vue'
 import { getProject, getGraphData } from '../api/graph'
 import { getSimulation, getSimulationConfig, stopSimulation, closeSimulationEnv, getEnvStatus } from '../api/simulation'
+import { checkReportStatus } from '../api/report'
 
 const route = useRoute()
 const router = useRouter()
@@ -87,6 +97,7 @@ const viewMode = ref('split')
 
 // Data State
 const currentSimulationId = ref(route.params.simulationId)
+const currentReportId = ref('')
 // 直接在初始化时从 query 参数获取 maxRounds，确保子组件能立即获取到值
 const maxRounds = ref(route.query.maxRounds ? parseInt(route.query.maxRounds) : null)
 const minutesPerRound = ref(30) // 默认每轮30分钟
@@ -122,6 +133,14 @@ const statusText = computed(() => {
 
 const isSimulating = computed(() => currentStatus.value === 'processing')
 
+const projectTitle = computed(() => {
+  const directTitle = projectData.value?.simulation_requirement || projectData.value?.search_query
+  if (directTitle) return directTitle.slice(0, 54)
+  const summary = projectData.value?.seed_summary_md || projectData.value?.analysis_summary || ''
+  const firstLine = summary.split('\n').map(line => line.replace(/^#+\s*/, '').trim()).find(Boolean)
+  return firstLine ? firstLine.slice(0, 54) : '事件概述'
+})
+
 // --- Helpers ---
 const addLog = (msg) => {
   const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '.' + new Date().getMilliseconds().toString().padStart(3, '0')
@@ -133,6 +152,31 @@ const addLog = (msg) => {
 
 const updateStatus = (status) => {
   currentStatus.value = status
+}
+
+const loadReportContext = async () => {
+  if (!currentSimulationId.value) {
+    currentReportId.value = ''
+    return
+  }
+  try {
+    const res = await checkReportStatus(currentSimulationId.value)
+    currentReportId.value = res.success && res.data?.report_id ? res.data.report_id : ''
+  } catch (err) {
+    currentReportId.value = ''
+  }
+}
+
+const handleMissingReportNavigation = async (targetStep) => {
+  await loadReportContext()
+  if (currentReportId.value) {
+    router.push({
+      name: targetStep === 5 ? 'Interaction' : 'Report',
+      params: { reportId: currentReportId.value }
+    })
+  } else {
+    addLog('当前模拟尚未生成报告，无法跳转到报告或深入对话。')
+  }
 }
 
 // --- Layout Methods ---
@@ -230,6 +274,7 @@ const loadSimulationData = async () => {
           if (projRes.data.graph_id) {
             await loadGraph(projRes.data.graph_id)
           }
+          await loadReportContext()
         }
       }
     } else {
@@ -444,4 +489,3 @@ onUnmounted(() => {
   border-right: 1px solid #EAEAEA;
 }
 </style>
-

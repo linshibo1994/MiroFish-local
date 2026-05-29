@@ -1,9 +1,17 @@
 <template>
   <div class="main-view">
+    <WorkflowTopbar
+      :currentStep="2"
+      :projectId="projectData?.project_id"
+      :simulationId="currentSimulationId"
+      :reportId="currentReportId"
+      @missing-report="handleMissingReportNavigation"
+    />
+
     <!-- Header -->
     <header class="app-header">
       <div class="header-left">
-        <div class="brand" @click="router.push('/')">传播推演</div>
+        <span class="event-title">{{ projectTitle }}</span>
       </div>
       
       <div class="header-center">
@@ -69,8 +77,10 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import GraphPanel from '../components/GraphPanel.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
+import WorkflowTopbar from '../components/WorkflowTopbar.vue'
 import { getProject, getGraphData } from '../api/graph'
 import { getSimulation, stopSimulation, getEnvStatus, closeSimulationEnv } from '../api/simulation'
+import { checkReportStatus } from '../api/report'
 import { BUILD_INFO } from '../utils/buildInfo'
 
 const route = useRoute()
@@ -86,6 +96,7 @@ const viewMode = ref('split')
 
 // Data State
 const currentSimulationId = ref(route.params.simulationId)
+const currentReportId = ref('')
 const projectData = ref(null)
 const graphData = ref(null)
 const graphLoading = ref(false)
@@ -116,6 +127,14 @@ const statusText = computed(() => {
   return '准备中'
 })
 
+const projectTitle = computed(() => {
+  const directTitle = projectData.value?.simulation_requirement || projectData.value?.search_query
+  if (directTitle) return directTitle.slice(0, 54)
+  const summary = projectData.value?.seed_summary_md || projectData.value?.analysis_summary || ''
+  const firstLine = summary.split('\n').map(line => line.replace(/^#+\s*/, '').trim()).find(Boolean)
+  return firstLine ? firstLine.slice(0, 54) : '事件概述'
+})
+
 // --- Helpers ---
 const addLog = (msg) => {
   const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '.' + new Date().getMilliseconds().toString().padStart(3, '0')
@@ -132,6 +151,32 @@ const updateStatus = (status) => {
 const handleSimulationCreated = (simulationId) => {
   currentSimulationId.value = simulationId || currentSimulationId.value
   addLog(`模拟实例同步完成: ${currentSimulationId.value}`)
+  loadReportContext()
+}
+
+const loadReportContext = async () => {
+  if (!currentSimulationId.value) {
+    currentReportId.value = ''
+    return
+  }
+  try {
+    const res = await checkReportStatus(currentSimulationId.value)
+    currentReportId.value = res.success && res.data?.report_id ? res.data.report_id : ''
+  } catch (err) {
+    currentReportId.value = ''
+  }
+}
+
+const handleMissingReportNavigation = async (targetStep) => {
+  await loadReportContext()
+  if (currentReportId.value) {
+    router.push({
+      name: targetStep === 5 ? 'Interaction' : 'Report',
+      params: { reportId: currentReportId.value }
+    })
+  } else {
+    addLog('当前模拟尚未生成报告，无法跳转到报告或深入对话。')
+  }
 }
 
 // --- Layout Methods ---
@@ -262,6 +307,7 @@ const loadSimulationData = async () => {
           if (projRes.data.graph_id) {
             await loadGraph(projRes.data.graph_id)
           }
+          await loadReportContext()
         }
       }
     } else {

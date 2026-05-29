@@ -1,9 +1,16 @@
 <template>
   <div class="main-view">
+    <WorkflowTopbar
+      :currentStep="5"
+      :projectId="projectData?.project_id"
+      :simulationId="simulationId"
+      :reportId="currentReportId"
+    />
+
     <!-- Header -->
     <header class="app-header">
       <div class="header-left">
-        <div class="brand" @click="router.push('/')">传播推演</div>
+        <span class="event-title">{{ projectTitle }}</span>
       </div>
       
       <div class="header-center">
@@ -66,6 +73,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import GraphPanel from '../components/GraphPanel.vue'
 import Step5Interaction from '../components/Step5Interaction.vue'
+import WorkflowTopbar from '../components/WorkflowTopbar.vue'
 import { getProject, getGraphData } from '../api/graph'
 import { getSimulation } from '../api/simulation'
 import { getReport } from '../api/report'
@@ -113,6 +121,14 @@ const statusText = computed(() => {
   if (currentStatus.value === 'completed') return '已完成'
   if (currentStatus.value === 'processing') return '处理中'
   return '就绪'
+})
+
+const projectTitle = computed(() => {
+  const directTitle = projectData.value?.simulation_requirement || projectData.value?.search_query
+  if (directTitle) return directTitle.slice(0, 54)
+  const summary = projectData.value?.seed_summary_md || projectData.value?.analysis_summary || ''
+  const firstLine = summary.split('\n').map(line => line.replace(/^#+\s*/, '').trim()).find(Boolean)
+  return firstLine ? firstLine.slice(0, 54) : '事件概述'
 })
 
 // --- Helpers ---
