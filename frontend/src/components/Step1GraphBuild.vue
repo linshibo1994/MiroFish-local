@@ -2,7 +2,7 @@
   <div class="step1-root">
 
     <!-- 阶段1：输入阶段 -->
-    <div v-if="!seedResult && !ontologyGenerating && currentPhase < 1" class="phase-input">
+    <div v-if="!seedResult && !ontologyGenerating && currentPhase < 0" class="phase-input">
       <div class="input-center">
         <!-- 标题区 -->
         <div class="hero-section">
@@ -155,7 +155,7 @@
     </div>
 
     <!-- 阶段2：结果阶段 -->
-    <div v-else-if="seedResult && !ontologyGenerating && currentPhase < 1" class="phase-result">
+    <div v-else-if="seedResult && !ontologyGenerating && currentPhase < 0" class="phase-result">
       <div class="result-center">
         <!-- 步骤指示器 -->
         <div class="step-indicator result-indicator">
@@ -408,7 +408,7 @@ const props = defineProps({
   systemLogs: { type: Array, default: () => [] }
 })
 
-const emit = defineEmits(['ontology-generated', 'next-step', 'add-log'])
+const emit = defineEmits(['ontology-generated', 'workspace-started', 'next-step', 'add-log'])
 
 const inputMode = ref('web_search')
 const searchQuery = ref('')
@@ -616,6 +616,13 @@ const handleGenerateOntology = async () => {
   if (!canGenerateOntology.value) return
   ontologyGenerating.value = true
   localError.value = ''
+  emit('workspace-started', {
+    project_id: currentProjectId.value,
+    simulation_requirement: simulationRequirement.value.trim(),
+    seed_summary_md: seedResult.value?.seed_summary_md,
+    analysis_summary: seedResult.value?.analysis_summary,
+    search_query: searchQuery.value.trim()
+  })
   emit('add-log', 'Generating ontology from confirmed simulation requirement...')
   try {
     const payload = {

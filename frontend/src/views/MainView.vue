@@ -134,6 +134,7 @@
           :graphData="graphData"
           :systemLogs="systemLogs"
           @ontology-generated="handleOntologyGenerated"
+          @workspace-started="handleWorkspaceStarted"
           @add-log="addLog"
           @next-step="handleNextStep"
         />
@@ -161,6 +162,7 @@
             :graphData="graphData"
             :systemLogs="systemLogs"
             @ontology-generated="handleOntologyGenerated"
+            @workspace-started="handleWorkspaceStarted"
             @add-log="addLog"
             @next-step="handleNextStep"
           />
@@ -431,6 +433,22 @@ const handleOntologyGenerated = async (data) => {
   router.replace({ name: 'Process', params: { projectId: data.project_id } })
   addLog(`Ontology generated successfully for project ${data.project_id}`)
   await startBuildGraph()
+}
+
+const handleWorkspaceStarted = (data = {}) => {
+  if (currentPhase.value >= 0) return
+  if (data.project_id) currentProjectId.value = data.project_id
+  projectData.value = {
+    ...(projectData.value || {}),
+    ...data,
+    project_id: data.project_id || projectData.value?.project_id || currentProjectId.value
+  }
+  currentPhase.value = 0
+  ontologyProgress.value = { message: '正在生成本体...' }
+  error.value = ''
+  clearPendingUpload()
+  pendingUploadState.value = null
+  addLog('切换到图谱构建工作台，等待本体生成完成。')
 }
 
 const loadProject = async () => {
