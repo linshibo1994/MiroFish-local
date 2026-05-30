@@ -6,9 +6,9 @@
       <div class="input-center">
         <!-- 标题区 -->
         <div class="hero-section">
-          <h1 class="hero-title"><span class="title-news">News</span><span class="title-power">Power</span><span class="title-suffix">. 传播推演</span></h1>
+          <h1 class="hero-title"><span class="title-news">News</span><span class="title-power">Power.</span><span class="title-suffix">传播推演</span></h1>
           <p class="hero-subtitle">输入任意事件，即刻推演未来</p>
-          <div class="step-indicator">
+          <div class="step-indicator landing-step-indicator">
             <span class="step-dot active">01 事件背景</span>
             <span class="step-line">———</span>
             <span class="step-dot">02 推演方向</span>
@@ -674,15 +674,15 @@ watch(() => props.pendingUpload, (pending) => {
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: 40px 24px 60px;
+  padding: 56px 24px 72px;
 }
 
 .input-center {
   width: 100%;
-  max-width: 780px;
+  max-width: 1000px;
   display: flex;
   flex-direction: column;
-  gap: 32px;
+  align-items: center;
 }
 
 /* 标题区 */
@@ -691,36 +691,48 @@ watch(() => props.pendingUpload, (pending) => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 18px;
+  margin-bottom: 28px;
+  width: 100%;
 }
 
 .hero-title {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 2.5rem;
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  font-family: 'Inter', 'Noto Sans SC', system-ui, sans-serif;
+  font-size: 48px;
   font-weight: 800;
   margin: 0;
-  line-height: 1.2;
+  line-height: 1;
+  letter-spacing: 0;
 }
 
 .title-news {
-  color: #1A1A2E;
+  color: #09090D;
 }
 
 .title-power {
-  background: linear-gradient(135deg, #1677FF, #6366F1);
+  background: linear-gradient(90deg, #2244E8 0%, #278DF2 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
 }
 
 .title-suffix {
-  color: #1A1A2E;
+  color: #09090D;
+  margin-left: 18px;
 }
 
 .hero-subtitle {
-  font-size: 1rem;
-  color: #6B7280;
+  font-size: 16px;
+  line-height: 16px;
+  color: #495770;
   margin: 0;
+}
+
+.step-indicator.landing-step-indicator {
+  display: none;
 }
 
 .step-indicator {
@@ -748,13 +760,19 @@ watch(() => props.pendingUpload, (pending) => {
 
 /* 输入卡片 */
 .input-card {
+  width: 100%;
+  max-width: 800px;
+  min-height: 340px;
+  box-sizing: border-box;
   background: #FFFFFF;
-  border-radius: 12px;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
-  padding: 24px;
+  border: 1px solid #DDE6F5;
+  border-radius: 16px;
+  box-shadow: 0 8px 32px rgba(136, 166, 230, 0.12);
+  padding: 20px 16px 14px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 8px;
+  overflow: hidden;
 }
 
 /* 输入区域互斥样式 */
@@ -783,9 +801,7 @@ watch(() => props.pendingUpload, (pending) => {
 }
 
 .input-divider {
-  height: 1px;
-  background: #E8ECF0;
-  margin: 4px 0;
+  display: none;
 }
 
 .disabled-placeholder {
@@ -806,16 +822,17 @@ watch(() => props.pendingUpload, (pending) => {
 
 .keyword-textarea {
   width: 100%;
-  min-height: 120px;
+  min-height: 132px;
   border: none;
   outline: none;
   resize: none;
-  font-size: 15px;
+  font-size: 16px;
   color: #1A1A2E;
-  line-height: 1.6;
+  line-height: 24px;
   font-family: inherit;
   background: transparent;
   box-sizing: border-box;
+  padding: 8px 8px 0;
 }
 
 .keyword-textarea::placeholder {
@@ -857,10 +874,10 @@ watch(() => props.pendingUpload, (pending) => {
 }
 
 .upload-zone {
-  min-height: 140px;
-  border: 2px dashed #D1D5DB;
-  border-radius: 8px;
-  background: #F9FAFB;
+  min-height: 112px;
+  border: 1px dashed #C6D4EA;
+  border-radius: 12px;
+  background: #FFFFFF;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -884,13 +901,13 @@ watch(() => props.pendingUpload, (pending) => {
 }
 
 .upload-icon {
-  font-size: 28px;
-  color: #1677FF;
-  margin-bottom: 8px;
+  font-size: 26px;
+  color: #4E63B6;
+  margin-bottom: 4px;
 }
 
 .upload-title {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   color: #374151;
 }
@@ -969,6 +986,9 @@ watch(() => props.pendingUpload, (pending) => {
 .submit-row {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  min-height: 40px;
+  margin-top: auto;
 }
 
 .primary-btn {
@@ -997,6 +1017,22 @@ watch(() => props.pendingUpload, (pending) => {
   cursor: not-allowed;
 }
 
+.submit-btn {
+  min-width: 132px;
+  height: 36px;
+  padding: 0 20px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #1942FF 0%, #60B0FF 100%);
+  box-shadow: none;
+}
+
+.submit-btn:disabled {
+  background: #EEF2F9;
+  color: #9AA8BF;
+  cursor: not-allowed;
+  opacity: 1;
+}
+
 .error-text {
   color: #EF4444;
   font-size: 13px;
@@ -1005,34 +1041,61 @@ watch(() => props.pendingUpload, (pending) => {
 
 /* 优势卡片区 */
 .features-section {
+  width: 100%;
+  max-width: 1000px;
+  margin: 64px auto 0;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 28px;
 }
 
 .features-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: #6B7280;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  font-size: 24px;
+  line-height: 33px;
+  font-weight: 500;
+  color: #8792A6;
   margin: 0;
   text-align: center;
-  letter-spacing: 0.5px;
+  letter-spacing: 0;
+}
+
+.features-title::before,
+.features-title::after {
+  content: '';
+  flex: 0 1 160px;
+  height: 1px;
+}
+
+.features-title::before {
+  background: linear-gradient(90deg, transparent, rgba(135, 146, 166, 0.45));
+}
+
+.features-title::after {
+  background: linear-gradient(270deg, transparent, rgba(135, 146, 166, 0.45));
 }
 
 .features-grid {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
-  gap: 12px;
+  gap: 16px;
+  width: 100%;
 }
 
 .feature-card {
   background: #FFFFFF;
-  border-radius: 10px;
-  padding: 16px;
+  border-radius: 14px;
+  padding: 22px 24px;
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  border: 1px solid #E8ECF0;
+  min-height: 120px;
+  border: 1px solid rgba(232, 238, 251, 0.95);
+  box-shadow: 0 6px 28px rgba(15, 35, 71, 0.06);
   transition: box-shadow 0.2s;
 }
 
@@ -1726,12 +1789,20 @@ watch(() => props.pendingUpload, (pending) => {
 
 /* 响应式 */
 @media (max-width: 760px) {
+  .phase-input {
+    padding: 52px 24px 64px;
+  }
+
   .scroll-container {
     padding: 16px;
   }
 
   .features-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .features-section {
+    margin-top: 56px;
   }
 
   .stats-grid {
@@ -1743,7 +1814,20 @@ watch(() => props.pendingUpload, (pending) => {
   }
 
   .hero-title {
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
     font-size: 1.8rem;
+    line-height: 1;
+  }
+
+  .title-suffix {
+    margin-left: 0;
+  }
+
+  .features-title {
+    font-size: 22px;
+    line-height: 30px;
   }
 }
 </style>
