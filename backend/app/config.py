@@ -38,12 +38,16 @@ class Config:
     LLM_API_KEY = os.environ.get('LLM_API_KEY')
     LLM_BASE_URL = os.environ.get('LLM_BASE_URL', 'https://api.openai.com/v1')
     LLM_MODEL_NAME = os.environ.get('LLM_MODEL_NAME', 'gpt-4o-mini')
+    LLM_BOOST_API_KEY = os.environ.get('LLM_BOOST_API_KEY')
+    LLM_BOOST_BASE_URL = os.environ.get('LLM_BOOST_BASE_URL')
+    LLM_BOOST_MODEL_NAME = os.environ.get('LLM_BOOST_MODEL_NAME')
     LLM_WEB_SEARCH_API_KEY = os.environ.get('LLM_WEB_SEARCH_API_KEY') or LLM_API_KEY
     LLM_WEB_SEARCH_BASE_URL = os.environ.get('LLM_WEB_SEARCH_BASE_URL') or LLM_BASE_URL
     LLM_WEB_SEARCH_MODEL = os.environ.get('LLM_WEB_SEARCH_MODEL') or LLM_MODEL_NAME
     LLM_WEB_SEARCH_STRATEGY = os.environ.get('LLM_WEB_SEARCH_STRATEGY', 'max')
     LLM_WEB_SEARCH_VALIDATE_LINKS = os.environ.get('LLM_WEB_SEARCH_VALIDATE_LINKS', 'true').lower() in {'1', 'true', 'yes', 'on'}
     REAL_ENTITY_BATCH_SIZE = int(os.environ.get('REAL_ENTITY_BATCH_SIZE', '30'))
+    REAL_ENTITY_RESOLVE_CONCURRENCY = int(os.environ.get('REAL_ENTITY_RESOLVE_CONCURRENCY', '3'))
 
     # 联网搜索 provider 配置
     # 默认优先使用阿里百炼 OpenAI 兼容模式的 websearch 能力；博查仅在显式启用时使用。
@@ -90,6 +94,8 @@ class Config:
     DEFAULT_CHUNK_SIZE = int(os.environ.get('DEFAULT_CHUNK_SIZE', '1200'))  # 默认切块大小
     DEFAULT_CHUNK_OVERLAP = int(os.environ.get('DEFAULT_CHUNK_OVERLAP', '100'))  # 默认重叠大小
     GRAPH_BUILD_BATCH_SIZE = int(os.environ.get('GRAPH_BUILD_BATCH_SIZE', '5'))  # 图谱构建批次大小
+    GRAPH_BUILD_CONCURRENCY = int(os.environ.get('GRAPH_BUILD_CONCURRENCY', '3'))  # 图谱构建并发批次数
+    GRAPH_BUILD_BATCH_DELAY_SECONDS = float(os.environ.get('GRAPH_BUILD_BATCH_DELAY_SECONDS', '0'))  # 批次节流延迟
     
     # OASIS模拟配置
     OASIS_DEFAULT_MAX_ROUNDS = int(os.environ.get('OASIS_DEFAULT_MAX_ROUNDS', '10'))
@@ -109,6 +115,10 @@ class Config:
     REPORT_AGENT_MAX_TOOL_CALLS = int(os.environ.get('REPORT_AGENT_MAX_TOOL_CALLS', '5'))
     REPORT_AGENT_MAX_REFLECTION_ROUNDS = int(os.environ.get('REPORT_AGENT_MAX_REFLECTION_ROUNDS', '2'))
     REPORT_AGENT_TEMPERATURE = float(os.environ.get('REPORT_AGENT_TEMPERATURE', '0.5'))
+    REPORT_TOOL_CONCURRENCY = int(os.environ.get('REPORT_TOOL_CONCURRENCY', '3'))
+    REPORT_SECTION_CONCURRENCY = int(os.environ.get('REPORT_SECTION_CONCURRENCY', '2'))
+    SIMULATION_CONFIG_CONCURRENCY = int(os.environ.get('SIMULATION_CONFIG_CONCURRENCY', '3'))
+    PROFILE_GENERATION_CONCURRENCY = int(os.environ.get('PROFILE_GENERATION_CONCURRENCY', '5'))
     
     @classmethod
     def validate(cls):

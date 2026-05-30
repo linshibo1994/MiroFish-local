@@ -164,12 +164,20 @@ GRAPHITI_EMBEDDING_MODEL=text-embedding-v4
 
 #### 加速 LLM 配置（可选）
 
-可配置独立的加速 LLM 用于提升特定环节的处理速度：
+可配置独立的加速 LLM 用于提升图谱构建、Agent 人设生成、模拟配置生成和报告生成等 LLM 密集环节的处理速度。未配置时系统会自动回退 `LLM_*` 默认模型。
 
 ```env
 LLM_BOOST_API_KEY=your_boost_api_key
 LLM_BOOST_BASE_URL=https://another-api-provider.com/v1
 LLM_BOOST_MODEL_NAME=gpt-4o-mini
+
+# 并发加速（按服务商限流能力调节）
+GRAPH_BUILD_CONCURRENCY=3
+REAL_ENTITY_RESOLVE_CONCURRENCY=3
+PROFILE_GENERATION_CONCURRENCY=5
+SIMULATION_CONFIG_CONCURRENCY=3
+REPORT_TOOL_CONCURRENCY=3
+REPORT_SECTION_CONCURRENCY=2
 ```
 
 ### 2. 启动依赖服务（可选，仅本地模式）

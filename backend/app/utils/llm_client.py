@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any, List
 from openai import OpenAI
 
 from ..config import Config
+from .llm_routing import get_preferred_llm_endpoint
 
 
 class LLMClient:
@@ -17,11 +18,18 @@ class LLMClient:
         self,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        prefer_boost: bool = False
     ):
-        self.api_key = api_key or Config.LLM_API_KEY
-        self.base_url = base_url or Config.LLM_BASE_URL
-        self.model = model or Config.LLM_MODEL_NAME
+        if api_key or base_url or model:
+            self.api_key = api_key or Config.LLM_API_KEY
+            self.base_url = base_url or Config.LLM_BASE_URL
+            self.model = model or Config.LLM_MODEL_NAME
+        else:
+            endpoint = get_preferred_llm_endpoint(prefer_boost=prefer_boost)
+            self.api_key = endpoint.api_key
+            self.base_url = endpoint.base_url
+            self.model = endpoint.model
         
         if not self.api_key:
             raise ValueError("LLM_API_KEY 未配置")
@@ -88,4 +96,3 @@ class LLMClient:
         )
         
         return json.loads(response)
-

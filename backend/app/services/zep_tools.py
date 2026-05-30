@@ -14,12 +14,14 @@ Zep检索工具服务
 
 import time
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 
 from ..config import Config
 from ..utils.logger import get_logger
 from ..utils.llm_client import LLMClient
+from ..utils.llm_routing import clamp_concurrency
 from .zep_factory import get_zep_client
 from .zep_adapter import ZepClientAdapter
 
@@ -413,13 +415,14 @@ class ZepToolsService:
         self.client: ZepClientAdapter = get_zep_client(backend=backend)
         # LLM客户端用于InsightForge生成子问题
         self._llm_client = llm_client
+        self.tool_concurrency = clamp_concurrency(Config.REPORT_TOOL_CONCURRENCY, 3, maximum=8)
         logger.info("ZepToolsService 初始化完成")
     
     @property
     def llm(self) -> LLMClient:
         """延迟初始化LLM客户端"""
         if self._llm_client is None:
-            self._llm_client = LLMClient()
+            self._llm_client = LLMClient(prefer_boost=True)
         return self._llm_client
     
     def _call_with_retry(self, func, operation_name: str, max_retries: int = None):
@@ -982,32 +985,40 @@ class ZepToolsService:
         all_edges = []
         seen_facts = set()
         
-        for sub_query in sub_queries:
-            search_result = self.search_graph(
+        search_jobs = [(sub_query, 15) for sub_query in sub_queries]
+        search_jobs.append((query, 20))
+        search_results_by_index: Dict[int, SearchResult] = {}
+
+        def run_search(search_query: str, limit: int) -> SearchResult:
+            return self.search_graph(
                 graph_id=graph_id,
-                query=sub_query,
-                limit=15,
-                scope="edges"
+                query=search_query,
+                limit=limit,
+                scope="edges",
             )
-            
+
+        max_workers = min(self.tool_concurrency, len(search_jobs))
+        if max_workers <= 1:
+            for index, (search_query, limit) in enumerate(search_jobs):
+                search_results_by_index[index] = run_search(search_query, limit)
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_index = {
+                    executor.submit(run_search, search_query, limit): index
+                    for index, (search_query, limit) in enumerate(search_jobs)
+                }
+                for future in as_completed(future_to_index):
+                    search_results_by_index[future_to_index[future]] = future.result()
+
+        for index in range(len(search_jobs)):
+            search_result = search_results_by_index.get(index)
+            if not search_result:
+                continue
             for fact in search_result.facts:
                 if fact not in seen_facts:
                     all_facts.append(fact)
                     seen_facts.add(fact)
-            
             all_edges.extend(search_result.edges)
-        
-        # 对原始问题也进行搜索
-        main_search = self.search_graph(
-            graph_id=graph_id,
-            query=query,
-            limit=20,
-            scope="edges"
-        )
-        for fact in main_search.facts:
-            if fact not in seen_facts:
-                all_facts.append(fact)
-                seen_facts.add(fact)
         
         result.semantic_facts = all_facts
         result.total_facts = len(all_facts)
@@ -1027,32 +1038,48 @@ class ZepToolsService:
         entity_insights = []
         node_map = {}  # 用于后续关系链构建
         
-        for uuid in list(entity_uuids):  # 处理所有实体，不截断
-            if not uuid:
-                continue
+        entity_uuid_list = [uuid for uuid in entity_uuids if uuid]
+
+        def fetch_node(uuid: str) -> Optional[NodeInfo]:
             try:
-                # 单独获取每个相关节点的信息
-                node = self.get_node_detail(graph_id, uuid)
+                return self.get_node_detail(graph_id, uuid)
+            except Exception as exc:
+                logger.debug(f"获取节点 {uuid} 失败: {exc}")
+                return None
+
+        node_results_by_uuid: Dict[str, NodeInfo] = {}
+        max_node_workers = min(self.tool_concurrency, len(entity_uuid_list))
+        if max_node_workers <= 1:
+            for uuid in entity_uuid_list:
+                node = fetch_node(uuid)
                 if node:
-                    node_map[uuid] = node
-                    entity_type = next((l for l in node.labels if l not in ["Entity", "Node"]), "实体")
-                    
-                    # 获取该实体相关的所有事实（不截断）
-                    related_facts = [
-                        f for f in all_facts 
-                        if node.name.lower() in f.lower()
-                    ]
-                    
-                    entity_insights.append({
-                        "uuid": node.uuid,
-                        "name": node.name,
-                        "type": entity_type,
-                        "summary": node.summary,
-                        "related_facts": related_facts  # 完整输出，不截断
-                    })
-            except Exception as e:
-                logger.debug(f"获取节点 {uuid} 失败: {e}")
+                    node_results_by_uuid[uuid] = node
+        else:
+            with ThreadPoolExecutor(max_workers=max_node_workers) as executor:
+                future_to_uuid = {executor.submit(fetch_node, uuid): uuid for uuid in entity_uuid_list}
+                for future in as_completed(future_to_uuid):
+                    uuid = future_to_uuid[future]
+                    node = future.result()
+                    if node:
+                        node_results_by_uuid[uuid] = node
+
+        for uuid in entity_uuid_list:
+            node = node_results_by_uuid.get(uuid)
+            if not node:
                 continue
+            node_map[uuid] = node
+            entity_type = next((l for l in node.labels if l not in ["Entity", "Node"]), "实体")
+            related_facts = [
+                f for f in all_facts
+                if node.name and node.name.lower() in f.lower()
+            ]
+            entity_insights.append({
+                "uuid": node.uuid,
+                "name": node.name,
+                "type": entity_type,
+                "summary": node.summary,
+                "related_facts": related_facts
+            })
         
         result.entity_insights = entity_insights
         result.total_entities = len(entity_insights)

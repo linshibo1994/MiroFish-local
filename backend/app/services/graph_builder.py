@@ -11,14 +11,16 @@ import os
 import uuid
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass
 
 from ..config import Config
 from ..models.task import TaskManager, TaskStatus
 from .text_processor import TextProcessor
-from .zep_factory import get_zep_client
+from .zep_factory import create_zep_client, get_zep_client
 from .zep_adapter import ZepClientAdapter
+from ..utils.llm_routing import clamp_concurrency, get_preferred_llm_endpoint
 
 
 @dataclass
@@ -54,7 +56,12 @@ class GraphBuilderService:
         "embeddings",
     }
 
-    def __init__(self, api_key: Optional[str] = None, backend: Optional[str] = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        backend: Optional[str] = None,
+        build_mode: bool = False,
+    ):
         """
         初始化图谱构建服务
 
@@ -62,7 +69,16 @@ class GraphBuilderService:
             api_key: Zep API Key（仅 cloud 模式需要，可选）
         """
         self._backend = backend or Config.ZEP_BACKEND
-        self.client: ZepClientAdapter = get_zep_client(backend=self._backend)
+        if self._backend == 'graphiti' and build_mode:
+            self._llm_endpoint = get_preferred_llm_endpoint(prefer_boost=True)
+            self.client: ZepClientAdapter = create_zep_client(
+                backend=self._backend,
+                use_singleton=False,
+                llm_endpoint=self._llm_endpoint,
+            )
+        else:
+            self._llm_endpoint = None
+            self.client: ZepClientAdapter = get_zep_client(backend=self._backend)
         self.task_manager = TaskManager()
     
     def build_graph_async(
@@ -73,6 +89,7 @@ class GraphBuilderService:
         chunk_size: int = Config.DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = Config.DEFAULT_CHUNK_OVERLAP,
         batch_size: int = Config.GRAPH_BUILD_BATCH_SIZE,
+        concurrency: int = Config.GRAPH_BUILD_CONCURRENCY,
         extraction_context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
@@ -96,13 +113,17 @@ class GraphBuilderService:
                 "graph_name": graph_name,
                 "chunk_size": chunk_size,
                 "text_length": len(text),
+                "batch_size": batch_size,
+                "concurrency": concurrency,
+                "llm_model": self._llm_endpoint.model if self._llm_endpoint else None,
+                "llm_boost_enabled": bool(self._llm_endpoint and self._llm_endpoint.is_boost),
             }
         )
         
         # 在后台线程中执行构建
         thread = threading.Thread(
             target=self._build_graph_worker,
-            args=(task_id, text, ontology, graph_name, chunk_size, chunk_overlap, batch_size, extraction_context)
+            args=(task_id, text, ontology, graph_name, chunk_size, chunk_overlap, batch_size, concurrency, extraction_context)
         )
         thread.daemon = True
         thread.start()
@@ -118,6 +139,7 @@ class GraphBuilderService:
         chunk_size: int,
         chunk_overlap: int,
         batch_size: int,
+        concurrency: int,
         extraction_context: Optional[Dict[str, Any]] = None,
     ):
         """图谱构建工作线程"""
@@ -163,6 +185,7 @@ class GraphBuilderService:
                     message=msg
                 ),
                 extraction_context=extraction_context or {"event_topic": graph_name},
+                concurrency=concurrency,
             )
             
             # 5. 等待Zep处理完成
@@ -327,25 +350,32 @@ class GraphBuilderService:
         batch_size: int = Config.GRAPH_BUILD_BATCH_SIZE,
         progress_callback: Optional[Callable] = None,
         extraction_context: Optional[Dict[str, Any]] = None,
+        concurrency: int = Config.GRAPH_BUILD_CONCURRENCY,
     ) -> List[str]:
         """分批添加文本到图谱，返回所有 episode 的 uuid 列表"""
-        episode_uuids = []
         total_chunks = len(chunks)
+        if total_chunks == 0:
+            return []
 
-        for i in range(0, total_chunks, batch_size):
-            batch_chunks = chunks[i:i + batch_size]
-            batch_num = i // batch_size + 1
-            total_batches = (total_chunks + batch_size - 1) // batch_size
+        batch_size = max(1, int(batch_size or 1))
+        batch_specs = []
+        total_batches = (total_chunks + batch_size - 1) // batch_size
+        for start in range(0, total_chunks, batch_size):
+            batch_chunks = chunks[start:start + batch_size]
+            batch_specs.append((len(batch_specs), start, batch_chunks))
 
-            if progress_callback:
-                progress = (i + len(batch_chunks)) / total_chunks
-                progress_callback(
-                    f"发送第 {batch_num}/{total_batches} 批数据 ({len(batch_chunks)} 块)...",
-                    progress
-                )
+        concurrency = clamp_concurrency(concurrency, Config.GRAPH_BUILD_CONCURRENCY, maximum=8)
+        backend = getattr(self, "_backend", Config.ZEP_BACKEND)
+        # Cloud add_batch 自身是批量异步处理，保守串行提交；Graphiti 本地抽取才启用并发写入。
+        if backend != 'graphiti':
+            concurrency = 1
 
-            # 构建 episode 数据（适配器格式）
-            episodes = [
+        completed_batches = 0
+        episode_uuids_by_batch: Dict[int, List[str]] = {}
+        progress_lock = threading.Lock()
+
+        def build_episodes(batch_chunks: List[str]) -> List[Dict[str, Any]]:
+            return [
                 {
                     "data": self._wrap_chunk_with_event_constraints(chunk, extraction_context),
                     "type": "text",
@@ -354,22 +384,65 @@ class GraphBuilderService:
                 for chunk in batch_chunks
             ]
 
-            # 发送到后端
-            try:
-                batch_uuids = self.client.add_episode_batch(
-                    graph_id=graph_id,
-                    episodes=episodes
+        def submit_batch(batch_index: int, start_index: int, batch_chunks: List[str]) -> List[str]:
+            batch_num = batch_index + 1
+            if progress_callback:
+                progress_callback(
+                    f"发送第 {batch_num}/{total_batches} 批数据 ({len(batch_chunks)} 块)...",
+                    start_index / total_chunks,
                 )
-                episode_uuids.extend(batch_uuids)
 
-                # 避免请求过快
-                time.sleep(1)
+            batch_uuids = self.client.add_episode_batch(
+                graph_id=graph_id,
+                episodes=build_episodes(batch_chunks),
+            )
+            delay = max(0.0, float(Config.GRAPH_BUILD_BATCH_DELAY_SECONDS or 0))
+            if delay:
+                time.sleep(delay)
+            return batch_uuids
 
-            except Exception as e:
-                if progress_callback:
-                    progress_callback(f"批次 {batch_num} 发送失败: {str(e)}", 0)
-                raise
+        if concurrency <= 1 or total_batches == 1:
+            for batch_index, start_index, batch_chunks in batch_specs:
+                try:
+                    episode_uuids_by_batch[batch_index] = submit_batch(batch_index, start_index, batch_chunks)
+                    completed_batches += 1
+                    if progress_callback:
+                        progress_callback(
+                            f"已完成第 {completed_batches}/{total_batches} 批数据写入",
+                            completed_batches / total_batches,
+                        )
+                except Exception as e:
+                    if progress_callback:
+                        progress_callback(f"批次 {batch_index + 1} 发送失败: {str(e)}", 0)
+                    raise
+        else:
+            with ThreadPoolExecutor(max_workers=min(concurrency, total_batches)) as executor:
+                future_to_batch = {
+                    executor.submit(submit_batch, batch_index, start_index, batch_chunks): batch_index
+                    for batch_index, start_index, batch_chunks in batch_specs
+                }
+                for future in as_completed(future_to_batch):
+                    batch_index = future_to_batch[future]
+                    try:
+                        episode_uuids_by_batch[batch_index] = future.result()
+                    except Exception as e:
+                        if progress_callback:
+                            progress_callback(f"批次 {batch_index + 1} 发送失败: {str(e)}", 0)
+                        raise
 
+                    with progress_lock:
+                        completed_batches += 1
+                        current_completed = completed_batches
+
+                    if progress_callback:
+                        progress_callback(
+                            f"已完成第 {current_completed}/{total_batches} 批数据写入",
+                            current_completed / total_batches,
+                        )
+
+        episode_uuids: List[str] = []
+        for batch_index in range(total_batches):
+            episode_uuids.extend(episode_uuids_by_batch.get(batch_index, []))
         return episode_uuids
 
     @classmethod

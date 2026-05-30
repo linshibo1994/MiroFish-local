@@ -31,9 +31,10 @@ def test_prepare_falls_back_when_real_verification_has_zero_verified(tmp_path, m
     resolver_init_args = {}
 
     class FakeResolver:
-        def __init__(self, min_source_count=1, allow_group_agents=True):
+        def __init__(self, min_source_count=1, allow_group_agents=True, concurrency=1):
             resolver_init_args["min_source_count"] = min_source_count
             resolver_init_args["allow_group_agents"] = allow_group_agents
+            resolver_init_args["concurrency"] = concurrency
 
         def resolve_entities(self, entities):
             return [
@@ -109,6 +110,7 @@ def test_prepare_falls_back_when_real_verification_has_zero_verified(tmp_path, m
     assert resolver_init_args == {
         "min_source_count": 1,
         "allow_group_agents": True,
+        "concurrency": manager_module.Config.REAL_ENTITY_RESOLVE_CONCURRENCY,
     }
     assert result.verification_candidate_count == 1
     assert result.verification_verified_count == 0

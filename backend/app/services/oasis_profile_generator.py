@@ -23,6 +23,7 @@ from datetime import datetime
 from openai import OpenAI
 
 from ..config import Config
+from ..utils.llm_routing import clamp_concurrency, get_preferred_llm_endpoint
 from ..utils.logger import get_logger
 from .zep_entity_reader import EntityNode, ZepEntityReader
 from .zep_factory import get_zep_client
@@ -242,9 +243,17 @@ class OasisProfileGenerator:
         graph_id: Optional[str] = None,
         graph_backend: Optional[str] = None,
     ):
-        self.api_key = api_key or Config.LLM_API_KEY
-        self.base_url = base_url or Config.LLM_BASE_URL
-        self.model_name = model_name or Config.LLM_MODEL_NAME
+        if api_key or base_url or model_name:
+            self.api_key = api_key or Config.LLM_API_KEY
+            self.base_url = base_url or Config.LLM_BASE_URL
+            self.model_name = model_name or Config.LLM_MODEL_NAME
+            self._llm_boost_enabled = False
+        else:
+            endpoint = get_preferred_llm_endpoint(prefer_boost=True)
+            self.api_key = endpoint.api_key
+            self.base_url = endpoint.base_url
+            self.model_name = endpoint.model
+            self._llm_boost_enabled = endpoint.is_boost
 
         if not self.api_key:
             raise ValueError("LLM_API_KEY 未配置")
@@ -1238,7 +1247,14 @@ class OasisProfileGenerator:
                 )
                 return idx, fallback_profile, str(e)
         
-        logger.info(f"开始并行生成 {total} 个Agent人设（并行数: {parallel_count}）...")
+        parallel_count = clamp_concurrency(parallel_count, Config.PROFILE_GENERATION_CONCURRENCY, maximum=16)
+        logger.info(
+            "开始并行生成 %s 个Agent人设（并行数: %s, model=%s, boost=%s）...",
+            total,
+            parallel_count,
+            self.model_name,
+            getattr(self, "_llm_boost_enabled", False),
+        )
         print(f"\n{'='*60}")
         print(f"开始生成Agent人设 - 共 {total} 个实体，并行数: {parallel_count}")
         print(f"{'='*60}\n")

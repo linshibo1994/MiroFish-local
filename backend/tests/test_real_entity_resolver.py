@@ -392,6 +392,64 @@ def test_batch_real_entity_resolution_falls_back_when_entity_missing(monkeypatch
     assert len(FakeChat.completions.calls) == 2
 
 
+def test_batch_real_entity_resolution_can_process_batches_concurrently(monkeypatch):
+    entities = [
+        make_entity("person-1", "Alice Example"),
+        make_entity("person-2", "Bob Example"),
+        make_entity("person-3", "Carol Example"),
+    ]
+
+    captured_workers = []
+
+    class InlineFuture:
+        def __init__(self, result):
+            self._result = result
+
+        def result(self):
+            return self._result
+
+    class FakeExecutor:
+        def __init__(self, max_workers):
+            captured_workers.append(max_workers)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, *args):
+            return InlineFuture(fn(*args))
+
+    def fake_batch(self, batch):
+        return {
+            entity.uuid: [
+                RealEntitySource(
+                    title=f"{entity.name} public profile",
+                    url=f"https://example.com/{entity.uuid}",
+                    snippet=f"{entity.name} is a public entity with enough graph context.",
+                )
+            ]
+            for _, entity, _, _ in batch
+        }
+
+    monkeypatch.setattr("app.services.real_entity_resolver.Config.LLM_WEB_SEARCH_API_KEY", "test-key")
+    monkeypatch.setattr("app.services.real_entity_resolver.Config.LLM_WEB_SEARCH_VALIDATE_LINKS", False)
+    monkeypatch.setattr("app.services.real_entity_resolver.ThreadPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(
+        "app.services.real_entity_resolver.as_completed",
+        lambda futures: reversed(list(futures)),
+    )
+    monkeypatch.setattr(RealEntityResolver, "_search_with_llm_web_batch", fake_batch)
+
+    resolver = RealEntityResolver(batch_size=1, concurrency=2)
+    results = resolver.resolve_entities(entities)
+
+    assert captured_workers == [2]
+    assert [result.entity_uuid for result in results] == ["person-1", "person-2", "person-3"]
+    assert [result.verification_status for result in results] == [VERIFIED, VERIFIED, VERIFIED]
+
+
 def test_llm_source_validation_only_filters_invalid_urls(monkeypatch):
     monkeypatch.setattr("app.services.real_entity_resolver.Config.LLM_WEB_SEARCH_VALIDATE_LINKS", True)
 

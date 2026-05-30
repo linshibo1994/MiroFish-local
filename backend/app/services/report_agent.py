@@ -13,6 +13,8 @@ import os
 import json
 import time
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -20,6 +22,7 @@ from enum import Enum
 
 from ..config import Config
 from ..utils.llm_client import LLMClient
+from ..utils.llm_routing import clamp_concurrency
 from ..utils.logger import get_logger
 from .zep_tools import (
     ZepToolsService, 
@@ -52,6 +55,7 @@ class ReportLogger:
             Config.UPLOAD_FOLDER, 'reports', report_id, 'agent_log.jsonl'
         )
         self.start_time = datetime.now()
+        self._write_lock = threading.Lock()
         self._ensure_log_file()
     
     def _ensure_log_file(self):
@@ -93,8 +97,9 @@ class ReportLogger:
         }
         
         # 追加写入 JSONL 文件
-        with open(self.log_file_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
+        with self._write_lock:
+            with open(self.log_file_path, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
     
     def log_start(self, simulation_id: str, graph_id: str, simulation_requirement: str):
         """记录报告生成开始"""
@@ -661,7 +666,7 @@ class ReportAgent:
         self.simulation_id = simulation_id
         self.simulation_requirement = simulation_requirement
         
-        self.llm = llm_client or LLMClient()
+        self.llm = llm_client or LLMClient(prefer_boost=True)
         self.zep_tools = zep_tools or ZepToolsService()
         
         # 工具定义
@@ -1605,107 +1610,211 @@ class ReportAgent:
             
             total_sections = len(outline.sections)
             generated_sections = []  # 保存内容用于上下文
-            
-            for i, section in enumerate(outline.sections):
-                section_num = i + 1
-                base_progress = 20 + int((i / total_sections) * 70)
-                
-                # 更新进度
-                ReportManager.update_progress(
-                    report_id, "generating", base_progress,
-                    f"正在生成章节: {section.title} ({section_num}/{total_sections})",
-                    current_section=section.title,
-                    completed_sections=completed_section_titles
-                )
-                
-                if progress_callback:
-                    progress_callback(
-                        "generating", 
-                        base_progress, 
-                        f"正在生成章节: {section.title} ({section_num}/{total_sections})"
-                    )
-                
-                # 生成主章节内容
-                section_content = self._generate_section_react(
-                    section=section,
-                    outline=outline,
-                    previous_sections=generated_sections,
-                    progress_callback=lambda stage, prog, msg:
-                        progress_callback(
-                            stage, 
-                            base_progress + int(prog * 0.7 / total_sections),
-                            msg
-                        ) if progress_callback else None,
-                    section_index=section_num
-                )
-                
-                section.content = section_content
-                generated_sections.append(f"## {section.title}\n\n{section_content}")
-                
-                # 如果有子章节，也一并生成并合并到主章节中
-                subsection_contents = []
-                for j, subsection in enumerate(section.subsections):
-                    subsection_num = j + 1
-                    
-                    if progress_callback:
-                        progress_callback(
-                            "generating",
-                            base_progress + int(((j + 1) / max(len(section.subsections), 1)) * 5),
-                            f"正在生成子章节: {subsection.title}"
-                        )
-                    
-                    ReportManager.update_progress(
-                        report_id, "generating",
-                        base_progress + int(((j + 1) / max(len(section.subsections), 1)) * 5),
-                        f"正在生成子章节: {subsection.title}",
-                        current_section=subsection.title,
-                        completed_sections=completed_section_titles
-                    )
-                    
-                    subsection_content = self._generate_section_react(
-                        section=subsection,
-                        outline=outline,
-                        previous_sections=generated_sections,
-                        progress_callback=None,
-                        section_index=section_num * 100 + subsection_num  # 子章节索引
-                    )
-                    subsection.content = subsection_content
-                    generated_sections.append(f"### {subsection.title}\n\n{subsection_content}")
-                    subsection_contents.append((subsection.title, subsection_content))
-                    completed_section_titles.append(f"  └─ {subsection.title}")
-                    
-                    logger.info(f"子章节已生成: {subsection.title}")
-                
-                # 【关键】将主章节和所有子章节合并保存到一个文件
-                ReportManager.save_section_with_subsections(
-                    report_id, section_num, section, subsection_contents
-                )
-                completed_section_titles.append(section.title)
-                
-                # 【重要】记录完整章节完成日志，包含合并后的完整内容
-                # 构建完整章节内容（主章节 + 所有子章节）
+            report_parallelism = clamp_concurrency(Config.REPORT_SECTION_CONCURRENCY, 1, maximum=4)
+
+            def build_full_section(section_num: int, section: ReportSection, section_content: str, subsection_contents):
                 full_section_content = f"## {section.title}\n\n{section_content}\n\n"
                 for sub_title, sub_content in subsection_contents:
                     full_section_content += f"### {sub_title}\n\n{sub_content}\n\n"
-                
-                if self.report_logger:
-                    self.report_logger.log_section_full_complete(
-                        section_title=section.title,
-                        section_index=section_num,
-                        full_content=full_section_content.strip(),
-                        subsection_count=len(subsection_contents)
-                    )
-                
-                logger.info(f"章节已保存（包含{len(subsection_contents)}个子章节）: {report_id}/section_{section_num:02d}.md")
-                
-                # 更新进度
-                ReportManager.update_progress(
-                    report_id, "generating", 
-                    base_progress + int(70 / total_sections),
-                    f"章节 {section.title} 已完成",
-                    current_section=None,
-                    completed_sections=completed_section_titles
+                return full_section_content.strip()
+
+            def generate_single_section(i: int, section: ReportSection, previous_snapshot: List[str]):
+                section_num = i + 1
+                base_progress = 20 + int((i / total_sections) * 70)
+
+                section_content = self._generate_section_react(
+                    section=section,
+                    outline=outline,
+                    previous_sections=previous_snapshot,
+                    progress_callback=None,
+                    section_index=section_num
                 )
+                section.content = section_content
+
+                subsection_contents = []
+                local_generated = previous_snapshot + [f"## {section.title}\n\n{section_content}"]
+                for j, subsection in enumerate(section.subsections):
+                    subsection_num = j + 1
+                    subsection_content = self._generate_section_react(
+                        section=subsection,
+                        outline=outline,
+                        previous_sections=local_generated,
+                        progress_callback=None,
+                        section_index=section_num * 100 + subsection_num
+                    )
+                    subsection.content = subsection_content
+                    local_generated.append(f"### {subsection.title}\n\n{subsection_content}")
+                    subsection_contents.append((subsection.title, subsection_content))
+                    logger.info(f"子章节已生成: {subsection.title}")
+
+                full_section_content = build_full_section(
+                    section_num,
+                    section,
+                    section_content,
+                    subsection_contents,
+                )
+                return {
+                    "index": i,
+                    "section_num": section_num,
+                    "base_progress": base_progress,
+                    "section": section,
+                    "section_content": section_content,
+                    "subsection_contents": subsection_contents,
+                    "full_section_content": full_section_content,
+                }
+
+            if report_parallelism <= 1 or total_sections <= 1:
+                for i, section in enumerate(outline.sections):
+                    section_num = i + 1
+                    base_progress = 20 + int((i / total_sections) * 70)
+
+                    ReportManager.update_progress(
+                        report_id, "generating", base_progress,
+                        f"正在生成章节: {section.title} ({section_num}/{total_sections})",
+                        current_section=section.title,
+                        completed_sections=completed_section_titles
+                    )
+                    if progress_callback:
+                        progress_callback(
+                            "generating",
+                            base_progress,
+                            f"正在生成章节: {section.title} ({section_num}/{total_sections})"
+                        )
+
+                    section_content = self._generate_section_react(
+                        section=section,
+                        outline=outline,
+                        previous_sections=generated_sections,
+                        progress_callback=lambda stage, prog, msg:
+                            progress_callback(
+                                stage,
+                                base_progress + int(prog * 0.7 / total_sections),
+                                msg
+                            ) if progress_callback else None,
+                        section_index=section_num
+                    )
+                    section.content = section_content
+                    generated_sections.append(f"## {section.title}\n\n{section_content}")
+
+                    subsection_contents = []
+                    for j, subsection in enumerate(section.subsections):
+                        subsection_num = j + 1
+                        if progress_callback:
+                            progress_callback(
+                                "generating",
+                                base_progress + int(((j + 1) / max(len(section.subsections), 1)) * 5),
+                                f"正在生成子章节: {subsection.title}"
+                            )
+
+                        ReportManager.update_progress(
+                            report_id, "generating",
+                            base_progress + int(((j + 1) / max(len(section.subsections), 1)) * 5),
+                            f"正在生成子章节: {subsection.title}",
+                            current_section=subsection.title,
+                            completed_sections=completed_section_titles
+                        )
+
+                        subsection_content = self._generate_section_react(
+                            section=subsection,
+                            outline=outline,
+                            previous_sections=generated_sections,
+                            progress_callback=None,
+                            section_index=section_num * 100 + subsection_num
+                        )
+                        subsection.content = subsection_content
+                        generated_sections.append(f"### {subsection.title}\n\n{subsection_content}")
+                        subsection_contents.append((subsection.title, subsection_content))
+                        completed_section_titles.append(f"  └─ {subsection.title}")
+                        logger.info(f"子章节已生成: {subsection.title}")
+
+                    ReportManager.save_section_with_subsections(
+                        report_id, section_num, section, subsection_contents
+                    )
+                    completed_section_titles.append(section.title)
+
+                    full_section_content = build_full_section(
+                        section_num,
+                        section,
+                        section_content,
+                        subsection_contents,
+                    )
+                    if self.report_logger:
+                        self.report_logger.log_section_full_complete(
+                            section_title=section.title,
+                            section_index=section_num,
+                            full_content=full_section_content,
+                            subsection_count=len(subsection_contents)
+                        )
+
+                    logger.info(f"章节已保存（包含{len(subsection_contents)}个子章节）: {report_id}/section_{section_num:02d}.md")
+                    ReportManager.update_progress(
+                        report_id, "generating",
+                        base_progress + int(70 / total_sections),
+                        f"章节 {section.title} 已完成",
+                        current_section=None,
+                        completed_sections=completed_section_titles
+                    )
+            else:
+                logger.info("启用报告章节并发生成: sections=%s, concurrency=%s", total_sections, report_parallelism)
+                section_results: Dict[int, Dict[str, Any]] = {}
+                completion_lock = threading.Lock()
+                completed_count = 0
+                with ThreadPoolExecutor(max_workers=min(report_parallelism, total_sections)) as executor:
+                    future_to_index = {
+                        executor.submit(
+                            generate_single_section,
+                            i,
+                            section,
+                            [
+                                "章节并发生成模式：请严格围绕当前章节标题撰写，避免覆盖其他章节主题。"
+                                f"完整报告章节顺序：{', '.join(sec.title for sec in outline.sections)}"
+                            ],
+                        ): i
+                        for i, section in enumerate(outline.sections)
+                    }
+                    for future in as_completed(future_to_index):
+                        result = future.result()
+                        section_results[result["index"]] = result
+                        with completion_lock:
+                            completed_count += 1
+                            current_completed = completed_count
+                        progress_value = 20 + int((current_completed / total_sections) * 70)
+                        ReportManager.update_progress(
+                            report_id, "generating",
+                            progress_value,
+                            f"已生成章节 {current_completed}/{total_sections}: {result['section'].title}",
+                            current_section=result["section"].title,
+                            completed_sections=completed_section_titles
+                        )
+                        if progress_callback:
+                            progress_callback(
+                                "generating",
+                                progress_value,
+                                f"已生成章节 {current_completed}/{total_sections}: {result['section'].title}"
+                            )
+
+                for i in range(total_sections):
+                    result = section_results[i]
+                    section = result["section"]
+                    section_num = result["section_num"]
+                    subsection_contents = result["subsection_contents"]
+
+                    ReportManager.save_section_with_subsections(
+                        report_id, section_num, section, subsection_contents
+                    )
+                    for sub_title, _ in subsection_contents:
+                        completed_section_titles.append(f"  └─ {sub_title}")
+                    completed_section_titles.append(section.title)
+                    generated_sections.append(result["full_section_content"])
+
+                    if self.report_logger:
+                        self.report_logger.log_section_full_complete(
+                            section_title=section.title,
+                            section_index=section_num,
+                            full_content=result["full_section_content"],
+                            subsection_count=len(subsection_contents)
+                        )
+                    logger.info(f"章节已保存（包含{len(subsection_contents)}个子章节）: {report_id}/section_{section_num:02d}.md")
             
             # 阶段3: 组装完整报告
             if progress_callback:

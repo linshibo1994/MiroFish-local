@@ -353,6 +353,7 @@ class SimulationManager:
                 resolver = RealEntityResolver(
                     min_source_count=min_source_count,
                     allow_group_agents=allow_group_agents,
+                    concurrency=Config.REAL_ENTITY_RESOLVE_CONCURRENCY,
                 )
                 resolved_results = resolver.resolve_entities(filtered.entities)
                 verified_results = [item for item in resolved_results if item.verification_status == VERIFIED]

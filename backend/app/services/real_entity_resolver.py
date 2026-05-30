@@ -7,6 +7,7 @@ verified / ambiguous / unverified / unsupported 四类状态。没有足够上�
 """
 
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
@@ -14,6 +15,7 @@ from urllib.parse import urlparse
 from openai import OpenAI
 
 from ..config import Config
+from ..utils.llm_routing import clamp_concurrency
 from ..utils.logger import get_logger
 from .zep_entity_reader import EntityNode
 
@@ -129,10 +131,16 @@ class RealEntityResolver:
         allow_group_agents: bool = True,
         llm_web_search_client: Optional[Any] = None,
         batch_size: Optional[int] = None,
+        concurrency: Optional[int] = None,
     ):
         self.min_source_count = max(1, int(min_source_count or 1))
         self.allow_group_agents = allow_group_agents
         self.batch_size = max(1, int(batch_size or Config.REAL_ENTITY_BATCH_SIZE or 1))
+        self.concurrency = clamp_concurrency(
+            concurrency,
+            Config.REAL_ENTITY_RESOLVE_CONCURRENCY,
+            maximum=8,
+        )
         # 真实资料验证默认只使用 LLM 联网；search_service 仅保留给测试或显式离线注入。
         self.search_service = search_service
         self.llm_web_search_client = llm_web_search_client
@@ -163,21 +171,40 @@ class RealEntityResolver:
         if not searchable_items:
             return [item for item in resolved if item is not None]
 
-        if self.batch_size <= 1 or len(searchable_items) == 1:
+        if len(searchable_items) == 1:
             for index, entity, entity_type, raw_query in searchable_items:
                 sources = self._search_with_llm_web(entity, entity_type, raw_query)
                 resolved[index] = self._resolve_from_sources(entity, entity_type, raw_query, sources)
             return [item for item in resolved if item is not None]
 
-        for start in range(0, len(searchable_items), self.batch_size):
-            batch = searchable_items[start:start + self.batch_size]
+        batches = [
+            searchable_items[start:start + self.batch_size]
+            for start in range(0, len(searchable_items), self.batch_size)
+        ]
+
+        def resolve_batch(batch: Sequence[Tuple[int, EntityNode, str, str]]) -> List[Tuple[int, ResolvedRealEntity]]:
             batch_sources = self._search_with_llm_web_batch(batch)
+            batch_results = []
             for index, entity, entity_type, raw_query in batch:
                 sources = batch_sources.get(entity.uuid)
                 if sources is None:
                     logger.info("LLM批量联网查询缺少实体结果，回退单实体查询: entity=%s", entity.name)
                     sources = self._search_with_llm_web(entity, entity_type, raw_query)
-                resolved[index] = self._resolve_from_sources(entity, entity_type, raw_query, sources)
+                batch_results.append(
+                    (index, self._resolve_from_sources(entity, entity_type, raw_query, sources))
+                )
+            return batch_results
+
+        if self.concurrency <= 1 or len(batches) == 1 or self.llm_web_search_client is not None:
+            for batch in batches:
+                for index, result in resolve_batch(batch):
+                    resolved[index] = result
+        else:
+            with ThreadPoolExecutor(max_workers=min(self.concurrency, len(batches))) as executor:
+                future_to_batch = {executor.submit(resolve_batch, batch): batch for batch in batches}
+                for future in as_completed(future_to_batch):
+                    for index, result in future.result():
+                        resolved[index] = result
 
         return [item for item in resolved if item is not None]
 

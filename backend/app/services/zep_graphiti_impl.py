@@ -172,6 +172,8 @@ class GraphitiClient(ZepClientAdapter):
         neo4j_password: str,
         llm_client: Optional[Any] = None,
         embedder: Optional[Any] = None,
+        use_singleton: bool = True,
+        llm_endpoint: Optional[Any] = None,
     ):
         """
         初始化 Graphiti 客户端
@@ -188,6 +190,8 @@ class GraphitiClient(ZepClientAdapter):
         self.neo4j_password = neo4j_password
         self._llm_client = llm_client
         self._embedder = embedder
+        self._use_singleton = use_singleton
+        self._llm_endpoint = llm_endpoint
 
         # 延迟初始化 Graphiti 实例
         self._graphiti = None
@@ -223,14 +227,26 @@ class GraphitiClient(ZepClientAdapter):
                 if embedder is None:
                     embedder = self._build_default_embedder()
 
-                # 创建 Graphiti 实例
-                self._graphiti = Graphiti(
-                    self.neo4j_uri,
-                    self.neo4j_user,
-                    self.neo4j_password,
-                    llm_client=llm_client,
-                    embedder=embedder,
-                )
+                # 创建 Graphiti 实例。并发构建时允许使用独立实例，避免单例内部状态互相抢占。
+                graphiti_kwargs = {
+                    "llm_client": llm_client,
+                    "embedder": embedder,
+                }
+                try:
+                    self._graphiti = Graphiti(
+                        self.neo4j_uri,
+                        self.neo4j_user,
+                        self.neo4j_password,
+                        use_singleton=self._use_singleton,
+                        **graphiti_kwargs,
+                    )
+                except TypeError:
+                    self._graphiti = Graphiti(
+                        self.neo4j_uri,
+                        self.neo4j_user,
+                        self.neo4j_password,
+                        **graphiti_kwargs,
+                    )
 
                 # 初始化索引和约束
                 _run_async(self._graphiti.build_indices_and_constraints())
@@ -261,9 +277,14 @@ class GraphitiClient(ZepClientAdapter):
         from graphiti_core.llm_client.config import LLMConfig
         from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 
-        api_key = os.environ.get('OPENAI_API_KEY')
-        base_url = os.environ.get('OPENAI_BASE_URL')
-        model = os.environ.get('GRAPHITI_LLM_MODEL') or os.environ.get('LLM_MODEL_NAME')
+        if self._llm_endpoint:
+            api_key = self._llm_endpoint.api_key
+            base_url = self._llm_endpoint.base_url
+            model = self._llm_endpoint.model
+        else:
+            api_key = os.environ.get('OPENAI_API_KEY')
+            base_url = os.environ.get('OPENAI_BASE_URL')
+            model = os.environ.get('GRAPHITI_LLM_MODEL') or os.environ.get('LLM_MODEL_NAME')
         small_model = os.environ.get('GRAPHITI_LLM_SMALL_MODEL') or None
 
         temperature = float(os.environ.get('GRAPHITI_LLM_TEMPERATURE', '0') or '0')

@@ -20,6 +20,8 @@ def create_zep_client(
     neo4j_uri: Optional[str] = None,
     neo4j_user: Optional[str] = None,
     neo4j_password: Optional[str] = None,
+    use_singleton: bool = True,
+    llm_endpoint: Optional[object] = None,
 ) -> ZepClientAdapter:
     """
     创建 Zep 客户端实例
@@ -42,7 +44,13 @@ def create_zep_client(
     backend = backend or Config.ZEP_BACKEND
 
     if backend == 'graphiti':
-        return _create_graphiti_client(neo4j_uri, neo4j_user, neo4j_password)
+        return _create_graphiti_client(
+            neo4j_uri,
+            neo4j_user,
+            neo4j_password,
+            use_singleton=use_singleton,
+            llm_endpoint=llm_endpoint,
+        )
     else:
         return _create_cloud_client(api_key)
 
@@ -65,6 +73,8 @@ def _create_graphiti_client(
     neo4j_uri: Optional[str] = None,
     neo4j_user: Optional[str] = None,
     neo4j_password: Optional[str] = None,
+    use_singleton: bool = True,
+    llm_endpoint: Optional[object] = None,
 ) -> ZepClientAdapter:
     """创建 Graphiti 本地客户端"""
     from .zep_graphiti_impl import GraphitiClient
@@ -83,6 +93,8 @@ def _create_graphiti_client(
         neo4j_uri=uri,
         neo4j_user=user,
         neo4j_password=password,
+        use_singleton=use_singleton,
+        llm_endpoint=llm_endpoint,
     )
 
 

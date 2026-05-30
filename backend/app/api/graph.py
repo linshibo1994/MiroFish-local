@@ -833,6 +833,7 @@ def build_graph():
         chunk_size = int(data.get('chunk_size') or Config.DEFAULT_CHUNK_SIZE)
         chunk_overlap = int(data.get('chunk_overlap') or Config.DEFAULT_CHUNK_OVERLAP)
         batch_size = max(1, int(data.get('batch_size') or Config.GRAPH_BUILD_BATCH_SIZE))
+        graph_build_concurrency = max(1, int(data.get('concurrency') or Config.GRAPH_BUILD_CONCURRENCY))
         
         # 更新项目配置
         project.chunk_size = chunk_size
@@ -865,6 +866,15 @@ def build_graph():
         task_manager = TaskManager()
         task_id = task_manager.create_task(f"构建图谱: {graph_name}")
         logger.info(f"创建图谱构建任务: task_id={task_id}, project_id={project_id}")
+        task_manager.update_task(
+            task_id,
+            progress_detail={
+                "batch_size": batch_size,
+                "concurrency": graph_build_concurrency,
+                "backend": Config.ZEP_BACKEND,
+                "llm_boost_enabled": bool(Config.LLM_BOOST_API_KEY and Config.LLM_BOOST_BASE_URL and Config.LLM_BOOST_MODEL_NAME),
+            }
+        )
         
         # 更新项目状态
         project.status = ProjectStatus.GRAPH_BUILDING
@@ -883,7 +893,11 @@ def build_graph():
                 )
                 
                 # 创建图谱构建服务
-                builder = GraphBuilderService(api_key=Config.ZEP_API_KEY, backend=Config.ZEP_BACKEND)
+                builder = GraphBuilderService(
+                    api_key=Config.ZEP_API_KEY,
+                    backend=Config.ZEP_BACKEND,
+                    build_mode=True,
+                )
                 
                 # 分块
                 task_manager.update_task(
@@ -942,6 +956,7 @@ def build_graph():
                     batch_size=batch_size,
                     progress_callback=add_progress_callback,
                     extraction_context=extraction_context,
+                    concurrency=graph_build_concurrency,
                 )
                 
                 # 等待Zep处理完成（查询每个episode的processed状态）
@@ -988,7 +1003,9 @@ def build_graph():
                         "graph_id": graph_id,
                         "node_count": node_count,
                         "edge_count": edge_count,
-                        "chunk_count": total_chunks
+                        "chunk_count": total_chunks,
+                        "batch_size": batch_size,
+                        "concurrency": graph_build_concurrency,
                     }
                 )
                 
