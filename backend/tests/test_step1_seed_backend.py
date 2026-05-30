@@ -1,4 +1,5 @@
 import io
+import json
 from datetime import datetime
 
 from app import create_app
@@ -158,6 +159,65 @@ def test_web_search_seed_uses_configured_provider(monkeypatch, tmp_path):
     assert ProjectManager.get_extracted_text(data["project_id"]) == "## Seed"
 
 
+def test_web_search_seed_stream_emits_progress_and_result(monkeypatch, tmp_path):
+    app = create_app()
+    client = app.test_client()
+
+    class FakeSearchService:
+        def search(self, query, count=None, freshness=None, summary=True):
+            return [
+                SearchSource(
+                    title="来源",
+                    url="https://example.com/news",
+                    snippet="片段",
+                    site_name="Example",
+                )
+            ]
+
+    class FakeSeedAnalysisService:
+        _build_search_material = staticmethod(
+            lambda sources, query: f"检索词：{query}\n来源数：{len(sources)}"
+        )
+
+        def analyze_from_sources(self, sources, query, additional_context=None):
+            from app.services.seed_analysis_service import SeedAnalysisResult
+
+            return SeedAnalysisResult(
+                seed_summary_md="## Seed",
+                simulation_suggestions=["建议"],
+                entity_hints=["来源"],
+                seed_metadata={},
+            )
+
+    monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", str(tmp_path))
+    monkeypatch.setattr("app.api.graph.WebSearchProviderFactory.get_provider_name", lambda provider=None: "bailian")
+    monkeypatch.setattr("app.api.graph.WebSearchProviderFactory.create", lambda provider=None: FakeSearchService())
+    monkeypatch.setattr("app.api.graph.SeedAnalysisService", FakeSeedAnalysisService)
+
+    response = client.post(
+        "/api/graph/seed/web-search/stream",
+        json={"search_query": "测试关键词"},
+    )
+
+    assert response.status_code == 200
+    events = [
+        json.loads(line)
+        for line in response.get_data(as_text=True).splitlines()
+        if line.strip()
+    ]
+    assert [event["event"] for event in events] == [
+        "progress",
+        "progress",
+        "sources",
+        "progress",
+        "progress",
+        "progress",
+        "complete",
+    ]
+    assert events[-1]["data"]["seed_summary_md"] == "## Seed"
+    assert events[-1]["data"]["seed_metadata"]["web_search_provider"] == "bailian"
+
+
 def test_uploaded_seed_uses_extracted_file_text_as_full_content(monkeypatch, tmp_path):
     app = create_app()
     client = app.test_client()
@@ -188,6 +248,44 @@ def test_uploaded_seed_uses_extracted_file_text_as_full_content(monkeypatch, tmp
     assert data["seed_summary_md"] == "## 上传摘要"
     assert "上传正文内容" in data["seed_full_content_md"]
     assert ProjectManager.get_extracted_text(data["project_id"]) == data["seed_full_content_md"]
+
+
+def test_uploaded_seed_stream_emits_file_steps(monkeypatch, tmp_path):
+    app = create_app()
+    client = app.test_client()
+
+    class FakeSeedAnalysisService:
+        def analyze_from_text(self, text, topic="上传文档", additional_context=None):
+            from app.services.seed_analysis_service import SeedAnalysisResult
+
+            assert "上传正文内容" in text
+            return SeedAnalysisResult(
+                seed_summary_md="## 上传摘要",
+                simulation_suggestions=["建议"],
+                entity_hints=["测试公司"],
+                seed_metadata={},
+            )
+
+    monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", str(tmp_path))
+    monkeypatch.setattr("app.api.graph.SeedAnalysisService", FakeSeedAnalysisService)
+
+    response = client.post(
+        "/api/graph/seed/upload/stream",
+        data={"files": (io.BytesIO("上传正文内容".encode("utf-8")), "seed.txt")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 200
+    events = [
+        json.loads(line)
+        for line in response.get_data(as_text=True).splitlines()
+        if line.strip()
+    ]
+    assert events[0]["event"] == "progress"
+    assert any(event.get("step") == "parse" for event in events)
+    assert events[-1]["event"] == "complete"
+    assert events[-1]["data"]["seed_summary_md"] == "## 上传摘要"
+    assert "上传正文内容" in events[-1]["data"]["seed_full_content_md"]
 
 
 def test_web_search_analysis_generates_markdown_before_auxiliary_json():

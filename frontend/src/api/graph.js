@@ -1,6 +1,71 @@
 import service, { requestWithRetry } from './index'
 import { setGraphTypeTranslations } from '../utils/entityTranslations.js'
 
+function normalizeBaseURL(baseURL) {
+  const trimmed = (baseURL || '').replace(/\/+$/, '')
+  return trimmed === '/api' ? '' : trimmed
+}
+
+function getApiUrl(path) {
+  const baseURL = normalizeBaseURL(import.meta.env.VITE_API_BASE_URL)
+  if (!baseURL) return path
+  if (baseURL.endsWith('/api') && path.startsWith('/api/')) {
+    return `${baseURL}${path.slice(4)}`
+  }
+  return `${baseURL}${path}`
+}
+
+async function streamNdjson(path, options, handlers = {}) {
+  const response = await fetch(getApiUrl(path), options)
+  if (!response.ok) {
+    let detail = ''
+    try {
+      detail = await response.text()
+    } catch (err) {
+      detail = ''
+    }
+    throw new Error(detail || `请求失败：HTTP ${response.status}`)
+  }
+
+  if (!response.body) {
+    const payload = await response.json()
+    if (payload?.success === false) throw new Error(payload.error || '请求失败')
+    handlers.onEvent?.({ event: 'complete', data: payload?.data, message: payload?.message || '处理完成' })
+    return payload?.data
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buffer = ''
+  let finalData = null
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      const cleanLine = line.trim()
+      if (!cleanLine) continue
+      const event = JSON.parse(cleanLine)
+      handlers.onEvent?.(event)
+      if (event.event === 'error') throw new Error(event.message || '处理失败')
+      if (event.event === 'complete') finalData = event.data
+    }
+  }
+
+  if (buffer.trim()) {
+    const event = JSON.parse(buffer.trim())
+    handlers.onEvent?.(event)
+    if (event.event === 'error') throw new Error(event.message || '处理失败')
+    if (event.event === 'complete') finalData = event.data
+  }
+
+  return finalData
+}
+
 /**
  * 联网搜索现实事件
  * @param {Object} data - 包含 search_query, project_name, additional_context
@@ -14,6 +79,22 @@ export function searchSeedByKeyword(data) {
       data
     })
   )
+}
+
+/**
+ * 流式联网搜索现实事件
+ * @param {Object} data - 包含 search_query, project_name, additional_context
+ * @param {Object} handlers - { onEvent }
+ * @returns {Promise<Object>}
+ */
+export function streamSearchSeedByKeyword(data, handlers = {}) {
+  return streamNdjson('/api/graph/seed/web-search/stream', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(data)
+  }, handlers)
 }
 
 /**
@@ -32,6 +113,19 @@ export function analyzeUploadedSeed(formData) {
       }
     })
   )
+}
+
+/**
+ * 流式上传文件并分析现实事件
+ * @param {FormData} formData - 包含 files, project_name, additional_context
+ * @param {Object} handlers - { onEvent }
+ * @returns {Promise<Object>}
+ */
+export function streamAnalyzeUploadedSeed(formData, handlers = {}) {
+  return streamNdjson('/api/graph/seed/upload/stream', {
+    method: 'POST',
+    body: formData
+  }, handlers)
 }
 
 /**

@@ -3,10 +3,11 @@
 采用项目上下文机制，服务端持久化状态
 """
 
+import json
 import os
 import traceback
 import threading
-from flask import request, jsonify
+from flask import Response, request, jsonify, stream_with_context
 
 from . import graph_bp
 from ..config import Config
@@ -24,6 +25,32 @@ from ..models.project import ProjectManager, ProjectStatus
 
 # 获取日志器
 logger = get_logger('mirofish.api')
+
+
+def _stream_event(event: str, message: str = "", **payload) -> str:
+    """生成前端可逐行解析的 NDJSON 事件。"""
+    data = {"event": event, "message": message}
+    data.update(payload)
+    return json.dumps(data, ensure_ascii=False) + "\n"
+
+
+def _source_preview(sources, limit: int = 5):
+    """把搜索来源压缩成前端日志可读的摘要。"""
+    previews = []
+    for source in (sources or [])[:limit]:
+        source_dict = source.to_dict() if hasattr(source, "to_dict") else source
+        previews.append({
+            "title": source_dict.get("title") or source_dict.get("name") or "未命名来源",
+            "url": source_dict.get("url") or "",
+            "site_name": source_dict.get("site_name") or source_dict.get("siteName") or "",
+            "date_published": source_dict.get("date_published") or source_dict.get("datePublished") or "",
+            "summary": source_dict.get("summary") or source_dict.get("snippet") or "",
+        })
+    return previews
+
+
+def _provider_display_name(provider_name: str) -> str:
+    return "阿里百炼联网搜索" if provider_name == "bailian" else "博查 Web Search"
 
 
 def allowed_file(filename: str) -> bool:
@@ -317,6 +344,134 @@ def create_seed_from_web_search():
         }), 500
 
 
+@graph_bp.route('/seed/web-search/stream', methods=['POST'])
+def create_seed_from_web_search_stream():
+    """通过 NDJSON 流返回联网搜索与 seed 分析进度。"""
+
+    def generate():
+        try:
+            if request.content_type and 'multipart/form-data' in request.content_type:
+                yield _stream_event("error", "Web 搜索 seed 仅接受 JSON 请求，文件输入请使用文件流式分析接口")
+                return
+
+            data = request.get_json(silent=True) or {}
+            query = (data.get('query') or data.get('search_query') or '').strip()
+            project_name = data.get('project_name') or query or 'Web Search Seed'
+            additional_context = data.get('additional_context')
+
+            if not query:
+                yield _stream_event("error", "请提供搜索关键词 query")
+                return
+            if data.get('files'):
+                yield _stream_event("error", "搜索输入和文件输入互斥，请不要在 Web 搜索 seed 中提交 files")
+                return
+
+            yield _stream_event("progress", f"已接收检索主题：{query}", step="receive", progress=5)
+            provider_name = WebSearchProviderFactory.get_provider_name(data.get('provider'))
+            yield _stream_event(
+                "progress",
+                f"准备调用{_provider_display_name(provider_name)}，抓取可引用网页来源",
+                step="provider",
+                progress=12,
+                provider=provider_name,
+            )
+            search_service = WebSearchProviderFactory.create(provider_name)
+            sources = search_service.search(
+                query=query,
+                count=data.get('count'),
+                freshness=data.get('freshness'),
+                summary=data.get('summary', True),
+            )
+            if not sources:
+                yield _stream_event("error", "未获得可用搜索结果")
+                return
+
+            yield _stream_event(
+                "sources",
+                f"联网查询完成，获得 {len(sources)} 条可用来源",
+                step="sources",
+                progress=38,
+                sources=_source_preview(sources),
+            )
+
+            project = ProjectManager.create_project(name=project_name)
+            project.seed_input_mode = 'web_search'
+            project.search_query = query
+            yield _stream_event(
+                "progress",
+                f"已创建项目上下文：{project.project_id}，正在整理搜索材料",
+                step="project",
+                progress=45,
+                project_id=project.project_id,
+            )
+
+            source_text = SeedAnalysisService._build_search_material(
+                [source.to_dict() for source in sources],
+                query,
+            )
+            ProjectManager.save_extracted_text(project.project_id, source_text)
+            project.total_text_length = len(source_text)
+            yield _stream_event(
+                "progress",
+                f"已汇总搜索材料约 {project.total_text_length} 字，开始生成完整事件 Markdown",
+                step="summary",
+                progress=58,
+                text_length=project.total_text_length,
+            )
+
+            seed_result = SeedAnalysisService().analyze_from_sources(
+                sources=sources,
+                query=query,
+                additional_context=additional_context,
+            )
+            seed_result.seed_metadata["web_search_provider"] = provider_name
+            yield _stream_event(
+                "progress",
+                f"事件总结已生成，正在提炼 {len(seed_result.simulation_suggestions or [])} 条推演方向建议",
+                step="suggestions",
+                progress=78,
+                suggestions=seed_result.simulation_suggestions,
+            )
+
+            _persist_seed_analysis(project, seed_result, sources=sources)
+            ProjectManager.save_extracted_text(project.project_id, project.seed_full_content_md)
+            project.total_text_length = len(project.seed_full_content_md or '')
+            ProjectManager.save_project(project)
+            result = {
+                "project_id": project.project_id,
+                "project_name": project.name,
+                "seed_input_mode": project.seed_input_mode,
+                "search_query": project.search_query,
+                "seed_summary_md": project.seed_summary_md,
+                "seed_full_content_md": project.seed_full_content_md,
+                "seed_sources": project.seed_sources,
+                "simulation_suggestions": project.simulation_suggestions,
+                "entity_hints": project.entity_hints,
+                "seed_metadata": project.seed_metadata,
+                "total_text_length": project.total_text_length,
+            }
+            yield _stream_event(
+                "complete",
+                "所有联网资料已处理完成，即将进入推演方向确认页",
+                step="complete",
+                progress=100,
+                data=result,
+            )
+
+        except ValueError as exc:
+            yield _stream_event("error", str(exc))
+        except Exception as exc:
+            logger.error("流式联网 seed 分析失败: %s", exc)
+            logger.debug(traceback.format_exc())
+            yield _stream_event("error", str(exc), traceback=traceback.format_exc())
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="application/x-ndjson; charset=utf-8",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 # ============== 接口1：seed 分析 / 生成本体 ==============
 
 @graph_bp.route('/ontology/generate', methods=['POST'])
@@ -452,6 +607,136 @@ def generate_ontology():
             "error": str(e),
             "traceback": traceback.format_exc()
         }), 500
+
+
+@graph_bp.route('/seed/upload/stream', methods=['POST'])
+def analyze_uploaded_seed_stream():
+    """通过 NDJSON 流返回文件解析与 seed 分析进度。"""
+
+    def generate():
+        try:
+            if request.is_json:
+                yield _stream_event("error", "文件流式分析仅接受 multipart/form-data 请求")
+                return
+            if request.form.get('search_query') or request.form.get('query'):
+                yield _stream_event("error", "文件输入和搜索输入互斥；搜索 seed 请使用联网搜索接口")
+                return
+
+            project_name = request.form.get('project_name', 'Unnamed Project')
+            additional_context = request.form.get('additional_context', '')
+            uploaded_files = request.files.getlist('files')
+            if not uploaded_files or all(not f.filename for f in uploaded_files):
+                yield _stream_event("error", "请至少上传一个文档文件")
+                return
+
+            yield _stream_event(
+                "progress",
+                f"已接收 {len(uploaded_files)} 个文件，开始检查格式",
+                step="receive",
+                progress=5,
+            )
+            project = ProjectManager.create_project(name=project_name)
+            project.seed_input_mode = 'file_upload'
+            simulation_requirement = request.form.get('simulation_requirement', '').strip()
+            if simulation_requirement:
+                project.simulation_requirement = simulation_requirement
+
+            document_texts = []
+            all_text = ""
+            valid_files = [file for file in uploaded_files if file and file.filename and allowed_file(file.filename)]
+            if not valid_files:
+                ProjectManager.delete_project(project.project_id)
+                yield _stream_event("error", "没有成功处理任何文档，请检查文件格式")
+                return
+
+            total_files = len(valid_files)
+            for index, file in enumerate(valid_files, 1):
+                yield _stream_event(
+                    "progress",
+                    f"正在解析文件 {index}/{total_files}：{file.filename}",
+                    step="parse",
+                    progress=10 + int((index - 1) / total_files * 35),
+                    filename=file.filename,
+                )
+                file_info = ProjectManager.save_file_to_project(
+                    project.project_id,
+                    file,
+                    file.filename
+                )
+                project.files.append({
+                    "filename": file_info["original_filename"],
+                    "size": file_info["size"]
+                })
+
+                text = FileParser.extract_text(file_info["path"])
+                text = TextProcessor.preprocess_text(text)
+                document_texts.append(text)
+                all_text += f"\n\n=== {file_info['original_filename']} ===\n{text}"
+                yield _stream_event(
+                    "progress",
+                    f"文件解析完成：{file_info['original_filename']}，提取约 {len(text)} 字",
+                    step="parsed",
+                    progress=10 + int(index / total_files * 35),
+                    filename=file_info["original_filename"],
+                    text_length=len(text),
+                )
+
+            project.total_text_length = len(all_text)
+            project.seed_full_content_md = all_text
+            ProjectManager.save_extracted_text(project.project_id, all_text)
+            yield _stream_event(
+                "progress",
+                f"文档预处理完成，共提取约 {project.total_text_length} 字，开始总结提炼",
+                step="summary",
+                progress=55,
+                text_length=project.total_text_length,
+            )
+
+            seed_result = SeedAnalysisService().analyze_from_text(
+                text=all_text,
+                topic=project_name,
+                additional_context=additional_context if additional_context else None,
+            )
+            yield _stream_event(
+                "progress",
+                f"文件摘要已生成，正在提炼 {len(seed_result.simulation_suggestions or [])} 条推演方向建议",
+                step="suggestions",
+                progress=82,
+                suggestions=seed_result.simulation_suggestions,
+            )
+            _persist_seed_analysis(project, seed_result, sources=[])
+            ProjectManager.save_project(project)
+            result = {
+                "project_id": project.project_id,
+                "project_name": project.name,
+                "seed_input_mode": project.seed_input_mode,
+                "seed_summary_md": project.seed_summary_md,
+                "seed_full_content_md": project.seed_full_content_md,
+                "seed_sources": project.seed_sources,
+                "simulation_suggestions": project.simulation_suggestions,
+                "entity_hints": project.entity_hints,
+                "seed_metadata": project.seed_metadata,
+                "files": project.files,
+                "total_text_length": project.total_text_length
+            }
+            yield _stream_event(
+                "complete",
+                "上传文件已解析并总结完成，即将进入推演方向确认页",
+                step="complete",
+                progress=100,
+                data=result,
+            )
+
+        except Exception as exc:
+            logger.error("流式文件 seed 分析失败: %s", exc)
+            logger.debug(traceback.format_exc())
+            yield _stream_event("error", str(exc), traceback=traceback.format_exc())
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="application/x-ndjson; charset=utf-8",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ============== 接口2：构建图谱 ==============

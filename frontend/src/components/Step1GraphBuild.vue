@@ -42,17 +42,72 @@
             :disabled="isBusy || searchQuery.trim().length > 0"
             @change="handleFileSelect"
           />
-          <div class="file-upload-section" :class="{ disabled: searchQuery.trim().length > 0 }">
+          <div class="file-upload-section" :class="{ disabled: searchQuery.trim().length > 0 && !showAnalysisLog }">
             <div
               class="upload-zone"
-              :class="{ 'drag-over': isDragOver, 'has-files': files.length > 0, disabled: searchQuery.trim().length > 0 }"
-              @click="!searchQuery.trim() && triggerFileInput()"
+              :class="{
+                'drag-over': isDragOver,
+                'has-files': files.length > 0 && !showAnalysisLog,
+                streaming: showAnalysisLog,
+                disabled: searchQuery.trim().length > 0 && !showAnalysisLog
+              }"
+              @click="!searchQuery.trim() && !showAnalysisLog && triggerFileInput()"
               @dragover.prevent="handleDragOver"
               @dragleave.prevent="handleDragLeave"
               @drop.prevent="handleDrop"
             >
+              <!-- 分析日志 -->
+              <div v-if="showAnalysisLog" ref="analysisLogPanel" class="analysis-log-panel">
+                <div class="analysis-log-header">
+                  <div class="analysis-title-group">
+                    <span class="analysis-live-dot"></span>
+                    <span class="analysis-title">{{ inputMode === 'web_search' ? '联网查询与总结流程' : '文件解析与总结流程' }}</span>
+                  </div>
+                  <span class="analysis-progress">{{ analysisProgress }}%</span>
+                </div>
+                <div class="analysis-progress-bar">
+                  <span :style="{ width: `${analysisProgress}%` }"></span>
+                </div>
+                <div class="analysis-log-list">
+                  <div
+                    v-for="log in executionLogs"
+                    :key="log.id"
+                    class="analysis-log-item"
+                    :class="log.level"
+                  >
+                    <span class="log-status-dot"></span>
+                    <div class="log-body">
+                      <div class="log-line">
+                        <span class="log-time">{{ log.time }}</span>
+                        <span class="log-message">{{ log.message }}</span>
+                      </div>
+                      <div v-if="log.sources?.length" class="log-source-list">
+                        <a
+                          v-for="source in log.sources"
+                          :key="source.url || source.title"
+                          class="log-source"
+                          :href="source.url"
+                          target="_blank"
+                          rel="noopener noreferrer nofollow"
+                          @click.stop
+                        >
+                          <span class="log-source-title">{{ source.title }}</span>
+                          <span class="log-source-site">{{ source.site_name || source.date_published || '来源返回' }}</span>
+                        </a>
+                      </div>
+                      <div v-if="log.suggestions?.length" class="log-suggestion-list">
+                        <span
+                          v-for="suggestion in log.suggestions"
+                          :key="suggestion"
+                          class="log-suggestion"
+                        >{{ formatSuggestion(suggestion) }}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
               <!-- 空状态 -->
-              <div v-if="files.length === 0 && !searchQuery.trim()" class="upload-placeholder">
+              <div v-else-if="files.length === 0 && !searchQuery.trim()" class="upload-placeholder">
                 <div class="upload-icon">↑</div>
                 <div class="upload-title">拖拽 PDF / MD / TXT 到这里</div>
                 <div class="upload-hint">或点击选择文件</div>
@@ -165,62 +220,68 @@
         </div>
 
         <!-- 事件摘要卡片 -->
-        <div class="result-card">
-          <div class="card-header-row" @click="showSummary = !showSummary">
-            <span class="card-section-title">完整事件内容</span>
-            <button type="button" class="collapse-btn">{{ showSummary ? '▲' : '▼' }}</button>
-          </div>
-          <div v-show="showSummary" class="summary-content">
-            <div class="summary-text markdown-body" v-html="renderedSummary"></div>
-          </div>
-        </div>
-
-        <!-- 推演方向区域 -->
-        <div class="result-card">
-          <div class="card-section-title">选择推演方向</div>
-          <div class="suggestions-list">
-            <div
-              v-for="suggestion in suggestions"
-              :key="suggestion"
-              class="suggestion-card"
-              :class="{ selected: selectedSuggestion === suggestion }"
-              @click="applySuggestion(suggestion)"
-            >
-              <span class="suggestion-check">{{ selectedSuggestion === suggestion ? '◉' : '○' }}</span>
-              <span class="suggestion-text">{{ formatSuggestion(suggestion) }}</span>
+        <div class="result-grid">
+          <div class="result-left-column">
+            <div class="result-card summary-card">
+              <div class="card-header-row" @click="showSummary = !showSummary">
+                <span class="card-section-title">完整事件内容</span>
+                <button type="button" class="collapse-btn">{{ showSummary ? '▲' : '▼' }}</button>
+              </div>
+              <div v-show="showSummary" class="summary-content">
+                <div class="summary-text markdown-body" v-html="renderedSummary"></div>
+              </div>
             </div>
           </div>
-          <!-- 自定义方向 -->
-          <div class="custom-direction">
-            <div class="custom-direction-label">自定义方向（如不需要推荐的建议，可以自行输入您想要推演的任意方向/主题）</div>
-            <textarea
-              v-model="simulationRequirement"
-              class="direction-textarea"
-              placeholder="选择一条建议，或手动输入你要推演的问题"
-              :disabled="isBusy"
-              rows="4"
-            ></textarea>
-          </div>
-        </div>
 
-        <!-- 参考信息源 -->
-        <div v-if="sources.length" class="result-card sources-card">
-          <div class="card-header-row" @click="showSources = !showSources">
-            <span class="card-section-title">参考 {{ sources.length }} 条信息源</span>
-            <button type="button" class="collapse-btn">{{ showSources ? '▲' : '▼' }}</button>
-          </div>
-          <div v-show="showSources" class="sources-list">
-            <a
-              v-for="(source, index) in sources"
-              :key="source.url || `${source.title}-${index}`"
-              class="source-item"
-              :href="source.url"
-              target="_blank"
-              rel="noopener noreferrer nofollow"
-            >
-              <span class="source-title">{{ source.title || source.name || source.url || '未命名来源' }}</span>
-              <span class="source-meta">{{ source.publisher || source.site_name || source.siteName || source.published_at || source.date_published || source.datePublished || '来源记录' }}</span>
-            </a>
+          <div class="result-right-column">
+            <!-- 推演方向区域 -->
+            <div class="result-card direction-card">
+              <div class="card-section-title">选择推演方向</div>
+              <div class="suggestions-list">
+                <div
+                  v-for="suggestion in suggestions"
+                  :key="suggestion"
+                  class="suggestion-card"
+                  :class="{ selected: selectedSuggestion === suggestion }"
+                  @click="applySuggestion(suggestion)"
+                >
+                  <span class="suggestion-check">{{ selectedSuggestion === suggestion ? '◉' : '○' }}</span>
+                  <span class="suggestion-text">{{ formatSuggestion(suggestion) }}</span>
+                </div>
+              </div>
+              <!-- 自定义方向 -->
+              <div class="custom-direction">
+                <div class="custom-direction-label">自定义方向（如不需要推荐的建议，可以自行输入您想要推演的任意方向/主题）</div>
+                <textarea
+                  v-model="simulationRequirement"
+                  class="direction-textarea"
+                  placeholder="选择一条建议，或手动输入你要推演的问题"
+                  :disabled="isBusy"
+                  rows="4"
+                ></textarea>
+              </div>
+            </div>
+
+            <!-- 参考信息源 -->
+            <div v-if="sources.length" class="result-card sources-card">
+              <div class="card-header-row" @click="showSources = !showSources">
+                <span class="card-section-title">参考 {{ sources.length }} 条信息源</span>
+                <button type="button" class="collapse-btn">{{ showSources ? '▲' : '▼' }}</button>
+              </div>
+              <div v-show="showSources" class="sources-list">
+                <a
+                  v-for="(source, index) in sources"
+                  :key="source.url || `${source.title}-${index}`"
+                  class="source-item"
+                  :href="source.url"
+                  target="_blank"
+                  rel="noopener noreferrer nofollow"
+                >
+                  <span class="source-title">{{ source.title || source.name || source.url || '未命名来源' }}</span>
+                  <span class="source-meta">{{ source.publisher || source.site_name || source.siteName || source.published_at || source.date_published || source.datePublished || '来源记录' }}</span>
+                </a>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -393,9 +454,15 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { marked } from 'marked'
-import { analyzeUploadedSeed, generateOntology, searchSeedByKeyword } from '../api/graph'
+import {
+  analyzeUploadedSeed,
+  generateOntology,
+  searchSeedByKeyword,
+  streamAnalyzeUploadedSeed,
+  streamSearchSeedByKeyword
+} from '../api/graph'
 import { translateEntityType, translateRelationType } from '../utils/entityTranslations.js'
 
 const props = defineProps({
@@ -422,18 +489,26 @@ const ontologyGenerating = ref(false)
 const localError = ref('')
 const isDragOver = ref(false)
 const fileInput = ref(null)
+const analysisLogPanel = ref(null)
 const selectedOntologyItem = ref(null)
-const showSources = ref(false)
+const showSources = ref(true)
 const showSummary = ref(true)
+const executionLogs = ref([])
+const analysisProgress = ref(0)
+let analysisHeartbeatTimer = null
 
 const resetToInput = () => {
+  stopAnalysisHeartbeat()
   seedResult.value = null
   selectedSuggestion.value = ''
   simulationRequirement.value = ''
   localError.value = ''
+  executionLogs.value = []
+  analysisProgress.value = 0
 }
 
 const isBusy = computed(() => seedAnalyzing.value || ontologyGenerating.value || props.currentPhase >= 1)
+const showAnalysisLog = computed(() => seedAnalyzing.value || executionLogs.value.length > 0)
 
 const suggestions = computed(() => {
   const value = seedResult.value?.simulation_suggestions || seedResult.value?.suggestions || []
@@ -482,9 +557,12 @@ const graphStats = computed(() => {
 })
 
 const resetAnalysisResult = () => {
+  stopAnalysisHeartbeat()
   seedResult.value = null
   selectedSuggestion.value = ''
   localError.value = ''
+  executionLogs.value = []
+  analysisProgress.value = 0
 }
 
 const switchInputMode = (mode) => {
@@ -554,6 +632,117 @@ const removeFile = (index) => {
   resetAnalysisResult()
 }
 
+const formatClock = () => {
+  const now = new Date()
+  return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`
+}
+
+const scrollAnalysisLogToBottom = async () => {
+  await nextTick()
+  const list = analysisLogPanel.value?.querySelector?.('.analysis-log-list')
+  if (list) list.scrollTop = list.scrollHeight
+}
+
+const appendExecutionLog = (message, options = {}) => {
+  const log = {
+    id: `${Date.now()}-${executionLogs.value.length}`,
+    time: formatClock(),
+    level: options.level || 'info',
+    message,
+    sources: options.sources || [],
+    suggestions: options.suggestions || []
+  }
+  executionLogs.value.push(log)
+  if (typeof options.progress === 'number') {
+    analysisProgress.value = Math.max(analysisProgress.value, Math.min(100, options.progress))
+  }
+  scrollAnalysisLogToBottom()
+}
+
+const stopAnalysisHeartbeat = () => {
+  if (analysisHeartbeatTimer) {
+    clearInterval(analysisHeartbeatTimer)
+    analysisHeartbeatTimer = null
+  }
+}
+
+const startAnalysisHeartbeat = () => {
+  stopAnalysisHeartbeat()
+  analysisHeartbeatTimer = setInterval(() => {
+    if (!seedAnalyzing.value) {
+      stopAnalysisHeartbeat()
+      return
+    }
+    const waitingMessage = analysisProgress.value >= 55
+      ? '大模型仍在生成完整事件 Markdown 与推演建议，请继续等待。'
+      : '后台仍在处理资料，正在等待下一步结果返回。'
+    appendExecutionLog(waitingMessage)
+  }, 12000)
+}
+
+const handleAnalysisStreamEvent = (event) => {
+  if (!event) return
+  if (typeof event.progress === 'number') {
+    analysisProgress.value = Math.max(analysisProgress.value, Math.min(100, event.progress))
+  }
+  if (event.event === 'sources') {
+    appendExecutionLog(event.message || '联网查询返回来源', {
+      progress: event.progress,
+      sources: event.sources || []
+    })
+    return
+  }
+  if (event.event === 'progress') {
+    appendExecutionLog(event.message || '后台处理中', {
+      progress: event.progress,
+      suggestions: event.suggestions || []
+    })
+    return
+  }
+  if (event.event === 'complete') {
+    appendExecutionLog(event.message || '处理完成', {
+      level: 'success',
+      progress: 100
+    })
+    return
+  }
+  if (event.event === 'error') {
+    appendExecutionLog(event.message || '处理失败', {
+      level: 'error'
+    })
+  }
+}
+
+const analyzeSeedWithFallback = async () => {
+  if (inputMode.value === 'web_search') {
+    try {
+      return await streamSearchSeedByKeyword({
+        search_query: searchQuery.value.trim(),
+        additional_context: additionalContext.value.trim()
+      }, { onEvent: handleAnalysisStreamEvent })
+    } catch (err) {
+      if (executionLogs.value.some(log => log.level === 'error')) throw err
+      appendExecutionLog('当前环境未能建立流式连接，切换为兼容分析流程。', { progress: 15 })
+      const res = await searchSeedByKeyword({
+        search_query: searchQuery.value.trim(),
+        additional_context: additionalContext.value.trim()
+      })
+      appendExecutionLog('兼容流程已完成联网查询、总结和方向提炼。', { level: 'success', progress: 100 })
+      return res.data
+    }
+  }
+
+  try {
+    return await streamAnalyzeUploadedSeed(buildUploadFormData(), { onEvent: handleAnalysisStreamEvent })
+  } catch (err) {
+    if (executionLogs.value.some(log => log.level === 'error')) throw err
+    appendExecutionLog('当前环境未能建立流式连接，切换为兼容文件分析流程。', { progress: 15 })
+    const res = await analyzeUploadedSeed(buildUploadFormData())
+    appendExecutionLog('兼容流程已完成文件解析、总结和方向提炼。', { level: 'success', progress: 100 })
+    return res.data
+  }
+}
+
 const normalizeSeedResult = (data) => {
   const normalized = data || {}
   return {
@@ -576,15 +765,14 @@ const analyzeSeed = async () => {
     return
   }
   seedAnalyzing.value = true
+  executionLogs.value = []
+  analysisProgress.value = 0
+  appendExecutionLog(inputMode.value === 'web_search' ? '任务已提交，准备进行联网查询。' : '任务已提交，准备解析上传文件。', { progress: 3 })
+  startAnalysisHeartbeat()
   emit('add-log', inputMode.value === 'web_search' ? 'Analyzing seed by web search...' : 'Analyzing uploaded seed files...')
   try {
-    const res = inputMode.value === 'web_search'
-      ? await searchSeedByKeyword({
-          search_query: searchQuery.value.trim(),
-          additional_context: additionalContext.value.trim()
-        })
-      : await analyzeUploadedSeed(buildUploadFormData())
-    seedResult.value = normalizeSeedResult(res.data)
+    const data = await analyzeSeedWithFallback()
+    seedResult.value = normalizeSeedResult(data)
     if (suggestions.value.length > 0 && !simulationRequirement.value.trim()) {
       applySuggestion(suggestions.value[0])
     }
@@ -594,6 +782,7 @@ const analyzeSeed = async () => {
     emit('add-log', `Seed analysis failed: ${localError.value}`)
   } finally {
     seedAnalyzing.value = false
+    stopAnalysisHeartbeat()
   }
 }
 
@@ -656,6 +845,10 @@ watch(() => props.pendingUpload, (pending) => {
     simulationRequirement.value = pending.simulationRequirement
   }
 }, { immediate: true })
+
+onUnmounted(() => {
+  stopAnalysisHeartbeat()
+})
 
 </script>
 
@@ -786,7 +979,6 @@ watch(() => props.pendingUpload, (pending) => {
   border-color: #E5E7EB;
   background: #F3F4F6;
   cursor: not-allowed;
-  pointer-events: none;
 }
 
 .input-disabled-hint {
@@ -893,6 +1085,184 @@ watch(() => props.pendingUpload, (pending) => {
 .upload-zone.has-files {
   align-items: stretch;
   justify-content: flex-start;
+}
+
+.upload-zone.streaming {
+  min-height: 188px;
+  align-items: stretch;
+  justify-content: stretch;
+  cursor: default;
+  border-style: solid;
+  border-color: #B8CAF2;
+  background: #F8FBFF;
+}
+
+.analysis-log-panel {
+  width: 100%;
+  min-height: 172px;
+  max-height: 248px;
+  padding: 12px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.analysis-log-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.analysis-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.analysis-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #1677FF;
+  box-shadow: 0 0 0 4px rgba(22, 119, 255, 0.12);
+  flex-shrink: 0;
+}
+
+.analysis-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1F2A44;
+}
+
+.analysis-progress {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: #1677FF;
+  flex-shrink: 0;
+}
+
+.analysis-progress-bar {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #E6EDF8;
+}
+
+.analysis-progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #1942FF 0%, #60B0FF 100%);
+  transition: width 0.25s ease;
+}
+
+.analysis-log-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 2px;
+}
+
+.analysis-log-item {
+  display: grid;
+  grid-template-columns: 8px 1fr;
+  gap: 8px;
+  align-items: start;
+}
+
+.log-status-dot {
+  width: 7px;
+  height: 7px;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: #8AA4D6;
+}
+
+.analysis-log-item.success .log-status-dot {
+  background: #10B981;
+}
+
+.analysis-log-item.error .log-status-dot {
+  background: #EF4444;
+}
+
+.log-body {
+  min-width: 0;
+}
+
+.log-line {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.log-time {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: #8A96AD;
+  flex-shrink: 0;
+}
+
+.log-message {
+  font-size: 12px;
+  line-height: 1.55;
+  color: #31405C;
+}
+
+.log-source-list,
+.log-suggestion-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.log-source {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 9px;
+  border: 1px solid #DDE7F6;
+  border-radius: 8px;
+  background: #FFFFFF;
+  color: inherit;
+  text-decoration: none;
+}
+
+.log-source-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  color: #1F2A44;
+}
+
+.log-source-site {
+  max-width: 108px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: #8A96AD;
+  flex-shrink: 0;
+}
+
+.log-suggestion {
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: #EEF6FF;
+  color: #2356B8;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .upload-placeholder {
@@ -1139,7 +1509,7 @@ watch(() => props.pendingUpload, (pending) => {
 
 .result-center {
   width: 100%;
-  max-width: 680px;
+  max-width: 1240px;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -1156,6 +1526,30 @@ watch(() => props.pendingUpload, (pending) => {
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
   padding: 20px;
   border: 1px solid #E8ECF0;
+}
+
+.result-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(360px, 0.85fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.result-left-column,
+.result-right-column {
+  min-width: 0;
+}
+
+.result-right-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.summary-card,
+.direction-card,
+.sources-card {
+  min-width: 0;
 }
 
 .card-header-row {
@@ -1193,7 +1587,7 @@ watch(() => props.pendingUpload, (pending) => {
   color: #374151;
   font-size: 13px;
   line-height: 1.7;
-  max-height: 300px;
+  max-height: min(58vh, 620px);
   overflow-y: auto;
   font-family: inherit;
 }
@@ -1788,6 +2182,16 @@ watch(() => props.pendingUpload, (pending) => {
 }
 
 /* 响应式 */
+@media (max-width: 1080px) {
+  .result-center {
+    max-width: 760px;
+  }
+
+  .result-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 760px) {
   .phase-input {
     padding: 52px 24px 64px;
@@ -1811,6 +2215,18 @@ watch(() => props.pendingUpload, (pending) => {
 
   .result-actions {
     flex-direction: column;
+  }
+
+  .result-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .summary-text {
+    max-height: 420px;
+  }
+
+  .analysis-log-panel {
+    max-height: 300px;
   }
 
   .hero-title {
