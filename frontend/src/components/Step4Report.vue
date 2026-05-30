@@ -394,7 +394,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, h, reactive } from 'vue'
 import { useRouter } from 'vue-router'
-import { getAgentLog, getConsoleLog } from '../api/report'
+import { getAgentLog, getConsoleLog, getReport } from '../api/report'
 import { translateEntityType } from '../utils/entityTranslations.js'
 import { sanitizeReportContent } from '../utils/reportContent'
 
@@ -1952,6 +1952,48 @@ const getLogLevelClass = (log) => {
 let agentLogTimer = null
 let consoleLogTimer = null
 
+const hydrateReportSnapshot = (reportData) => {
+  if (!reportData) return
+
+  if (reportData.created_at && !startTime.value) {
+    startTime.value = new Date(reportData.created_at)
+  }
+
+  if (reportData.outline) {
+    reportOutline.value = reportData.outline
+    const nextSections = { ...generatedSections.value }
+    ;(reportData.outline.sections || []).forEach((section, index) => {
+      if (section?.content?.trim()) {
+        nextSections[index + 1] = sanitizeReportContent(section.content)
+      }
+    })
+    generatedSections.value = nextSections
+  }
+
+  if (reportData.status === 'completed') {
+    isComplete.value = true
+    currentSectionIndex.value = null
+    emit('update-status', 'completed')
+    stopPolling()
+  } else if (reportData.status === 'failed') {
+    currentSectionIndex.value = null
+    emit('update-status', 'error')
+  }
+}
+
+const fetchReportSnapshot = async () => {
+  if (!props.reportId) return
+
+  try {
+    const res = await getReport(props.reportId)
+    if (res.success && res.data) {
+      hydrateReportSnapshot(res.data)
+    }
+  } catch (err) {
+    console.warn('Failed to fetch report snapshot:', err)
+  }
+}
+
 const fetchAgentLog = async () => {
   if (!props.reportId) return
   
@@ -2103,6 +2145,7 @@ const fetchConsoleLog = async () => {
 const startPolling = () => {
   if (agentLogTimer || consoleLogTimer) return
   
+  fetchReportSnapshot()
   fetchAgentLog()
   fetchConsoleLog()
   

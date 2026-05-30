@@ -935,14 +935,22 @@ def build_graph():
                 )
                 builder.set_ontology(graph_id, ontology)
                 
+                graph_progress_floor = 15
+
+                def update_graph_task_progress(message, progress):
+                    nonlocal graph_progress_floor
+                    progress = max(graph_progress_floor, int(progress))
+                    graph_progress_floor = progress
+                    task_manager.update_task(
+                        task_id,
+                        message=message,
+                        progress=progress
+                    )
+
                 # 添加文本（progress_callback 签名是 (msg, progress_ratio)）
                 def add_progress_callback(msg, progress_ratio):
                     progress = 15 + int(progress_ratio * 40)  # 15% - 55%
-                    task_manager.update_task(
-                        task_id,
-                        message=msg,
-                        progress=progress
-                    )
+                    update_graph_task_progress(msg, progress)
                 
                 task_manager.update_task(
                     task_id,
@@ -968,11 +976,7 @@ def build_graph():
                 
                 def wait_progress_callback(msg, progress_ratio):
                     progress = 55 + int(progress_ratio * 35)  # 55% - 90%
-                    task_manager.update_task(
-                        task_id,
-                        message=msg,
-                        progress=progress
-                    )
+                    update_graph_task_progress(msg, progress)
                 
                 builder._wait_for_episodes(episode_uuids, wait_progress_callback)
                 
@@ -1011,17 +1015,18 @@ def build_graph():
                 
             except Exception as e:
                 # 更新项目状态为失败
-                build_logger.error(f"[{task_id}] 图谱构建失败: {str(e)}")
+                error_message = str(e) or e.__class__.__name__
+                build_logger.error(f"[{task_id}] 图谱构建失败: {error_message}")
                 build_logger.debug(traceback.format_exc())
                 
                 project.status = ProjectStatus.FAILED
-                project.error = str(e)
+                project.error = error_message
                 ProjectManager.save_project(project)
                 
                 task_manager.update_task(
                     task_id,
                     status=TaskStatus.FAILED,
-                    message=f"构建失败: {str(e)}",
+                    message=f"构建失败: {error_message}",
                     error=traceback.format_exc()
                 )
         

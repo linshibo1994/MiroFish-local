@@ -497,15 +497,30 @@ class ZepGraphMemoryUpdater:
         self._worker_thread.start()
         logger.info(f"ZepGraphMemoryUpdater 已启动: graph_id={self.graph_id}")
     
-    def stop(self):
+    def stop(self, flush: bool = True, timeout: Optional[float] = None):
         """停止后台工作线程"""
         self._running = False
-        
-        # 发送剩余的活动
-        self._flush_remaining()
+
+        if flush:
+            # 发送剩余的活动；停止服务或正常结束时尽力写回。
+            self._flush_remaining()
+        else:
+            dropped_count = self._drop_pending_activities()
+            if dropped_count:
+                logger.info(
+                    "重跑模拟时丢弃旧图谱记忆待写队列: graph_id=%s, dropped=%s",
+                    self.graph_id,
+                    dropped_count,
+                )
         
         if self._worker_thread and self._worker_thread.is_alive():
-            self._worker_thread.join(timeout=10)
+            join_timeout = Config.GRAPH_MEMORY_STOP_TIMEOUT_SECONDS if timeout is None else timeout
+            self._worker_thread.join(timeout=max(0, float(join_timeout or 0)))
+            if self._worker_thread.is_alive():
+                logger.warning(
+                    "图谱记忆更新器停止等待超时，后台线程将自行退出: graph_id=%s",
+                    self.graph_id,
+                )
         
         logger.info(f"ZepGraphMemoryUpdater 已停止: graph_id={self.graph_id}, "
                    f"total_activities={self._total_activities}, "
@@ -880,6 +895,23 @@ class ZepGraphMemoryUpdater:
             # 清空所有缓冲区
             for platform in self._platform_buffers:
                 self._platform_buffers[platform] = []
+
+    def _drop_pending_activities(self) -> int:
+        """强制重跑时丢弃旧运行的待写队列，避免阻塞新模拟启动。"""
+        dropped = 0
+        while not self._activity_queue.empty():
+            try:
+                self._activity_queue.get_nowait()
+                dropped += 1
+            except Empty:
+                break
+
+        with self._buffer_lock:
+            for platform, buffer in self._platform_buffers.items():
+                dropped += len(buffer)
+                self._platform_buffers[platform] = []
+
+        return dropped
     
     def get_stats(self) -> Dict[str, Any]:
         """获取统计信息"""
@@ -930,7 +962,11 @@ class ZepGraphMemoryManager:
         with cls._lock:
             # 如果已存在，先停止旧的
             if simulation_id in cls._updaters:
-                cls._updaters[simulation_id].stop()
+                cls._updaters[simulation_id].stop(
+                    flush=False,
+                    timeout=Config.GRAPH_MEMORY_STOP_TIMEOUT_SECONDS,
+                )
+                del cls._updaters[simulation_id]
             
             updater = ZepGraphMemoryUpdater(
                 graph_id,
@@ -949,11 +985,16 @@ class ZepGraphMemoryManager:
         return cls._updaters.get(simulation_id)
     
     @classmethod
-    def stop_updater(cls, simulation_id: str):
+    def stop_updater(
+        cls,
+        simulation_id: str,
+        flush: bool = True,
+        timeout: Optional[float] = None,
+    ):
         """停止并移除模拟的更新器"""
         with cls._lock:
             if simulation_id in cls._updaters:
-                cls._updaters[simulation_id].stop()
+                cls._updaters[simulation_id].stop(flush=flush, timeout=timeout)
                 del cls._updaters[simulation_id]
                 logger.info(f"已停止图谱记忆更新器: simulation_id={simulation_id}")
     
@@ -972,7 +1013,10 @@ class ZepGraphMemoryManager:
             if cls._updaters:
                 for simulation_id, updater in list(cls._updaters.items()):
                     try:
-                        updater.stop()
+                        updater.stop(
+                            flush=False,
+                            timeout=Config.GRAPH_MEMORY_STOP_TIMEOUT_SECONDS,
+                        )
                     except Exception as e:
                         logger.error(f"停止更新器失败: simulation_id={simulation_id}, error={e}")
                 cls._updaters.clear()

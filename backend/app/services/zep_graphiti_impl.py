@@ -17,10 +17,12 @@ import asyncio
 import logging
 import os
 import threading
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
+from ..config import Config
 from .zep_adapter import (
     ZepClientAdapter,
     GraphNode,
@@ -30,6 +32,15 @@ from .zep_adapter import (
 )
 
 logger = logging.getLogger('mirofish.graphiti_client')
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """识别 OpenAI-compatible 服务的限流错误。"""
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 429:
+        return True
+    text = str(exc).lower()
+    return "rate" in text and ("limit" in text or "429" in text)
 
 
 # ============================================================================
@@ -80,7 +91,12 @@ def _run_async(coro):
     """
     _ensure_async_loop()
     future = asyncio.run_coroutine_threadsafe(coro, _async_loop)
-    return future.result(timeout=300)  # 5分钟超时
+    timeout = max(60, int(Config.GRAPHITI_OPERATION_TIMEOUT_SECONDS or 900))
+    try:
+        return future.result(timeout=timeout)
+    except FutureTimeoutError as exc:
+        future.cancel()
+        raise TimeoutError(f"Graphiti 异步操作超过 {timeout} 秒未返回") from exc
 
 
 class DashScopeEmbedderWrapper:
@@ -101,21 +117,54 @@ class DashScopeEmbedderWrapper:
             self.config = embedder.config
 
     async def create(self, input_data) -> list[float]:
-        """单条 embedding 请求（直接透传）"""
-        return await self._embedder.create(input_data)
+        """单条 embedding 请求；遇到限流时退避重试。"""
+        return await self._call_with_rate_limit_retry(
+            lambda: self._embedder.create(input_data),
+            operation="embedding.create",
+            item_count=1,
+        )
 
     async def create_batch(self, input_data_list: list[str]) -> list[list[float]]:
         """批量 embedding 请求（分块处理）"""
         if len(input_data_list) <= self.max_batch_size:
-            return await self._embedder.create_batch(input_data_list)
+            return await self._call_with_rate_limit_retry(
+                lambda: self._embedder.create_batch(input_data_list),
+                operation="embedding.create_batch",
+                item_count=len(input_data_list),
+            )
 
         # 分块处理
         results = []
         for i in range(0, len(input_data_list), self.max_batch_size):
             chunk = input_data_list[i : i + self.max_batch_size]
-            chunk_results = await self._embedder.create_batch(chunk)
+            chunk_results = await self._call_with_rate_limit_retry(
+                lambda chunk=chunk: self._embedder.create_batch(chunk),
+                operation="embedding.create_batch",
+                item_count=len(chunk),
+            )
             results.extend(chunk_results)
         return results
+
+    async def _call_with_rate_limit_retry(self, factory, operation: str, item_count: int):
+        max_retries = max(0, int(Config.GRAPHITI_RATE_LIMIT_MAX_RETRIES or 0))
+        retry_seconds = max(0.0, float(Config.GRAPHITI_RATE_LIMIT_RETRY_SECONDS or 0))
+        for attempt in range(max_retries + 1):
+            try:
+                return await factory()
+            except Exception as exc:
+                if not _is_rate_limit_error(exc) or attempt >= max_retries:
+                    raise
+                delay = retry_seconds * (attempt + 1)
+                logger.warning(
+                    "Graphiti %s 触发限流，%.1f 秒后重试: items=%s, attempt=%s/%s, error=%s",
+                    operation,
+                    delay,
+                    item_count,
+                    attempt + 1,
+                    max_retries,
+                    exc,
+                )
+                await asyncio.sleep(delay)
 
 
 def _create_dashscope_embedder_wrapper(base_embedder: Any, max_batch_size: int = 10) -> Any:
@@ -137,18 +186,51 @@ def _create_dashscope_embedder_wrapper(base_embedder: Any, max_batch_size: int =
                     self.config = embedder.config
 
             async def create(self, input_data) -> list[float]:
-                return await self._embedder.create(input_data)
+                return await self._call_with_rate_limit_retry(
+                    lambda: self._embedder.create(input_data),
+                    operation="embedding.create",
+                    item_count=1,
+                )
 
             async def create_batch(self, input_data_list: list[str]) -> list[list[float]]:
                 if len(input_data_list) <= self.max_batch_size:
-                    return await self._embedder.create_batch(input_data_list)
+                    return await self._call_with_rate_limit_retry(
+                        lambda: self._embedder.create_batch(input_data_list),
+                        operation="embedding.create_batch",
+                        item_count=len(input_data_list),
+                    )
 
                 results = []
                 for i in range(0, len(input_data_list), self.max_batch_size):
                     chunk = input_data_list[i : i + self.max_batch_size]
-                    chunk_results = await self._embedder.create_batch(chunk)
+                    chunk_results = await self._call_with_rate_limit_retry(
+                        lambda chunk=chunk: self._embedder.create_batch(chunk),
+                        operation="embedding.create_batch",
+                        item_count=len(chunk),
+                    )
                     results.extend(chunk_results)
                 return results
+
+            async def _call_with_rate_limit_retry(self, factory, operation: str, item_count: int):
+                max_retries = max(0, int(Config.GRAPHITI_RATE_LIMIT_MAX_RETRIES or 0))
+                retry_seconds = max(0.0, float(Config.GRAPHITI_RATE_LIMIT_RETRY_SECONDS or 0))
+                for attempt in range(max_retries + 1):
+                    try:
+                        return await factory()
+                    except Exception as exc:
+                        if not _is_rate_limit_error(exc) or attempt >= max_retries:
+                            raise
+                        delay = retry_seconds * (attempt + 1)
+                        logger.warning(
+                            "Graphiti %s 触发限流，%.1f 秒后重试: items=%s, attempt=%s/%s, error=%s",
+                            operation,
+                            delay,
+                            item_count,
+                            attempt + 1,
+                            max_retries,
+                            exc,
+                        )
+                        await asyncio.sleep(delay)
 
         return _DashScopeEmbedderClient(base_embedder, max_batch_size)
 
@@ -413,6 +495,12 @@ class GraphitiClient(ZepClientAdapter):
                 f"entity_types={len(self._ontology_cache[graph_id]['entities'])}, "
                 f"edge_types={len(self._ontology_cache[graph_id]['edges'])}"
             )
+
+    def set_ontology_from_cache(self, graph_id: str, source_client: Any) -> None:
+        """从另一个 Graphiti client 复制已归一化的 ontology 缓存。"""
+        source_cache = getattr(source_client, "_ontology_cache", {}) or {}
+        if graph_id in source_cache:
+            self._ontology_cache[graph_id] = source_cache[graph_id]
 
     # ==================== Episode 操作 ====================
 

@@ -512,11 +512,33 @@ class SimulationRunner:
                 raise ValueError("启用图谱记忆更新时必须提供 graph_id")
             
             try:
-                ZepGraphMemoryManager.create_updater(
-                    simulation_id,
-                    graph_id,
-                    backend=graph_backend,
+                updater_error = []
+
+                def create_graph_memory_updater():
+                    try:
+                        ZepGraphMemoryManager.create_updater(
+                            simulation_id,
+                            graph_id,
+                            backend=graph_backend,
+                        )
+                    except Exception as updater_exc:
+                        updater_error.append(updater_exc)
+
+                updater_thread = threading.Thread(
+                    target=create_graph_memory_updater,
+                    daemon=True,
+                    name=f"GraphMemoryInit-{simulation_id}",
                 )
+                updater_thread.start()
+                updater_thread.join(timeout=max(1.0, Config.GRAPH_MEMORY_STOP_TIMEOUT_SECONDS))
+                if updater_error:
+                    raise updater_error[0]
+                if updater_thread.is_alive():
+                    logger.warning(
+                        "图谱记忆更新器初始化仍在后台进行，模拟将先启动: simulation_id=%s, graph_id=%s",
+                        simulation_id,
+                        graph_id,
+                    )
                 cls._graph_memory_enabled[simulation_id] = True
                 logger.info(f"已启用图谱记忆更新: simulation_id={simulation_id}, graph_id={graph_id}")
             except Exception as e:

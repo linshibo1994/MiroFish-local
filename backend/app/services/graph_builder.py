@@ -11,7 +11,9 @@ import os
 import uuid
 import time
 import threading
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass
 
@@ -21,6 +23,8 @@ from .text_processor import TextProcessor
 from .zep_factory import create_zep_client, get_zep_client
 from .zep_adapter import ZepClientAdapter
 from ..utils.llm_routing import clamp_concurrency, get_preferred_llm_endpoint
+
+logger = logging.getLogger("mirofish.graph_builder")
 
 
 @dataclass
@@ -369,10 +373,16 @@ class GraphBuilderService:
         # Cloud add_batch 自身是批量异步处理，保守串行提交；Graphiti 本地抽取才启用并发写入。
         if backend != 'graphiti':
             concurrency = 1
+        use_worker_clients = (
+            backend == 'graphiti'
+            and concurrency > 1
+            and hasattr(self.client, "set_ontology_from_cache")
+        )
 
         completed_batches = 0
         episode_uuids_by_batch: Dict[int, List[str]] = {}
         progress_lock = threading.Lock()
+        max_reported_ratio = 0.0
 
         def build_episodes(batch_chunks: List[str]) -> List[Dict[str, Any]]:
             return [
@@ -384,37 +394,93 @@ class GraphBuilderService:
                 for chunk in batch_chunks
             ]
 
+        def report_progress(message: str, ratio: float) -> None:
+            """并发批次完成顺序不固定，确保对外进度只向前推进。"""
+            nonlocal max_reported_ratio
+            if not progress_callback:
+                return
+            safe_ratio = max(0.0, min(1.0, float(ratio or 0)))
+            with progress_lock:
+                max_reported_ratio = max(max_reported_ratio, safe_ratio)
+                reported_ratio = max_reported_ratio
+            progress_callback(message, reported_ratio)
+
+        def raise_batch_error(batch_num: int, exc: Exception) -> None:
+            if isinstance(exc, TimeoutError) or isinstance(exc, FutureTimeoutError):
+                message = f"批次 {batch_num} 写入超过 Graphiti 超时限制"
+            else:
+                message = str(exc) or exc.__class__.__name__
+            report_progress(f"批次 {batch_num} 发送失败: {message}", 0)
+            raise RuntimeError(f"批次 {batch_num} 图谱写入失败: {message}") from exc
+
+        def create_worker_client() -> ZepClientAdapter:
+            worker_client = create_zep_client(
+                backend=backend,
+                use_singleton=False,
+                llm_endpoint=getattr(self, "_llm_endpoint", None),
+            )
+            if hasattr(worker_client, "set_ontology_from_cache"):
+                worker_client.set_ontology_from_cache(graph_id, self.client)
+            return worker_client
+
         def submit_batch(batch_index: int, start_index: int, batch_chunks: List[str]) -> List[str]:
             batch_num = batch_index + 1
-            if progress_callback:
-                progress_callback(
-                    f"发送第 {batch_num}/{total_batches} 批数据 ({len(batch_chunks)} 块)...",
-                    start_index / total_chunks,
-                )
-
-            batch_uuids = self.client.add_episode_batch(
-                graph_id=graph_id,
-                episodes=build_episodes(batch_chunks),
+            report_progress(
+                f"发送第 {batch_num}/{total_batches} 批数据 ({len(batch_chunks)} 块)...",
+                min(start_index / total_chunks, completed_batches / total_batches),
             )
-            delay = max(0.0, float(Config.GRAPH_BUILD_BATCH_DELAY_SECONDS or 0))
-            if delay:
-                time.sleep(delay)
-            return batch_uuids
+
+            worker_client = create_worker_client() if use_worker_clients else self.client
+            try:
+                logger.info(
+                    "图谱批次写入开始: graph_id=%s, batch=%s/%s, chunks=%s, worker_client=%s",
+                    graph_id,
+                    batch_num,
+                    total_batches,
+                    len(batch_chunks),
+                    worker_client is not self.client,
+                )
+                batch_uuids = worker_client.add_episode_batch(
+                    graph_id=graph_id,
+                    episodes=build_episodes(batch_chunks),
+                )
+                logger.info(
+                    "图谱批次写入完成: graph_id=%s, batch=%s/%s, episodes=%s",
+                    graph_id,
+                    batch_num,
+                    total_batches,
+                    len(batch_uuids),
+                )
+                delay = max(0.0, float(Config.GRAPH_BUILD_BATCH_DELAY_SECONDS or 0))
+                if delay:
+                    time.sleep(delay)
+                return batch_uuids
+            except Exception:
+                logger.exception(
+                    "图谱批次写入异常: graph_id=%s, batch=%s/%s",
+                    graph_id,
+                    batch_num,
+                    total_batches,
+                )
+                raise
+            finally:
+                if worker_client is not self.client and hasattr(worker_client, "close"):
+                    try:
+                        worker_client.close()
+                    except Exception:
+                        pass
 
         if concurrency <= 1 or total_batches == 1:
             for batch_index, start_index, batch_chunks in batch_specs:
                 try:
                     episode_uuids_by_batch[batch_index] = submit_batch(batch_index, start_index, batch_chunks)
                     completed_batches += 1
-                    if progress_callback:
-                        progress_callback(
-                            f"已完成第 {completed_batches}/{total_batches} 批数据写入",
-                            completed_batches / total_batches,
-                        )
+                    report_progress(
+                        f"已完成第 {completed_batches}/{total_batches} 批数据写入",
+                        completed_batches / total_batches,
+                    )
                 except Exception as e:
-                    if progress_callback:
-                        progress_callback(f"批次 {batch_index + 1} 发送失败: {str(e)}", 0)
-                    raise
+                    raise_batch_error(batch_index + 1, e)
         else:
             with ThreadPoolExecutor(max_workers=min(concurrency, total_batches)) as executor:
                 future_to_batch = {
@@ -426,19 +492,16 @@ class GraphBuilderService:
                     try:
                         episode_uuids_by_batch[batch_index] = future.result()
                     except Exception as e:
-                        if progress_callback:
-                            progress_callback(f"批次 {batch_index + 1} 发送失败: {str(e)}", 0)
-                        raise
+                        raise_batch_error(batch_index + 1, e)
 
                     with progress_lock:
                         completed_batches += 1
                         current_completed = completed_batches
 
-                    if progress_callback:
-                        progress_callback(
-                            f"已完成第 {current_completed}/{total_batches} 批数据写入",
-                            current_completed / total_batches,
-                        )
+                    report_progress(
+                        f"已完成第 {current_completed}/{total_batches} 批数据写入",
+                        current_completed / total_batches,
+                    )
 
         episode_uuids: List[str] = []
         for batch_index in range(total_batches):

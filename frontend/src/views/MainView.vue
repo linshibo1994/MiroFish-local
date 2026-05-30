@@ -514,6 +514,12 @@ const loadSimulationHistory = async () => {
         const bt = new Date(b.updated_at || b.created_at || 0).getTime()
         return bt - at
       })
+      if (!currentSimulationId.value && simulationHistory.value.length > 0) {
+        const reusable = simulationHistory.value.find(item =>
+          ['ready', 'preparing', 'running', 'completed', 'stopped'].includes(item.status)
+        ) || simulationHistory.value[0]
+        currentSimulationId.value = reusable.simulation_id || ''
+      }
     }
   } catch (err) {
     console.warn('加载推演历史失败:', err)
@@ -660,7 +666,7 @@ const pollTaskStatus = async (taskId) => {
       }
     }
   } catch (e) {
-    if (e?.response?.status === 404 || /任务不存在/.test(e?.message || '')) {
+    if (e?.status === 404 || e?.response?.status === 404 || /任务不存在/.test(e?.message || '')) {
       stopPolling()
       buildProgress.value = {
         progress: buildProgress.value?.progress || 0,
