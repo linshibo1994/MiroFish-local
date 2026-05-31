@@ -218,10 +218,10 @@ const isLandingMode = computed(() => currentStep.value === 1 && currentPhase.val
 
 const projectTitle = computed(() => {
   const directTitle = projectData.value?.simulation_requirement || projectData.value?.search_query
-  if (directTitle) return directTitle.slice(0, 54)
+  if (directTitle) return directTitle
   const summary = projectData.value?.seed_summary_md || projectData.value?.analysis_summary || ''
   const firstLine = summary.split('\n').map(line => line.replace(/^#+\s*/, '').trim()).find(Boolean)
-  if (firstLine) return firstLine.slice(0, 54)
+  if (firstLine) return firstLine
   return '事件概述'
 })
 
@@ -1096,16 +1096,32 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
 }
 
 /* 二级页 Header */
+.workspace-header {
+  min-height: 56px;
+  height: auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(180px, 1fr);
+  column-gap: 18px;
+  align-items: center;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
 .workspace-header .header-left {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
+  min-width: 0;
 }
 
 .event-title {
   font-size: 15px;
   font-weight: 700;
   color: #1A1A2E;
+  line-height: 1.45;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .info-icon-btn {
@@ -1118,12 +1134,13 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
   justify-content: center;
   cursor: pointer;
   color: #9CA3AF;
+  flex-shrink: 0;
+  margin-top: -1px;
 }
 
 .workspace-header .header-center {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
+  justify-self: center;
+  min-width: max-content;
 }
 
 .view-switcher {
@@ -1155,8 +1172,10 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
 .workspace-header .header-right {
   display: flex;
   align-items: center;
+  justify-self: end;
   gap: 10px;
   font-size: 13px;
+  white-space: nowrap;
 }
 
 .step-badge {
@@ -1229,12 +1248,20 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
   }
 
   .workspace-header {
-    padding: 0 16px;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    align-items: stretch;
+    padding: 12px 16px;
   }
 
   .workspace-header .header-center {
-    position: static;
-    transform: none;
+    justify-self: start;
+  }
+
+  .workspace-header .header-right {
+    justify-self: start;
+    flex-wrap: wrap;
+    white-space: normal;
   }
 }
 </style>
