@@ -394,7 +394,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, h, reactive } from 'vue'
 import { useRouter } from 'vue-router'
-import { getAgentLog, getConsoleLog, getReport } from '../api/report'
+import { getAgentLog, getConsoleLog, getReport, getReportSections } from '../api/report'
 import { translateEntityType } from '../utils/entityTranslations.js'
 import { sanitizeReportContent } from '../utils/reportContent'
 
@@ -423,10 +423,12 @@ const consoleLogLine = ref(0)
 const reportOutline = ref(null)
 const currentSectionIndex = ref(null)
 const generatedSections = ref({})
+const sectionBuffer = ref({})
 const expandedContent = ref(new Set())
 const expandedLogs = ref(new Set())
 const collapsedSections = ref(new Set())
 const isComplete = ref(false)
+const isFailed = ref(false)
 const startTime = ref(null)
 const leftPanel = ref(null)
 const rightPanel = ref(null)
@@ -1674,12 +1676,14 @@ const QuickSearchDisplay = {
 // Computed
 const statusClass = computed(() => {
   if (isComplete.value) return 'completed'
+  if (isFailed.value) return 'failed'
   if (agentLogs.value.length > 0) return 'processing'
   return 'pending'
 })
 
 const statusText = computed(() => {
   if (isComplete.value) return '已完成'
+  if (isFailed.value) return '生成失败'
   if (agentLogs.value.length > 0) return '生成中...'
   return '等待中'
 })
@@ -1800,6 +1804,55 @@ const addLog = (msg) => {
 
 const isSectionCompleted = (sectionIndex) => {
   return !!generatedSections.value[sectionIndex]
+}
+
+const getNextDisplaySectionIndex = () => {
+  const sections = reportOutline.value?.sections || []
+  for (let i = 0; i < sections.length; i += 1) {
+    if (!generatedSections.value[i + 1]) return i + 1
+  }
+  return null
+}
+
+const syncCurrentSectionIndex = () => {
+  if (isComplete.value) {
+    currentSectionIndex.value = null
+    return
+  }
+  currentSectionIndex.value = getNextDisplaySectionIndex()
+}
+
+const publishSequentialSections = () => {
+  const nextSections = { ...generatedSections.value }
+  let nextIndex = 1
+  while (nextSections[nextIndex]) {
+    nextIndex += 1
+  }
+
+  let changed = false
+  while (sectionBuffer.value[nextIndex]) {
+    nextSections[nextIndex] = sectionBuffer.value[nextIndex]
+    delete sectionBuffer.value[nextIndex]
+    expandedContent.value.add(nextIndex - 1)
+    changed = true
+    nextIndex += 1
+  }
+
+  if (changed) {
+    generatedSections.value = nextSections
+    syncCurrentSectionIndex()
+  }
+}
+
+const queueSectionContent = (sectionIndex, content) => {
+  if (!sectionIndex || !content) return
+  const mainIndex = getMainSectionIndex(sectionIndex)
+  if (isSubsection(sectionIndex) || generatedSections.value[mainIndex]) return
+  sectionBuffer.value = {
+    ...sectionBuffer.value,
+    [mainIndex]: sanitizeReportContent(content)
+  }
+  publishSequentialSections()
 }
 
 // 从 section_index 获取主章节索引
@@ -1961,24 +2014,39 @@ const hydrateReportSnapshot = (reportData) => {
 
   if (reportData.outline) {
     reportOutline.value = reportData.outline
-    const nextSections = { ...generatedSections.value }
-    ;(reportData.outline.sections || []).forEach((section, index) => {
-      if (section?.content?.trim()) {
-        nextSections[index + 1] = sanitizeReportContent(section.content)
+    ;(reportData.generated_sections || []).forEach((section) => {
+      if (!section?.is_subsection && section?.content?.trim()) {
+        queueSectionContent(section.section_index, section.content)
       }
     })
-    generatedSections.value = nextSections
+    ;(reportData.outline.sections || []).forEach((section, index) => {
+      if (section?.content?.trim()) {
+        queueSectionContent(index + 1, section.content)
+      }
+    })
   }
 
   if (reportData.status === 'completed') {
     isComplete.value = true
+    isFailed.value = false
     currentSectionIndex.value = null
     emit('update-status', 'completed')
     stopPolling()
   } else if (reportData.status === 'failed') {
+    isFailed.value = true
     currentSectionIndex.value = null
     emit('update-status', 'error')
+    stopPolling()
   }
+}
+
+const hydrateSectionsSnapshot = (sections = []) => {
+  sections
+    .filter(section => !section?.is_subsection && section?.content?.trim())
+    .sort((a, b) => Number(a.section_index || 0) - Number(b.section_index || 0))
+    .forEach(section => {
+      queueSectionContent(section.section_index, section.content)
+    })
 }
 
 const fetchReportSnapshot = async () => {
@@ -1991,6 +2059,19 @@ const fetchReportSnapshot = async () => {
     }
   } catch (err) {
     console.warn('Failed to fetch report snapshot:', err)
+  }
+}
+
+const fetchGeneratedSections = async () => {
+  if (!props.reportId) return
+
+  try {
+    const res = await getReportSections(props.reportId)
+    if (res.success && res.data) {
+      hydrateSectionsSnapshot(res.data.sections || [])
+    }
+  } catch (err) {
+    console.warn('Failed to fetch generated sections:', err)
   }
 }
 
@@ -2009,13 +2090,11 @@ const fetchAgentLog = async () => {
           
           if (log.action === 'planning_complete' && log.details?.outline) {
             reportOutline.value = log.details.outline
+            syncCurrentSectionIndex()
           }
           
           if (log.action === 'section_start') {
-            // 无论是主章节还是子章节开始，都映射到主章节索引
-            // 后端编号：主章节 1,2,3... 子章节 101,102（第1章子章节1,2）
-            const mainIndex = getMainSectionIndex(log.section_index)
-            currentSectionIndex.value = mainIndex
+            syncCurrentSectionIndex()
           }
           
           // section_content / subsection_content - 表示内容生成完成（但整个章节可能还没完成）
@@ -2032,20 +2111,26 @@ const fetchAgentLog = async () => {
             const mainIndex = getMainSectionIndex(log.section_index)
             // 只有主章节完成时（section_index < 100）才更新内容和清除 loading
             if (!isSubsection(log.section_index) && log.details?.content) {
-              generatedSections.value[mainIndex] = sanitizeReportContent(log.details.content)
-              // 自动展开刚生成的章节
-              expandedContent.value.add(mainIndex - 1)
-              currentSectionIndex.value = null
+              queueSectionContent(mainIndex, log.details.content)
+              syncCurrentSectionIndex()
             }
             // 子章节完成时不清除 currentSectionIndex，继续显示 loading
           }
           
           if (log.action === 'report_complete') {
             isComplete.value = true
+            isFailed.value = false
             currentSectionIndex.value = null  // 确保清除 loading 状态
             emit('update-status', 'completed')
             stopPolling()
             // 滚动逻辑统一在循环结束后的 nextTick 中处理
+          }
+
+          if (log.action === 'error') {
+            isFailed.value = true
+            currentSectionIndex.value = null
+            emit('update-status', 'error')
+            stopPolling()
           }
           
           if (log.action === 'report_start') {
@@ -2146,10 +2231,15 @@ const startPolling = () => {
   if (agentLogTimer || consoleLogTimer) return
   
   fetchReportSnapshot()
+  fetchGeneratedSections()
   fetchAgentLog()
   fetchConsoleLog()
   
-  agentLogTimer = setInterval(fetchAgentLog, 2000)
+  agentLogTimer = setInterval(() => {
+    fetchAgentLog()
+    fetchGeneratedSections()
+    fetchReportSnapshot()
+  }, 2000)
   consoleLogTimer = setInterval(fetchConsoleLog, 1500)
 }
 
@@ -2185,10 +2275,12 @@ watch(() => props.reportId, (newId) => {
     reportOutline.value = null
     currentSectionIndex.value = null
     generatedSections.value = {}
+    sectionBuffer.value = {}
     expandedContent.value = new Set()
     expandedLogs.value = new Set()
     collapsedSections.value = new Set()
     isComplete.value = false
+    isFailed.value = false
     startTime.value = null
     
     startPolling()

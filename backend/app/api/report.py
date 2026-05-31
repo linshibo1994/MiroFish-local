@@ -21,6 +21,13 @@ from ..utils.logger import get_logger
 logger = get_logger('mirofish.api.report')
 
 
+def _attach_report_runtime_snapshot(report_dict: dict, report_id: str) -> dict:
+    """为报告详情附加生成中也可读取的章节与进度快照。"""
+    report_dict["generated_sections"] = ReportManager.get_generated_sections(report_id)
+    report_dict["progress_snapshot"] = ReportManager.get_progress(report_id)
+    return report_dict
+
+
 def _resolve_simulation_graph_context(manager: SimulationManager, state):
     """解析并回填 simulation 绑定的 graph_id/backend。"""
     project = ProjectManager.get_project(state.project_id)
@@ -354,7 +361,7 @@ def get_report(report_id: str):
         
         return jsonify({
             "success": True,
-            "data": report.to_dict()
+            "data": _attach_report_runtime_snapshot(report.to_dict(), report_id)
         })
         
     except Exception as e:
@@ -392,7 +399,7 @@ def get_report_by_simulation(simulation_id: str):
         
         return jsonify({
             "success": True,
-            "data": report.to_dict(),
+            "data": _attach_report_runtime_snapshot(report.to_dict(), report.report_id),
             "has_report": True
         })
         
@@ -694,6 +701,7 @@ def get_report_sections(report_id: str):
             "data": {
                 "report_id": report_id,
                 "sections": sections,
+                "progress_snapshot": ReportManager.get_progress(report_id),
                 "total_sections": len(sections),
                 "is_complete": is_complete
             }

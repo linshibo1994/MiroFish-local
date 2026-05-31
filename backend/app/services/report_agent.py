@@ -1618,6 +1618,53 @@ class ReportAgent:
                     full_section_content += f"### {sub_title}\n\n{sub_content}\n\n"
                 return full_section_content.strip()
 
+            def publish_section_result(result: Dict[str, Any]) -> None:
+                """
+                将已生成章节按报告顺序发布到文件和日志。
+
+                并发模式下章节可能乱序完成，但前端左侧报告必须保持顺序展示：
+                第 2 章即使先生成完成，也要等第 1 章发布后才能发布。
+                """
+                section = result["section"]
+                section_num = result["section_num"]
+                subsection_contents = result["subsection_contents"]
+
+                ReportManager.save_section_with_subsections(
+                    report_id, section_num, section, subsection_contents
+                )
+                for sub_title, _ in subsection_contents:
+                    completed_section_titles.append(f"  └─ {sub_title}")
+                completed_section_titles.append(section.title)
+                generated_sections.append(result["full_section_content"])
+
+                if self.report_logger:
+                    self.report_logger.log_section_full_complete(
+                        section_title=section.title,
+                        section_index=section_num,
+                        full_content=result["full_section_content"],
+                        subsection_count=len(subsection_contents)
+                    )
+
+                progress_value = 20 + int((section_num / total_sections) * 70)
+                ReportManager.update_progress(
+                    report_id, "generating",
+                    progress_value,
+                    f"章节 {section.title} 已完成",
+                    current_section=None,
+                    completed_sections=completed_section_titles
+                )
+                if progress_callback:
+                    progress_callback(
+                        "generating",
+                        progress_value,
+                        f"章节 {section.title} 已完成"
+                    )
+
+                logger.info(
+                    f"章节已按序发布（包含{len(subsection_contents)}个子章节）: "
+                    f"{report_id}/section_{section_num:02d}.md"
+                )
+
             def generate_single_section(i: int, section: ReportSection, previous_snapshot: List[str]):
                 section_num = i + 1
                 base_progress = 20 + int((i / total_sections) * 70)
@@ -1757,8 +1804,17 @@ class ReportAgent:
             else:
                 logger.info("启用报告章节并发生成: sections=%s, concurrency=%s", total_sections, report_parallelism)
                 section_results: Dict[int, Dict[str, Any]] = {}
-                completion_lock = threading.Lock()
                 completed_count = 0
+                next_publish_index = 0
+                first_error: Optional[Exception] = None
+
+                def publish_available_sections() -> None:
+                    nonlocal next_publish_index
+                    while next_publish_index in section_results:
+                        result_to_publish = section_results.pop(next_publish_index)
+                        publish_section_result(result_to_publish)
+                        next_publish_index += 1
+
                 with ThreadPoolExecutor(max_workers=min(report_parallelism, total_sections)) as executor:
                     future_to_index = {
                         executor.submit(
@@ -1773,16 +1829,32 @@ class ReportAgent:
                         for i, section in enumerate(outline.sections)
                     }
                     for future in as_completed(future_to_index):
-                        result = future.result()
+                        future_index = future_to_index[future]
+                        try:
+                            result = future.result()
+                        except Exception as section_error:
+                            first_error = section_error
+                            failed_section = outline.sections[future_index]
+                            error_message = f"章节 {future_index + 1} 生成失败: {section_error}"
+                            logger.error(error_message)
+                            ReportManager.update_progress(
+                                report_id, "failed",
+                                -1,
+                                f"报告生成失败: {section_error}",
+                                current_section=failed_section.title,
+                                completed_sections=completed_section_titles
+                            )
+                            if progress_callback:
+                                progress_callback("failed", -1, error_message)
+                            continue
+
                         section_results[result["index"]] = result
-                        with completion_lock:
-                            completed_count += 1
-                            current_completed = completed_count
-                        progress_value = 20 + int((current_completed / total_sections) * 70)
+                        completed_count += 1
+                        progress_value = 20 + int((completed_count / total_sections) * 70)
                         ReportManager.update_progress(
                             report_id, "generating",
                             progress_value,
-                            f"已生成章节 {current_completed}/{total_sections}: {result['section'].title}",
+                            f"已生成章节 {completed_count}/{total_sections}: {result['section'].title}",
                             current_section=result["section"].title,
                             completed_sections=completed_section_titles
                         )
@@ -1790,31 +1862,13 @@ class ReportAgent:
                             progress_callback(
                                 "generating",
                                 progress_value,
-                                f"已生成章节 {current_completed}/{total_sections}: {result['section'].title}"
+                                f"已生成章节 {completed_count}/{total_sections}: {result['section'].title}"
                             )
+                        publish_available_sections()
 
-                for i in range(total_sections):
-                    result = section_results[i]
-                    section = result["section"]
-                    section_num = result["section_num"]
-                    subsection_contents = result["subsection_contents"]
-
-                    ReportManager.save_section_with_subsections(
-                        report_id, section_num, section, subsection_contents
-                    )
-                    for sub_title, _ in subsection_contents:
-                        completed_section_titles.append(f"  └─ {sub_title}")
-                    completed_section_titles.append(section.title)
-                    generated_sections.append(result["full_section_content"])
-
-                    if self.report_logger:
-                        self.report_logger.log_section_full_complete(
-                            section_title=section.title,
-                            section_index=section_num,
-                            full_content=result["full_section_content"],
-                            subsection_count=len(subsection_contents)
-                        )
-                    logger.info(f"章节已保存（包含{len(subsection_contents)}个子章节）: {report_id}/section_{section_num:02d}.md")
+                publish_available_sections()
+                if first_error:
+                    raise first_error
             
             # 阶段3: 组装完整报告
             if progress_callback:
@@ -2467,6 +2521,7 @@ class ReportManager:
             return []
         
         sections = []
+        persisted_section_indexes = set()
         for filename in sorted(os.listdir(folder)):
             if filename.startswith('section_') and filename.endswith('.md'):
                 file_path = os.path.join(folder, filename)
@@ -2477,6 +2532,8 @@ class ReportManager:
                 parts = filename.replace('.md', '').split('_')
                 section_index = int(parts[1])
                 subsection_index = int(parts[2]) if len(parts) > 2 else None
+                if subsection_index is None:
+                    persisted_section_indexes.add(section_index)
                 
                 sections.append({
                     "filename": filename,
@@ -2486,6 +2543,17 @@ class ReportManager:
                     "is_subsection": subsection_index is not None
                 })
         
+        recovered_sections = cls._recover_generated_sections_from_logs(
+            report_id,
+            persisted_section_indexes
+        )
+        if recovered_sections:
+            sections.extend(recovered_sections)
+            sections.sort(key=lambda item: (
+                item["section_index"],
+                item.get("subsection_index") or 0
+            ))
+
         return sections
 
     @classmethod
@@ -2494,6 +2562,90 @@ class ReportManager:
         if not content:
             return content
         return ReportContentSanitizer.clean_report_content(content)
+
+    @classmethod
+    def _recover_generated_sections_from_logs(
+        cls,
+        report_id: str,
+        persisted_section_indexes: set
+    ) -> List[Dict[str, Any]]:
+        """
+        从历史日志恢复已完整生成但未落盘的章节。
+
+        早期并发分支会等所有章节 Future 结束后才统一保存，若后续章节失败，
+        已生成完的前序章节不会写入 section_XX.md。这里按大纲校验主章节与
+        所有子章节内容都已出现后，只读地返回可展示章节快照。
+        """
+        outline_path = cls._get_outline_path(report_id)
+        if not os.path.exists(outline_path):
+            return []
+
+        try:
+            with open(outline_path, 'r', encoding='utf-8') as f:
+                outline_data = json.load(f)
+        except Exception:
+            return []
+
+        main_contents: Dict[int, str] = {}
+        subsection_contents: Dict[int, Dict[int, str]] = {}
+        log_data = cls.get_agent_log(report_id, from_line=0)
+        for log_entry in log_data.get("logs", []):
+            details = log_entry.get("details") or {}
+            content = details.get("content")
+            section_index = log_entry.get("section_index")
+            if not isinstance(section_index, int) or not isinstance(content, str) or not content.strip():
+                continue
+
+            if log_entry.get("action") == "section_content" and section_index < 100:
+                main_contents[section_index] = content
+            elif log_entry.get("action") == "subsection_content" and section_index >= 100:
+                main_index = section_index // 100
+                sub_index = section_index % 100
+                subsection_contents.setdefault(main_index, {})[sub_index] = content
+
+        recovered_sections = []
+        outline_sections = outline_data.get("sections", []) or []
+        if outline_sections and all(
+            index in persisted_section_indexes
+            for index in range(1, len(outline_sections) + 1)
+        ):
+            return []
+
+        for index, section_data in enumerate(outline_sections, start=1):
+            if index in persisted_section_indexes or index not in main_contents:
+                continue
+
+            subsections = section_data.get("subsections", []) or []
+            recovered_subsections = subsection_contents.get(index, {})
+            if any((sub_index + 1) not in recovered_subsections for sub_index, _ in enumerate(subsections)):
+                continue
+
+            title = section_data.get("title") or f"第{index}章"
+            md_content = f"## {title}\n\n"
+            cleaned_main = cls._clean_section_content(main_contents[index], title)
+            if cleaned_main:
+                md_content += f"{cleaned_main}\n\n"
+
+            for sub_index, subsection_data in enumerate(subsections, start=1):
+                sub_title = subsection_data.get("title") or f"{title} 子章节{sub_index}"
+                cleaned_sub = cls._clean_section_content(
+                    recovered_subsections[sub_index],
+                    sub_title
+                )
+                md_content += f"### {sub_title}\n\n"
+                if cleaned_sub:
+                    md_content += f"{cleaned_sub}\n\n"
+
+            recovered_sections.append({
+                "filename": f"section_{index:02d}.md",
+                "section_index": index,
+                "subsection_index": None,
+                "content": cls._clean_persisted_markdown(md_content),
+                "is_subsection": False,
+                "recovered_from_log": True
+            })
+
+        return recovered_sections
     
     @classmethod
     def assemble_full_report(cls, report_id: str, outline: ReportOutline) -> str:

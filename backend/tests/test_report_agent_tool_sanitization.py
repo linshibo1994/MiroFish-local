@@ -1,4 +1,5 @@
 import json
+import time
 
 from app.services.report_agent import (
     Report,
@@ -223,3 +224,121 @@ def test_save_report_sanitizes_meta_and_markdown(tmp_path, monkeypatch):
     assert "Final Answer" not in meta_data["markdown_content"]
     assert "tool_call" not in markdown
     assert "这是最终报告正文。" in markdown
+
+
+def test_parallel_report_generation_publishes_ready_sections_before_later_failure(tmp_path, monkeypatch):
+    upload_dir = tmp_path / "uploads"
+    reports_dir = upload_dir / "reports"
+    monkeypatch.setattr("app.services.report_agent.Config.UPLOAD_FOLDER", str(upload_dir))
+    monkeypatch.setattr(ReportManager, "REPORTS_DIR", str(reports_dir))
+    monkeypatch.setattr("app.services.report_agent.Config.REPORT_SECTION_CONCURRENCY", 3)
+
+    outline = ReportOutline(
+        title="并发报告",
+        summary="测试并发章节发布",
+        sections=[
+            ReportSection(title="第一章"),
+            ReportSection(title="第二章"),
+            ReportSection(title="第三章"),
+        ],
+    )
+
+    def fake_plan_outline(self, progress_callback=None):
+        return outline
+
+    def fake_generate_section(self, section, outline, previous_sections, progress_callback=None, section_index=1):
+        if section_index == 2:
+            time.sleep(0.01)
+            return "第二章内容"
+        if section_index == 1:
+            time.sleep(0.03)
+            return "第一章内容"
+        raise RuntimeError("第三章连接失败")
+
+    monkeypatch.setattr(ReportAgent, "plan_outline", fake_plan_outline)
+    monkeypatch.setattr(ReportAgent, "_generate_section_react", fake_generate_section)
+
+    agent = ReportAgent(
+        graph_id="graph_1",
+        simulation_id="sim_1",
+        simulation_requirement="测试需求",
+        llm_client=object(),
+        zep_tools=object(),
+    )
+
+    report = agent.generate_report(report_id="report_parallel")
+
+    assert report.status == ReportStatus.FAILED
+    assert "第三章连接失败" in report.error
+
+    report_dir = reports_dir / "report_parallel"
+    section_1 = report_dir / "section_01.md"
+    section_2 = report_dir / "section_02.md"
+    section_3 = report_dir / "section_03.md"
+
+    assert section_1.exists()
+    assert section_2.exists()
+    assert not section_3.exists()
+    assert "第一章内容" in section_1.read_text(encoding="utf-8")
+    assert "第二章内容" in section_2.read_text(encoding="utf-8")
+
+    log_actions = [
+        json.loads(line)["section_index"]
+        for line in (report_dir / "agent_log.jsonl").read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["action"] == "section_complete"
+    ]
+    assert log_actions == [1, 2]
+
+
+def test_generated_sections_recovers_complete_historical_sections_from_logs(tmp_path, monkeypatch):
+    upload_dir = tmp_path / "uploads"
+    reports_dir = upload_dir / "reports"
+    report_dir = reports_dir / "report_legacy"
+    report_dir.mkdir(parents=True)
+    monkeypatch.setattr("app.services.report_agent.Config.UPLOAD_FOLDER", str(upload_dir))
+    monkeypatch.setattr(ReportManager, "REPORTS_DIR", str(reports_dir))
+
+    outline = {
+        "title": "历史报告",
+        "summary": "历史失败任务恢复",
+        "sections": [
+            {
+                "title": "第一章",
+                "content": "",
+                "subsections": [{"title": "第一节", "content": "", "subsections": []}],
+            },
+            {"title": "第二章", "content": "", "subsections": []},
+            {"title": "第三章", "content": "", "subsections": []},
+        ],
+    }
+    (report_dir / "outline.json").write_text(json.dumps(outline, ensure_ascii=False), encoding="utf-8")
+
+    log_entries = [
+        {
+            "action": "section_content",
+            "section_index": 2,
+            "details": {"content": "第二章内容"},
+        },
+        {
+            "action": "section_content",
+            "section_index": 1,
+            "details": {"content": "第一章内容"},
+        },
+        {
+            "action": "subsection_content",
+            "section_index": 101,
+            "details": {"content": "第一节内容"},
+        },
+    ]
+    (report_dir / "agent_log.jsonl").write_text(
+        "\n".join(json.dumps(entry, ensure_ascii=False) for entry in log_entries),
+        encoding="utf-8",
+    )
+
+    sections = ReportManager.get_generated_sections("report_legacy")
+
+    assert [section["section_index"] for section in sections] == [1, 2]
+    assert all(section["recovered_from_log"] for section in sections)
+    assert "第一章内容" in sections[0]["content"]
+    assert "第一节内容" in sections[0]["content"]
+    assert "第二章内容" in sections[1]["content"]

@@ -35,6 +35,14 @@ export const getConsoleLog = (reportId, fromLine = 0) => {
 }
 
 /**
+ * 获取已生成章节快照
+ * @param {string} reportId
+ */
+export const getReportSections = (reportId) => {
+  return service.get(`/api/report/${reportId}/sections`)
+}
+
+/**
  * 获取报告详情
  * @param {string} reportId
  */
