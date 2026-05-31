@@ -6,6 +6,7 @@
 import json
 from typing import Dict, Any, List, Optional
 from ..utils.llm_client import LLMClient
+from .location_entity_filter import strip_location_entity_types_from_ontology
 
 
 # 本体生成的系统提示词
@@ -35,6 +36,7 @@ ONTOLOGY_SYSTEM_PROMPT = """你是一个专业的知识图谱本体设计专家�
 - 抽象概念（如"舆论"、"情绪"、"趋势"）
 - 主题/话题（如"学术诚信"、"教育改革"）
 - 观点/态度（如"支持方"、"反对方"）
+- 纯地点/位置/地址/城市/地区/场所（如 `Location`, `Place`, `City`, `Region`, `Address`）。地点不能发声，也不会构建成人设 Agent；如果地点名称属于政府机构、学校、医院、公司等可发声组织，应归入对应组织类型，而不是地点类型。
 
 ## 输出格式
 
@@ -249,7 +251,8 @@ class OntologyGenerator:
 2. 最后2个必须是兜底类型：Person（个人兜底）和 Organization（组织兜底）
 3. 前8个是根据文本内容设计的具体类型
 4. 所有实体类型必须是现实中可以发声的主体，不能是抽象概念
-5. 属性名不能使用 name、uuid、group_id 等保留字，用 full_name、org_name 等替代
+5. 不要设计纯地点/位置/地址/城市/地区/场所类实体类型；地点只可作为主体属性或事件背景，不要作为节点类型
+6. 属性名不能使用 name、uuid、group_id 等保留字，用 full_name、org_name 等替代
 """
         
         return message
@@ -283,6 +286,8 @@ class OntologyGenerator:
                 edge["attributes"] = []
             if len(edge.get("description", "")) > 100:
                 edge["description"] = edge["description"][:97] + "..."
+
+        result = strip_location_entity_types_from_ontology(result)
         
         # Zep API 限制：最多 10 个自定义实体类型，最多 10 个自定义边类型
         MAX_ENTITY_TYPES = 10
@@ -341,6 +346,8 @@ class OntologyGenerator:
         
         if len(result["edge_types"]) > MAX_EDGE_TYPES:
             result["edge_types"] = result["edge_types"][:MAX_EDGE_TYPES]
+
+        result = strip_location_entity_types_from_ontology(result)
         
         return result
     
@@ -450,4 +457,3 @@ class OntologyGenerator:
         code_lines.append('}')
         
         return '\n'.join(code_lines)
-

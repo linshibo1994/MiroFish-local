@@ -317,6 +317,36 @@ def test_graph_data_coalesces_duplicate_graphiti_entities_by_name_and_type():
     assert {edge["source_node_name"] for edge in person_edges} | {edge["target_node_name"] for edge in person_edges} == {"许国利", "来惠利"}
 
 
+def test_graph_data_filters_location_entities_and_edges():
+    from app.services.zep_adapter import GraphEdge, GraphNode
+
+    class LocationEntityClient:
+        def get_all_nodes(self, graph_id):
+            return [
+                GraphNode("person-1", "张雪", ["Entity", "Person"], "", {}),
+                GraphNode("org-1", "杭州市公安局", ["Entity", "GovernmentAgency"], "", {}),
+                GraphNode("city-1", "杭州市", ["Entity", "City"], "", {}),
+                GraphNode("place-1", "某小区", ["Entity", "Place"], "", {}),
+            ]
+
+        def get_all_edges(self, graph_id):
+            return [
+                GraphEdge("edge-1", "回应", "张雪回应争议", "person-1", "org-1", {}),
+                GraphEdge("edge-2", "位于", "事件发生于杭州市", "person-1", "city-1", {}),
+                GraphEdge("edge-3", "位于", "某小区位于杭州市", "place-1", "city-1", {}),
+            ]
+
+    builder = GraphBuilderService.__new__(GraphBuilderService)
+    builder.client = LocationEntityClient()
+
+    graph_data = builder.get_graph_data("graph-1")
+
+    assert graph_data["node_count"] == 2
+    assert graph_data["edge_count"] == 1
+    assert {node["name"] for node in graph_data["nodes"]} == {"张雪", "杭州市公安局"}
+    assert graph_data["edges"][0]["uuid"] == "edge-1"
+
+
 def test_entity_reader_uses_coalesced_graph_entities():
     from app.services.zep_adapter import GraphEdge, GraphNode
     from app.services.zep_entity_reader import ZepEntityReader
@@ -346,6 +376,42 @@ def test_entity_reader_uses_coalesced_graph_entities():
     assert len(result.entities[0].related_edges) == 1
 
 
+def test_entity_reader_filters_location_entities_from_agent_candidates():
+    from app.services.zep_adapter import GraphEdge, GraphNode
+    from app.services.zep_entity_reader import ZepEntityReader
+
+    class LocationEntityClient:
+        def get_all_nodes(self, graph_id):
+            return [
+                GraphNode("person-1", "张雪", ["Entity", "Person"], "", {}),
+                GraphNode("city-1", "杭州市", ["Entity", "City"], "", {}),
+                GraphNode("location-1", "比赛场地", ["Entity", "Location"], "", {}),
+            ]
+
+        def get_all_edges(self, graph_id):
+            return [
+                GraphEdge("edge-1", "提及", "张雪提及杭州市", "person-1", "city-1", {}),
+                GraphEdge("edge-2", "讨论", "张雪讨论赛事", "person-1", "person-1", {}),
+            ]
+
+    reader = ZepEntityReader.__new__(ZepEntityReader)
+    reader.client = LocationEntityClient()
+
+    result = reader.filter_defined_entities("graph-1")
+
+    assert result.total_count == 1
+    assert result.filtered_count == 1
+    assert [entity.name for entity in result.entities] == ["张雪"]
+    assert result.entities[0].related_edges == [
+        {
+            "direction": "outgoing",
+            "edge_name": "讨论",
+            "fact": "张雪讨论赛事",
+            "target_node_uuid": "person-1",
+        }
+    ]
+
+
 def test_zep_tools_statistics_use_coalesced_graph_entities():
     from app.services.zep_adapter import GraphEdge, GraphNode
     from app.services.zep_tools import ZepToolsService
@@ -372,6 +438,80 @@ def test_zep_tools_statistics_use_coalesced_graph_entities():
     assert stats["total_nodes"] == 2
     assert stats["total_edges"] == 1
     assert stats["entity_types"] == {"嫌疑人": 1, "受害人": 1}
+
+
+def test_zep_tools_statistics_filter_location_entities():
+    from app.services.zep_adapter import GraphEdge, GraphNode
+    from app.services.zep_tools import ZepToolsService
+
+    class LocationEntityClient:
+        def get_all_nodes(self, graph_id):
+            return [
+                GraphNode("person-1", "张雪", ["Entity", "Person"], "", {}),
+                GraphNode("city-1", "杭州市", ["Entity", "City"], "", {}),
+            ]
+
+        def get_all_edges(self, graph_id):
+            return [
+                GraphEdge("edge-1", "位于", "事件发生于杭州市", "person-1", "city-1", {}),
+            ]
+
+    tools = ZepToolsService.__new__(ZepToolsService)
+    tools.client = LocationEntityClient()
+
+    stats = tools.get_graph_statistics("graph-1")
+
+    assert stats["total_nodes"] == 1
+    assert stats["total_edges"] == 0
+    assert stats["entity_types"] == {"Person": 1}
+    assert stats["relation_types"] == {}
+
+
+def test_ontology_processing_strips_location_entity_types_and_source_targets():
+    from app.services.ontology_generator import OntologyGenerator
+
+    generator = OntologyGenerator.__new__(OntologyGenerator)
+    ontology = generator._validate_and_process({
+        "entity_types": [
+            {"name": "Person", "description": "person", "attributes": []},
+            {"name": "City", "description": "city", "attributes": []},
+            {"name": "Place", "description": "place", "attributes": []},
+            {"name": "GovernmentAgency", "description": "agency", "attributes": []},
+        ],
+        "edge_types": [
+            {
+                "name": "LOCATED_IN",
+                "description": "location relation",
+                "source_targets": [{"source": "Person", "target": "City"}],
+            },
+            {
+                "name": "REGULATES",
+                "description": "agency relation",
+                "source_targets": [{"source": "GovernmentAgency", "target": "Person"}],
+            },
+        ],
+        "analysis_summary": "测试",
+    })
+
+    entity_names = [entity["name"] for entity in ontology["entity_types"]]
+    edge_names = [edge["name"] for edge in ontology["edge_types"]]
+
+    assert "City" not in entity_names
+    assert "Place" not in entity_names
+    assert "Person" in entity_names
+    assert "Organization" in entity_names
+    assert "GovernmentAgency" in entity_names
+    assert edge_names == ["REGULATES"]
+
+
+def test_location_filter_keeps_speaking_actor_types_with_location_words():
+    from app.services.location_entity_filter import is_location_entity_type, is_location_entity_node
+    from app.services.zep_adapter import GraphNode
+
+    assert is_location_entity_type("CityResident") is False
+    assert is_location_entity_node(GraphNode("group-1", "杭州市民", ["Entity", "CityResident"], "", {})) is False
+    assert is_location_entity_node(GraphNode("agency-1", "杭州市公安局", ["Entity", "GovernmentAgency"], "", {})) is False
+    assert is_location_entity_node(GraphNode("city-1", "杭州市", ["Entity", "City"], "", {})) is True
 
 
 def test_graph_build_api_passes_project_event_context_to_episodes(monkeypatch, tmp_path):

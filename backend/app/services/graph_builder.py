@@ -23,6 +23,10 @@ from ..models.task import TaskManager, TaskStatus
 from .text_processor import TextProcessor
 from .zep_factory import create_zep_client, get_zep_client
 from .zep_adapter import ZepClientAdapter
+from .location_entity_filter import (
+    filter_location_entities,
+    strip_location_entity_types_from_ontology,
+)
 from ..utils.llm_routing import clamp_concurrency, get_preferred_llm_endpoint
 
 logger = logging.getLogger("mirofish.graph_builder")
@@ -251,6 +255,8 @@ class GraphBuilderService:
         - Zep Cloud: 动态创建 Pydantic 模型，调用 Zep API
         - Graphiti: 归一化并缓存 ontology，供 episode 抽取时注入自定义实体/边类型
         """
+        ontology = strip_location_entity_types_from_ontology(ontology)
+
         if self._backend == 'graphiti':
             # Graphiti 后端：直接传递原始 ontology，适配器会归一化并在写入时注入
             self.client.set_ontology(
@@ -548,7 +554,8 @@ class GraphBuilderService:
 3. 实体关系必须能从文档文本块中的事实支撑；只有背景、广告、推荐、相似案例或无关段落里的实体不要抽取。
 4. 如果某个名称虽然出现在文本块中，但无法说明它和事件或推演方向的关系，必须忽略。
 5. 不要把本约束中的类别词、规则文本或示例当作实体；实体事实只能来自“文档文本块”。
-6. 例如“张雪机车事件”应保留张雪、张雪机车、法国车手瓦伦丁·德比斯、WSBK、820RR-RS等真实相关主体；网易游戏、阴阳师等无关实体即使出现在材料杂讯中也不要入图。
+6. 不要抽取纯地点、位置、地址、城市、地区、场所作为实体节点；地点只能作为事件背景或主体属性。若名称指向可发声组织（如政府机构、学校、医院、公司、媒体等），按组织主体抽取。
+7. 例如“张雪机车事件”应保留张雪、张雪机车、法国车手瓦伦丁·德比斯、WSBK、820RR-RS等真实相关主体；网易游戏、阴阳师等无关实体即使出现在材料杂讯中也不要入图。
 
 # 文档文本块（唯一事实来源）
 {chunk}"""
@@ -638,6 +645,7 @@ class GraphBuilderService:
         nodes = self.client.get_all_nodes(graph_id)
         edges = self.client.get_all_edges(graph_id)
         nodes, edges = self._coalesce_duplicate_entities(nodes, edges)
+        nodes, edges = filter_location_entities(nodes, edges)
 
         # 统计实体类型
         entity_types = set()
@@ -668,6 +676,7 @@ class GraphBuilderService:
         nodes = self.client.get_all_nodes(graph_id)
         edges = self.client.get_all_edges(graph_id)
         nodes, edges = self._coalesce_duplicate_entities(nodes, edges)
+        nodes, edges = filter_location_entities(nodes, edges)
 
         # 创建节点映射用于获取节点名称
         node_map = {}

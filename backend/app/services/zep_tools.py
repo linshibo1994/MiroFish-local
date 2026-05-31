@@ -25,6 +25,7 @@ from ..utils.llm_routing import clamp_concurrency
 from .zep_factory import get_zep_client
 from .zep_adapter import ZepClientAdapter
 from .graph_builder import GraphBuilderService
+from .location_entity_filter import filter_location_entities
 
 logger = get_logger('mirofish.zep_tools')
 
@@ -652,6 +653,7 @@ class ZepToolsService:
             operation_name=f"获取节点(graph={graph_id})"
         )
         nodes, _ = GraphBuilderService._coalesce_duplicate_entities(nodes, [])
+        nodes, _ = filter_location_entities(nodes, [])
 
         result = []
         for node in nodes:
@@ -687,7 +689,8 @@ class ZepToolsService:
             func=lambda: self.client.get_all_nodes(graph_id),
             operation_name=f"获取节点(graph={graph_id})"
         )
-        _, edges = GraphBuilderService._coalesce_duplicate_entities(nodes, edges)
+        nodes, edges = GraphBuilderService._coalesce_duplicate_entities(nodes, edges)
+        nodes, edges = filter_location_entities(nodes, edges)
 
         result = []
         for edge in edges:
