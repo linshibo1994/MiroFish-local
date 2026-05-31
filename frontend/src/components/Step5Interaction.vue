@@ -109,7 +109,7 @@
                   <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
                   <circle cx="12" cy="7" r="4"></circle>
                 </svg>
-                <span>{{ selectedAgent ? selectedAgent.username : '与世界中任意个体对话' }}</span>
+                <span>{{ selectedAgent ? getAgentDisplayName(selectedAgent) : '与世界中任意个体对话' }}</span>
                 <svg class="dropdown-arrow" :class="{ open: showAgentDropdown }" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
                   <polyline points="6 9 12 15 18 9"></polyline>
                 </svg>
@@ -122,9 +122,9 @@
                   class="dropdown-item"
                   @click="selectAgent(agent, idx)"
                 >
-                  <div class="agent-avatar">{{ (agent.username || 'A')[0] }}</div>
+                  <div class="agent-avatar">{{ getAgentInitial(agent) }}</div>
                   <div class="agent-info">
-                    <span class="agent-name">{{ agent.username }}</span>
+                    <span class="agent-name">{{ getAgentDisplayName(agent) }}</span>
                     <span class="agent-role">{{ agent.profession || '未知职业' }}</span>
                   </div>
                 </div>
@@ -218,11 +218,11 @@
           <!-- Agent Profile Card -->
           <div v-if="chatTarget === 'agent' && selectedAgent" class="agent-profile-card">
             <div class="profile-card-header">
-              <div class="profile-card-avatar">{{ (selectedAgent.username || 'A')[0] }}</div>
+              <div class="profile-card-avatar">{{ getAgentInitial(selectedAgent) }}</div>
               <div class="profile-card-info">
-                <div class="profile-card-name">{{ selectedAgent.username }}</div>
+                <div class="profile-card-name">{{ getAgentDisplayName(selectedAgent) }}</div>
                 <div class="profile-card-meta">
-                  <span v-if="selectedAgent.name" class="profile-card-handle">@{{ selectedAgent.name }}</span>
+                  <span v-if="selectedAgent.username" class="profile-card-handle">@{{ selectedAgent.username }}</span>
                   <span class="profile-card-profession">{{ selectedAgent.profession || '未知职业' }}</span>
                 </div>
               </div>
@@ -260,12 +260,12 @@
             >
               <div class="message-avatar">
                 <span v-if="msg.role === 'user'">U</span>
-                <span v-else>{{ msg.role === 'assistant' && chatTarget === 'report_agent' ? 'R' : (selectedAgent?.username?.[0] || 'A') }}</span>
+                <span v-else>{{ msg.role === 'assistant' && chatTarget === 'report_agent' ? 'R' : getAgentInitial(selectedAgent) }}</span>
               </div>
               <div class="message-content">
                 <div class="message-header">
                   <span class="sender-name">
-                    {{ msg.role === 'user' ? '你' : (chatTarget === 'report_agent' ? '报告智能体' : (selectedAgent?.username || '智能体')) }}
+                    {{ msg.role === 'user' ? '你' : (chatTarget === 'report_agent' ? '报告智能体' : getAgentDisplayName(selectedAgent)) }}
                   </span>
                   <span class="message-time">{{ formatTime(msg.timestamp) }}</span>
                 </div>
@@ -274,7 +274,7 @@
             </div>
             <div v-if="isSending" class="chat-message assistant">
               <div class="message-avatar">
-                <span>{{ chatTarget === 'report_agent' ? 'R' : (selectedAgent?.username?.[0] || 'A') }}</span>
+                <span>{{ chatTarget === 'report_agent' ? 'R' : getAgentInitial(selectedAgent) }}</span>
               </div>
               <div class="message-content">
                 <div class="typing-indicator">
@@ -331,9 +331,9 @@
                     :checked="selectedAgents.has(idx)"
                     @change="toggleAgentSelection(idx)"
                   >
-                  <div class="checkbox-avatar">{{ (agent.username || 'A')[0] }}</div>
+                  <div class="checkbox-avatar">{{ getAgentInitial(agent) }}</div>
                   <div class="checkbox-info">
-                    <span class="checkbox-name">{{ agent.username }}</span>
+                    <span class="checkbox-name">{{ getAgentDisplayName(agent) }}</span>
                     <span class="checkbox-role">{{ agent.profession || '未知职业' }}</span>
                   </div>
                   <div class="checkbox-indicator">
@@ -412,7 +412,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { chatWithReport, getReport, getAgentLog } from '../api/report'
-import { interviewAgents, getSimulationProfilesRealtime } from '../api/simulation'
+import { interviewAgents, getSimulationProfilesRealtime, streamAgentChat } from '../api/simulation'
 import { sanitizeReportContent } from '../utils/reportContent'
 
 const props = defineProps({
@@ -428,14 +428,16 @@ const chatTarget = ref('report_agent')
 const showAgentDropdown = ref(false)
 const selectedAgent = ref(null)
 const selectedAgentIndex = ref(null)
+const selectedAgentKey = ref('')
 const showFullProfile = ref(true)
 const showToolsDetail = ref(true)
 
 // Chat State
 const chatInput = ref('')
 const chatHistory = ref([])
-const chatHistoryCache = ref({}) // 缓存所有对话记录: { 'report_agent': [], 'agent_0': [], 'agent_1': [], ... }
+const chatHistoryCache = ref({}) // 缓存所有对话记录: { 'report_agent': [], 'agent_<stable_key>': ... }
 const isSending = ref(false)
+const streamAbortController = ref(null)
 const chatMessages = ref(null)
 const chatInputRef = ref(null)
 
@@ -484,18 +486,49 @@ const selectChatTarget = (target) => {
   }
 }
 
+const getAgentDisplayName = (agent) => {
+  return agent?.display_name || agent?.name || agent?.username || agent?.user_name || '智能体'
+}
+
+const getAgentInitial = (agent) => {
+  return (getAgentDisplayName(agent) || 'A')[0]
+}
+
+const getAgentStableKey = (agent, idx = null) => {
+  if (!agent) return ''
+  if (agent.stable_agent_key) return agent.stable_agent_key
+  if (agent.source_entity_uuid) return `entity_uuid:${agent.source_entity_uuid}`
+  if (agent.user_id !== undefined && agent.user_id !== null && agent.user_id !== '') {
+    return `user_id:${agent.user_id}`
+  }
+  if (idx !== null) return `idx:${idx}`
+  return agent.username || agent.name || agent.display_name || ''
+}
+
+const getChatCacheKey = () => {
+  if (chatTarget.value === 'report_agent') return 'report_agent'
+  return selectedAgentKey.value ? `agent_${selectedAgentKey.value}` : ''
+}
+
+const abortAgentStream = () => {
+  if (streamAbortController.value) {
+    streamAbortController.value.abort()
+    streamAbortController.value = null
+  }
+}
+
 // 保存当前对话记录到缓存
 const saveChatHistory = () => {
   if (chatHistory.value.length === 0) return
   
-  if (chatTarget.value === 'report_agent') {
-    chatHistoryCache.value['report_agent'] = [...chatHistory.value]
-  } else if (selectedAgentIndex.value !== null) {
-    chatHistoryCache.value[`agent_${selectedAgentIndex.value}`] = [...chatHistory.value]
+  const cacheKey = getChatCacheKey()
+  if (cacheKey) {
+    chatHistoryCache.value[cacheKey] = [...chatHistory.value]
   }
 }
 
 const selectReportAgentChat = () => {
+  abortAgentStream()
   // 保存当前对话记录
   saveChatHistory()
   
@@ -503,6 +536,7 @@ const selectReportAgentChat = () => {
   chatTarget.value = 'report_agent'
   selectedAgent.value = null
   selectedAgentIndex.value = null
+  selectedAgentKey.value = ''
   showAgentDropdown.value = false
   
   // 恢复 报告智能体 的对话记录
@@ -510,9 +544,11 @@ const selectReportAgentChat = () => {
 }
 
 const selectSurveyTab = () => {
+  abortAgentStream()
   activeTab.value = 'survey'
   selectedAgent.value = null
   selectedAgentIndex.value = null
+  selectedAgentKey.value = ''
   showAgentDropdown.value = false
 }
 
@@ -525,17 +561,19 @@ const toggleAgentDropdown = () => {
 }
 
 const selectAgent = (agent, idx) => {
+  abortAgentStream()
   // 保存当前对话记录
   saveChatHistory()
   
   selectedAgent.value = agent
   selectedAgentIndex.value = idx
+  selectedAgentKey.value = getAgentStableKey(agent, idx)
   chatTarget.value = 'agent'
   showAgentDropdown.value = false
   
   // 恢复该 Agent 的对话记录
-  chatHistory.value = chatHistoryCache.value[`agent_${idx}`] || []
-  addLog(`选择对话对象: ${agent.username}`)
+  chatHistory.value = chatHistoryCache.value[`agent_${selectedAgentKey.value}`] || []
+  addLog(`选择对话对象: ${getAgentDisplayName(agent) || selectedAgentKey.value}`)
 }
 
 const formatTime = (timestamp) => {
@@ -679,66 +717,74 @@ const sendToReportAgent = async (message) => {
 }
 
 const sendToAgent = async (message) => {
-  if (!selectedAgent.value || selectedAgentIndex.value === null) {
+  if (!selectedAgent.value || !selectedAgentKey.value) {
     throw new Error('请先选择一个模拟个体')
   }
   
-  addLog(`向 ${selectedAgent.value.username} 发送: ${message.substring(0, 50)}...`)
-  
-  // Build prompt with chat history
-  let prompt = message
-  if (chatHistory.value.length > 1) {
-    const historyContext = chatHistory.value
-      .filter(msg => msg.content !== message)
-      .slice(-6)
-      .map(msg => `${msg.role === 'user' ? '提问者' : '你'}：${msg.content}`)
-      .join('\n')
-    prompt = `以下是我们之前的对话：\n${historyContext}\n\n现在我的新问题是：${message}`
+  const activeAgentKey = selectedAgentKey.value
+  const agentName = getAgentDisplayName(selectedAgent.value)
+  addLog(`向 ${agentName} 发送: ${message.substring(0, 50)}...`)
+
+  const historyForApi = chatHistory.value
+    .filter(msg => msg.role !== 'user' || msg.content !== message)
+    .slice(-12)
+    .map(msg => ({
+      role: msg.role,
+      content: msg.content
+    }))
+
+  const assistantMessage = {
+    role: 'assistant',
+    content: '',
+    timestamp: new Date().toISOString()
   }
-  
-  const res = await interviewAgents({
-    simulation_id: props.simulationId,
-    interviews: [{
-      agent_id: selectedAgentIndex.value,
-      prompt: prompt
-    }]
-  })
-  
-  if (res.success && res.data) {
-    // 正确的数据路径: res.data.result.results 是一个对象字典
-    // 格式: {"twitter_0": {...}, "reddit_0": {...}} 或单平台 {"reddit_0": {...}}
-    const resultData = res.data.result || res.data
-    const resultsDict = resultData.results || resultData
-    
-    // 将对象字典转换为数组，优先获取 reddit 平台的回复
-    let responseContent = null
-    const agentId = selectedAgentIndex.value
-    
-    if (typeof resultsDict === 'object' && !Array.isArray(resultsDict)) {
-      // 优先使用 reddit 平台回复，其次 twitter
-      const redditKey = `reddit_${agentId}`
-      const twitterKey = `twitter_${agentId}`
-      const agentResult = resultsDict[redditKey] || resultsDict[twitterKey] || Object.values(resultsDict)[0]
-      if (agentResult) {
-        responseContent = agentResult.response || agentResult.answer
+  chatHistory.value.push(assistantMessage)
+  scrollToBottom()
+
+  const controller = new AbortController()
+  streamAbortController.value = controller
+
+  try {
+    await streamAgentChat(props.simulationId, {
+      agent_key: activeAgentKey,
+      user_id: selectedAgent.value.user_id,
+      platform: 'reddit',
+      message,
+      chat_history: historyForApi
+    }, {
+      signal: controller.signal,
+      onEvent: (event) => {
+        if (activeAgentKey !== selectedAgentKey.value) return
+        if (event.event === 'meta') {
+          addLog(`${event.agent?.name || agentName} 正在回复...`)
+        } else if (event.event === 'delta') {
+          assistantMessage.content += event.content || ''
+          scrollToBottom()
+        } else if (event.event === 'done') {
+          addLog(`${event.agent?.name || agentName} 已回复`)
+        }
       }
-    } else if (Array.isArray(resultsDict) && resultsDict.length > 0) {
-      // 兼容数组格式
-      responseContent = resultsDict[0].response || resultsDict[0].answer
+    })
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      assistantMessage.content = assistantMessage.content || '（对话已中断）'
+      return
     }
-    
-    if (responseContent) {
-      chatHistory.value.push({
-        role: 'assistant',
-        content: responseContent,
-        timestamp: new Date().toISOString()
-      })
-      addLog(`${selectedAgent.value.username} 已回复`)
-    } else {
-      throw new Error('无响应数据')
+    if (!assistantMessage.content.trim()) {
+      const index = chatHistory.value.indexOf(assistantMessage)
+      if (index >= 0) {
+        chatHistory.value.splice(index, 1)
+      }
     }
-  } else {
-    throw new Error(res.error || '请求失败')
+    throw err
+  }
+
+  if (!assistantMessage.content.trim()) {
+    assistantMessage.content = '（本次没有生成有效回复）'
+  }
+
+  if (streamAbortController.value === controller) {
+    streamAbortController.value = null
   }
 }
 
@@ -821,7 +867,7 @@ const submitSurvey = async () => {
         
         surveyResultsList.push({
           agent_id: agentIdx,
-          agent_name: agent?.username || `智能体${agentIdx}`,
+          agent_name: getAgentDisplayName(agent) || `智能体${agentIdx}`,
           profession: agent?.profession,
           question: surveyQuestion.value.trim(),
           answer: responseContent
@@ -914,6 +960,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  abortAgentStream()
   document.removeEventListener('click', handleClickOutside)
 })
 

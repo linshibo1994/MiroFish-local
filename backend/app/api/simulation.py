@@ -3,14 +3,20 @@
 Step2: Zep实体读取与过滤、OASIS模拟准备与运行（全程自动化）
 """
 
+import json
 import os
 import traceback
-from flask import request, jsonify, send_file
+from flask import Response, request, jsonify, send_file, stream_with_context
 
 from . import simulation_bp
 from ..config import Config
 from ..services.zep_entity_reader import ZepEntityReader
 from ..services.oasis_profile_generator import OasisProfileGenerator
+from ..services.agent_dialogue_service import (
+    AgentDialogueError,
+    AgentDialogueService,
+    enrich_profile_for_dialogue,
+)
 from ..services.simulation_manager import SimulationManager, SimulationStatus
 from ..services.simulation_runner import SimulationRunner, RunnerStatus
 from ..services.zep_graph_memory_updater import ZepGraphMemoryUpdater
@@ -95,6 +101,33 @@ def _hydrate_simulation_graph_context(manager: SimulationManager, state):
         manager._save_simulation_state(state)
 
     return project
+
+
+def _has_simulation_requirement(state) -> bool:
+    """检查 simulation 对应项目是否已有 Step1 推演背景。"""
+    if not state:
+        return False
+    project = ProjectManager.get_project(state.project_id)
+    return bool(project and (project.simulation_requirement or "").strip())
+
+
+def _enrich_profiles_for_dialogue(profiles, simulation_id: str, platform: str, state=None):
+    """为 profile API 返回值补充 Step5 对话稳定身份字段。"""
+    has_requirement = _has_simulation_requirement(state)
+    return [
+        enrich_profile_for_dialogue(
+            profile,
+            simulation_id=simulation_id,
+            platform=platform,
+            has_simulation_requirement=has_requirement,
+        )
+        for profile in profiles
+    ]
+
+
+def _agent_chat_stream_event(event: str, **payload) -> str:
+    """编码 Step5 Agent Chat NDJSON 事件。"""
+    return json.dumps({"event": event, **payload}, ensure_ascii=False) + "\n"
 
 
 # ============== 实体读取接口 ==============
@@ -973,6 +1006,12 @@ def get_simulation_profiles(simulation_id: str):
         manager = SimulationManager()
         profiles = manager.get_profiles(simulation_id, platform=platform)
         state = manager.get_simulation(simulation_id)
+        profiles = _enrich_profiles_for_dialogue(
+            profiles,
+            simulation_id=simulation_id,
+            platform=platform,
+            state=state,
+        )
         
         return jsonify({
             "success": True,
@@ -1030,7 +1069,6 @@ def get_simulation_profiles_realtime(simulation_id: str):
             }
         }
     """
-    import json
     import csv
     from datetime import datetime
     
@@ -1104,6 +1142,18 @@ def get_simulation_profiles_realtime(simulation_id: str):
                     profile_provenance = state_data.get("profile_provenance", [])
             except Exception:
                 pass
+
+        state = None
+        try:
+            state = SimulationManager().get_simulation(simulation_id)
+        except Exception:
+            state = None
+        profiles = _enrich_profiles_for_dialogue(
+            profiles,
+            simulation_id=simulation_id,
+            platform=platform,
+            state=state,
+        )
         
         return jsonify({
             "success": True,
@@ -1129,6 +1179,90 @@ def get_simulation_profiles_realtime(simulation_id: str):
             "success": False,
             "error": str(e),
             "traceback": traceback.format_exc()
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/agent-chat/stream', methods=['POST'])
+def stream_agent_chat(simulation_id: str):
+    """
+    Step5 人设 Agent 流式对话。
+
+    该接口只用于深入对话页面中的单人人设聊天。Step4 报告生成、ReportAgent
+    与 OASIS interview 仍走原有接口和模拟环境逻辑。
+    """
+    data = request.get_json() or {}
+    message = data.get("message", "")
+    chat_history = data.get("chat_history", [])
+    agent_key = data.get("agent_key", "")
+    user_id = data.get("user_id")
+    platform = data.get("platform", "reddit")
+
+    def generate():
+        try:
+            service = AgentDialogueService()
+            for event in service.stream_chat(
+                simulation_id=simulation_id,
+                message=message,
+                chat_history=chat_history,
+                agent_key=agent_key,
+                user_id=user_id,
+                platform=platform,
+            ):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except AgentDialogueError as exc:
+            yield _agent_chat_stream_event("error", error=str(exc), message=str(exc))
+        except Exception as exc:
+            logger.error("Step5 人设流式对话失败: %s", exc)
+            yield _agent_chat_stream_event(
+                "error",
+                error=str(exc),
+                message=str(exc),
+                traceback=traceback.format_exc(),
+            )
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@simulation_bp.route('/<simulation_id>/agent-chat', methods=['POST'])
+def agent_chat(simulation_id: str):
+    """
+    Step5 人设 Agent 非流式对话。
+
+    主要用于自动化测试或不支持流式传输的降级场景。
+    """
+    try:
+        data = request.get_json() or {}
+        service = AgentDialogueService()
+        result = service.chat(
+            simulation_id=simulation_id,
+            message=data.get("message", ""),
+            chat_history=data.get("chat_history", []),
+            agent_key=data.get("agent_key", ""),
+            user_id=data.get("user_id"),
+            platform=data.get("platform", "reddit"),
+        )
+        return jsonify({
+            "success": True,
+            "data": result,
+        })
+    except AgentDialogueError as exc:
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+        }), 400
+    except Exception as exc:
+        logger.error("Step5 人设对话失败: %s", exc)
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
         }), 500
 
 

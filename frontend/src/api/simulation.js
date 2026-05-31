@@ -1,4 +1,5 @@
 import service, { requestWithRetry } from './index'
+import { streamNdjson } from './stream'
 
 /**
  * 创建模拟
@@ -176,3 +177,19 @@ export const interviewAgents = (data) => {
   return requestWithRetry(() => service.post('/api/simulation/interview/batch', data), 3, 1000)
 }
 
+/**
+ * Step5 人设 Agent 流式对话
+ * @param {string} simulationId
+ * @param {Object} data - { agent_key?, user_id?, platform?, message, chat_history? }
+ * @param {Object} handlers - { onEvent }
+ */
+export const streamAgentChat = (simulationId, data, handlers = {}) => {
+  return streamNdjson(`/api/simulation/${simulationId}/agent-chat/stream`, {
+    method: 'POST',
+    signal: handlers.signal,
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(data)
+  }, handlers)
+}

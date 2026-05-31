@@ -4,7 +4,7 @@ LLM客户端封装
 """
 
 import json
-from typing import Optional, Dict, Any, List
+from typing import Iterator, Optional, Dict, Any, List
 from openai import OpenAI
 
 from ..config import Config
@@ -70,6 +70,39 @@ class LLMClient:
         
         response = self.client.chat.completions.create(**kwargs)
         return response.choices[0].message.content
+
+    def chat_stream(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+    ) -> Iterator[str]:
+        """
+        发送流式聊天请求，逐段返回模型输出文本。
+
+        Args:
+            messages: 消息列表
+            temperature: 温度参数
+            max_tokens: 最大token数
+
+        Yields:
+            模型增量输出文本
+        """
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+
+        for chunk in response:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            content = getattr(delta, "content", None)
+            if content:
+                yield content
     
     def chat_json(
         self,
