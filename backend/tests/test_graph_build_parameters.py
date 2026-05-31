@@ -1,3 +1,7 @@
+import asyncio
+import threading
+import time
+
 from app.config import Config
 from app import create_app
 from app.models.project import ProjectManager, ProjectStatus
@@ -48,6 +52,37 @@ def test_graph_builder_uses_independent_boost_client_only_in_build_mode(monkeypa
     assert created[0][1]["use_singleton"] is False
     assert created[0][1]["llm_endpoint"].model == "boost-model"
     assert created[1] == ("get", {"backend": "graphiti"})
+
+
+def test_graphiti_async_loop_waits_for_ready_when_thread_is_alive(monkeypatch):
+    from app.services import zep_graphiti_impl
+
+    loop = asyncio.new_event_loop()
+
+    class AliveThread:
+        def is_alive(self):
+            return True
+
+    ready = threading.Event()
+    monkeypatch.setattr(zep_graphiti_impl, "_async_loop", None)
+    monkeypatch.setattr(zep_graphiti_impl, "_async_thread", AliveThread())
+    monkeypatch.setattr(zep_graphiti_impl, "_async_loop_ready", ready)
+
+    def mark_ready():
+        time.sleep(0.02)
+        zep_graphiti_impl._async_loop = loop
+        ready.set()
+
+    starter = threading.Thread(target=mark_ready)
+    starter.start()
+    try:
+        assert zep_graphiti_impl._ensure_async_loop() is loop
+    finally:
+        starter.join(timeout=1)
+        monkeypatch.setattr(zep_graphiti_impl, "_async_loop", None)
+        monkeypatch.setattr(zep_graphiti_impl, "_async_thread", None)
+        ready.clear()
+        loop.close()
 
 
 def test_graph_builder_default_batch_size_uses_config(monkeypatch):

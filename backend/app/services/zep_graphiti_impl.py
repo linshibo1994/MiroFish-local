@@ -52,34 +52,56 @@ def _is_rate_limit_error(exc: Exception) -> bool:
 
 _async_loop: Optional[asyncio.AbstractEventLoop] = None
 _async_thread: Optional[threading.Thread] = None
+_async_loop_ready = threading.Event()
 _init_lock = threading.Lock()
 
 
 def _start_async_loop():
     """在后台线程中启动事件循环"""
     global _async_loop
-    _async_loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(_async_loop)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    _async_loop = loop
+    _async_loop_ready.set()
     logger.info("Graphiti 专用事件循环已启动")
-    _async_loop.run_forever()
+    try:
+        loop.run_forever()
+    finally:
+        if _async_loop is loop:
+            _async_loop = None
+            _async_loop_ready.clear()
+        loop.close()
 
 
-def _ensure_async_loop():
+def _ensure_async_loop() -> asyncio.AbstractEventLoop:
     """确保后台事件循环已启动"""
-    global _async_thread
-    if _async_thread is None or not _async_thread.is_alive():
+    global _async_loop, _async_thread
+    loop = _async_loop
+    if _async_thread is not None and _async_thread.is_alive() and loop is not None and not loop.is_closed():
+        return loop
+
+    if _async_thread is None or not _async_thread.is_alive() or (loop is not None and loop.is_closed()):
         with _init_lock:
-            if _async_thread is None or not _async_thread.is_alive():
+            loop = _async_loop
+            if _async_thread is None or not _async_thread.is_alive() or (loop is not None and loop.is_closed()):
+                _async_loop = None
+                _async_loop_ready.clear()
                 _async_thread = threading.Thread(
                     target=_start_async_loop,
                     daemon=True,
                     name="graphiti-async-loop"
                 )
                 _async_thread.start()
-                # 等待循环启动
-                while _async_loop is None:
-                    import time
-                    time.sleep(0.01)
+
+    # 并发启动时，其他线程可能已经创建了线程但事件循环尚未赋值。
+    # 统一等待 ready 事件，避免 run_coroutine_threadsafe 拿到 None。
+    if not _async_loop_ready.wait(timeout=10):
+        raise RuntimeError("Graphiti 专用事件循环启动超时")
+
+    loop = _async_loop
+    if loop is None or loop.is_closed():
+        raise RuntimeError("Graphiti 专用事件循环不可用")
+    return loop
 
 
 def _run_async(coro):
@@ -89,8 +111,8 @@ def _run_async(coro):
     使用专用后台线程的事件循环，通过 run_coroutine_threadsafe 提交任务。
     这样 Neo4j driver 始终绑定到同一个循环，避免跨循环问题。
     """
-    _ensure_async_loop()
-    future = asyncio.run_coroutine_threadsafe(coro, _async_loop)
+    loop = _ensure_async_loop()
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
     timeout = max(60, int(Config.GRAPHITI_OPERATION_TIMEOUT_SECONDS or 900))
     try:
         return future.result(timeout=timeout)
