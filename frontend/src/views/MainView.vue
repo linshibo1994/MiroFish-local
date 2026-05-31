@@ -112,6 +112,8 @@
         <Step1GraphBuild
           :currentPhase="currentPhase"
           :projectData="projectData"
+          :projectStatus="projectData?.status || ''"
+          :projectError="projectData?.error || ''"
           :pendingUpload="pendingUploadState"
           :ontologyProgress="ontologyProgress"
           :buildProgress="buildProgress"
@@ -130,6 +132,7 @@
             :graphData="graphData"
             :loading="graphLoading"
             :currentPhase="currentPhase"
+            :status="projectData?.status || ''"
             @refresh="refreshGraph"
             @toggle-maximize="toggleMaximize('graph')"
           />
@@ -139,6 +142,8 @@
             v-if="currentStep === 1"
             :currentPhase="currentPhase"
             :projectData="projectData"
+            :projectStatus="projectData?.status || ''"
+            :projectError="projectData?.error || ''"
             :pendingUpload="pendingUploadState"
             :ontologyProgress="ontologyProgress"
             :buildProgress="buildProgress"
@@ -497,7 +502,7 @@ const loadProject = async () => {
     const res = await getProject(currentProjectId.value)
     if (res.success) {
       projectData.value = res.data
-      updatePhaseByStatus(res.data.status)
+      updatePhaseByStatus(res.data.status, res.data)
       addLog(`Project loaded. Status: ${res.data.status}`)
       if (res.data.status === 'ontology_generated' && !res.data.graph_id) {
         await startBuildGraph()
@@ -508,6 +513,13 @@ const loadProject = async () => {
       } else if (res.data.status === 'graph_completed' && res.data.graph_id) {
         currentPhase.value = 2
         await loadGraph(res.data.graph_id)
+      } else if (res.data.status === 'failed') {
+        buildProgress.value = {
+          ...(buildProgress.value || {}),
+          status: 'failed',
+          message: res.data.error || '图谱构建失败'
+        }
+        if (res.data.graph_id) await loadGraph(res.data.graph_id)
       }
       await loadSimulationHistory()
       await loadReportContext()
@@ -596,13 +608,21 @@ const enterEnvironmentSetup = async () => {
   }
 }
 
-const updatePhaseByStatus = (status) => {
+const updatePhaseByStatus = (status, project = projectData.value || {}) => {
+  if (status !== 'failed') error.value = ''
   switch (status) {
     case 'created': currentPhase.value = -1; break
     case 'ontology_generated': currentPhase.value = 0; break
     case 'graph_building': currentPhase.value = 1; break
     case 'graph_completed': currentPhase.value = 2; break
-    case 'failed': error.value = 'Project failed'; break
+    case 'failed':
+      currentPhase.value = project?.ontology || project?.graph_id ? 1 : -1
+      error.value = project?.error || '项目处理失败'
+      break
+    default:
+      if (project?.graph_id) currentPhase.value = 2
+      else if (project?.ontology) currentPhase.value = 0
+      else currentPhase.value = -1
   }
 }
 
@@ -685,8 +705,21 @@ const pollTaskStatus = async (taskId) => {
         }
       } else if (task.status === 'failed') {
         stopPolling()
-        error.value = task.error
-        addLog(`Graph build task failed: ${task.error}`)
+        const message = task.error || task.message || '图谱构建失败'
+        error.value = message
+        currentPhase.value = 1
+        buildProgress.value = {
+          progress: task.progress || buildProgress.value?.progress || 0,
+          message,
+          status: 'failed',
+          error: message
+        }
+        projectData.value = {
+          ...(projectData.value || {}),
+          status: 'failed',
+          error: message
+        }
+        addLog(`Graph build task failed: ${message}`)
       }
     }
   } catch (e) {

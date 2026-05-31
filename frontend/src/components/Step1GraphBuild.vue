@@ -402,6 +402,7 @@
             </div>
             <div class="step-status">
               <span v-if="currentPhase > 1" class="badge success">已完成</span>
+              <span v-else-if="isGraphBuildFailed" class="badge error">失败</span>
               <span v-else-if="currentPhase === 1" class="badge processing">{{ buildProgress?.progress || 0 }}%</span>
               <span v-else class="badge pending">等待</span>
             </div>
@@ -411,7 +412,8 @@
             <p class="description">
               基于生成的本体，将文档自动分块后调用 Zep 构建知识图谱，提取实体和关系，并形成时序记忆与社区摘要。
             </p>
-            <p v-if="buildProgress?.message" class="progress-message inline">{{ buildProgress.message }}</p>
+            <p v-if="isGraphBuildFailed" class="progress-message error">{{ graphBuildFailureMessage }}</p>
+            <p v-else-if="buildProgress?.message" class="progress-message inline">{{ buildProgress.message }}</p>
 
             <div class="stats-grid">
               <div class="stat-card">
@@ -443,7 +445,7 @@
           </div>
 
           <div class="step-card-content">
-            <p class="description">图谱构建已完成，请进入下一步进行模拟环境搭建。</p>
+            <p class="description">{{ completionDescription }}</p>
             <button type="button" class="action-btn" :disabled="currentPhase < 2" @click="emit('next-step')">
               进入环境搭建 →
             </button>
@@ -469,6 +471,8 @@ import { translateEntityType, translateRelationType } from '../utils/entityTrans
 const props = defineProps({
   currentPhase: { type: Number, default: -1 },
   projectData: Object,
+  projectStatus: { type: String, default: '' },
+  projectError: { type: String, default: '' },
   pendingUpload: Object,
   ontologyProgress: Object,
   buildProgress: Object,
@@ -555,6 +559,26 @@ const graphStats = computed(() => {
   const edges = props.graphData?.edge_count || props.graphData?.edges?.length || 0
   const types = props.projectData?.ontology?.entity_types?.length || 0
   return { nodes, edges, types }
+})
+
+const isGraphBuildFailed = computed(() => {
+  return props.currentPhase === 1 && (
+    props.projectStatus === 'failed' ||
+    props.buildProgress?.status === 'failed' ||
+    !!props.buildProgress?.error
+  )
+})
+
+const graphBuildFailureMessage = computed(() => {
+  return props.projectError ||
+    props.buildProgress?.error ||
+    props.buildProgress?.message ||
+    '图谱构建失败，请检查配置或重新构建。'
+})
+
+const completionDescription = computed(() => {
+  if (isGraphBuildFailed.value) return '图谱构建尚未成功，请先处理上一步失败原因后再进入环境搭建。'
+  return '图谱构建已完成，请进入下一步进行模拟环境搭建。'
 })
 
 const resetAnalysisResult = () => {
@@ -1839,6 +1863,11 @@ onUnmounted(() => {
   color: #999999;
 }
 
+.badge.error {
+  background: #FEE2E2;
+  color: #B91C1C;
+}
+
 .step-card-content {
   position: relative;
 }
@@ -1871,6 +1900,18 @@ onUnmounted(() => {
   color: #6B7280;
   font-size: 12px;
   margin: -4px 0 14px;
+}
+
+.progress-message.error {
+  text-align: left;
+  color: #B91C1C;
+  background: #FEF2F2;
+  border: 1px solid #FECACA;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  margin: -4px 0 14px;
+  padding: 8px 10px;
 }
 
 /* 本体预览 */

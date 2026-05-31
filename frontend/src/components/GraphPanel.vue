@@ -20,7 +20,7 @@
         <svg ref="graphSvg" class="graph-svg"></svg>
         
         <!-- 构建中/模拟中提示 -->
-        <div v-if="currentPhase === 1 || isSimulating" class="graph-building-hint">
+        <div v-if="showGraphActivityHint" class="graph-building-hint">
           <div class="memory-icon-wrapper">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="memory-icon">
               <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 4.44-4.04z" />
@@ -253,6 +253,7 @@ const props = defineProps({
   graphData: Object,
   loading: Boolean,
   currentPhase: Number,
+  status: { type: String, default: '' },
   isSimulating: Boolean
 })
 
@@ -268,8 +269,13 @@ const wasSimulating = ref(false) // 追踪之前是否在模拟中
 
 const emptyStateText = computed(() => {
   if (props.currentPhase === 0) return '正在生成本体...'
+  if (props.status === 'failed') return '图谱构建失败，请检查右侧失败原因。'
   if (props.currentPhase === 1) return '正在抽取实体并构建图谱...'
   return '等待本体生成...'
+})
+
+const showGraphActivityHint = computed(() => {
+  return props.isSimulating || (props.currentPhase === 1 && props.status !== 'failed')
 })
 
 const selectedNodeAttributes = computed(() => {
