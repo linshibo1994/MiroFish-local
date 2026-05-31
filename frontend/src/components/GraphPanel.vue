@@ -217,7 +217,7 @@
       <!-- 等待/空状态 -->
       <div v-else class="graph-state">
         <div class="empty-icon">❖</div>
-        <p class="empty-text">等待本体生成...</p>
+        <p class="empty-text">{{ emptyStateText }}</p>
       </div>
     </div>
 
@@ -265,6 +265,12 @@ const showEdgeLabels = ref(true) // 默认显示边标签
 const expandedSelfLoops = ref(new Set()) // 展开的自环项
 const showSimulationFinishedHint = ref(false) // 模拟结束后的提示
 const wasSimulating = ref(false) // 追踪之前是否在模拟中
+
+const emptyStateText = computed(() => {
+  if (props.currentPhase === 0) return '正在生成本体...'
+  if (props.currentPhase === 1) return '正在抽取实体并构建图谱...'
+  return '等待本体生成...'
+})
 
 const selectedNodeAttributes = computed(() => {
   if (selectedItem.value?.type !== 'node') return []

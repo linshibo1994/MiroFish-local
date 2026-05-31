@@ -306,14 +306,15 @@
     <!-- 阶段3：图谱构建工作台 -->
     <div v-else-if="currentPhase >= 0" class="phase-progress workbench-phase">
       <div class="scroll-container">
-        <div class="step-card completed">
+        <div class="step-card" :class="{ active: currentPhase === 0, completed: currentPhase > 0 }">
           <div class="step-card-header">
             <div class="step-info">
               <span class="step-num">01</span>
               <span class="step-title">本体生成</span>
             </div>
             <div class="step-status">
-              <span class="badge success">已完成</span>
+              <span v-if="currentPhase > 0" class="badge success">已完成</span>
+              <span v-else class="badge processing">生成中</span>
             </div>
           </div>
 
@@ -401,7 +402,8 @@
             </div>
             <div class="step-status">
               <span v-if="currentPhase > 1" class="badge success">已完成</span>
-              <span v-else class="badge processing">{{ buildProgress?.progress || 0 }}%</span>
+              <span v-else-if="currentPhase === 1" class="badge processing">{{ buildProgress?.progress || 0 }}%</span>
+              <span v-else class="badge pending">等待</span>
             </div>
           </div>
 
@@ -458,7 +460,6 @@ import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { marked } from 'marked'
 import {
   analyzeUploadedSeed,
-  generateOntology,
   searchSeedByKeyword,
   streamAnalyzeUploadedSeed,
   streamSearchSeedByKeyword
@@ -475,7 +476,7 @@ const props = defineProps({
   systemLogs: { type: Array, default: () => [] }
 })
 
-const emit = defineEmits(['ontology-generated', 'workspace-started', 'next-step', 'add-log'])
+const emit = defineEmits(['workspace-started', 'next-step', 'add-log'])
 
 const inputMode = ref('web_search')
 const searchQuery = ref('')
@@ -806,28 +807,20 @@ const handleGenerateOntology = async () => {
   ontologyGenerating.value = true
   localError.value = ''
   emit('add-log', 'Generating ontology from confirmed simulation requirement...')
-  try {
-    const payload = {
-      project_id: currentProjectId.value,
-      simulation_requirement: simulationRequirement.value.trim()
-    }
-    if (additionalContext.value.trim()) {
-      payload.additional_context = additionalContext.value.trim()
-    }
-    const res = await generateOntology(payload)
-    const data = {
-      ...seedResult.value,
-      ...(res.data || {}),
-      simulation_requirement: payload.simulation_requirement
-    }
-    seedResult.value = normalizeSeedResult(data)
-    emit('ontology-generated', data)
-  } catch (err) {
-    localError.value = err.message || '本体生成失败'
-    emit('add-log', `Ontology generation failed: ${localError.value}`)
-  } finally {
-    ontologyGenerating.value = false
+  const payload = {
+    project_id: currentProjectId.value,
+    simulation_requirement: simulationRequirement.value.trim()
   }
+  if (additionalContext.value.trim()) {
+    payload.additional_context = additionalContext.value.trim()
+  }
+  emit('workspace-started', {
+    ...seedResult.value,
+    project_id: payload.project_id,
+    simulation_requirement: payload.simulation_requirement,
+    ontology_payload: payload
+  })
+  ontologyGenerating.value = false
 }
 
 const selectOntologyItem = (item, type) => {

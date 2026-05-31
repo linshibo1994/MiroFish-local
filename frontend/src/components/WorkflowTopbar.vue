@@ -26,10 +26,7 @@
       </template>
     </nav>
 
-    <div class="topbar-actions" aria-hidden="true">
-      <span class="topbar-icon-dot"></span>
-      <span class="topbar-avatar"></span>
-    </div>
+    <div class="topbar-actions" aria-hidden="true"></div>
   </header>
 </template>
 
@@ -193,35 +190,6 @@ const navigateToStep = (step) => {
 
 .topbar-actions {
   justify-self: end;
-  display: flex;
-  align-items: center;
-  gap: 18px;
-}
-
-.topbar-icon-dot {
-  width: 18px;
-  height: 18px;
-  border: 2px solid #111827;
-  border-radius: 50%;
-  position: relative;
-}
-
-.topbar-icon-dot::after {
-  content: '';
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #EF4444;
-}
-
-.topbar-avatar {
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #2563EB, #A5B4FC);
 }
 
 @media (max-width: 960px) {

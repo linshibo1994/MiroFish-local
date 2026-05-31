@@ -117,7 +117,6 @@
           :buildProgress="buildProgress"
           :graphData="graphData"
           :systemLogs="systemLogs"
-          @ontology-generated="handleOntologyGenerated"
           @workspace-started="handleWorkspaceStarted"
           @add-log="addLog"
           @next-step="handleNextStep"
@@ -145,7 +144,6 @@
             :buildProgress="buildProgress"
             :graphData="graphData"
             :systemLogs="systemLogs"
-            @ontology-generated="handleOntologyGenerated"
             @workspace-started="handleWorkspaceStarted"
             @add-log="addLog"
             @next-step="handleNextStep"
@@ -176,7 +174,7 @@ import GraphPanel from '../components/GraphPanel.vue'
 import Step1GraphBuild from '../components/Step1GraphBuild.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
 import WorkflowTopbar from '../components/WorkflowTopbar.vue'
-import { getProject, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
+import { getProject, generateOntology, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
 import { createSimulation, listSimulations } from '../api/simulation'
 import { checkReportStatus } from '../api/report'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
@@ -464,6 +462,32 @@ const handleWorkspaceStarted = (data = {}) => {
   clearPendingUpload()
   pendingUploadState.value = null
   addLog('切换到图谱构建工作台，等待本体生成完成。')
+  if (data.ontology_payload) {
+    generateOntologyAndBuild(data.ontology_payload, data)
+  }
+}
+
+const handleOntologyFailed = (message) => {
+  currentPhase.value = -1
+  ontologyProgress.value = null
+  error.value = message || '本体生成失败'
+  addLog(`本体生成失败，已返回推演方向确认页: ${error.value}`)
+}
+
+const generateOntologyAndBuild = async (payload, seedSnapshot = {}) => {
+  try {
+    const res = await generateOntology(payload)
+    const data = {
+      ...seedSnapshot,
+      ...(res.data || {}),
+      simulation_requirement: payload.simulation_requirement
+    }
+    await handleOntologyGenerated(data)
+  } catch (err) {
+    const message = err.message || '本体生成失败'
+    addLog(`Ontology generation failed: ${message}`)
+    handleOntologyFailed(message)
+  }
 }
 
 const loadProject = async () => {
