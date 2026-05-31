@@ -15,6 +15,7 @@ from ..config import Config
 from ..utils.logger import get_logger
 from .zep_factory import get_zep_client
 from .zep_adapter import ZepClientAdapter
+from .graph_builder import GraphBuilderService
 
 logger = get_logger('mirofish.zep_entity_reader')
 
@@ -142,6 +143,7 @@ class ZepEntityReader:
             func=lambda: self.client.get_all_nodes(graph_id),
             operation_name=f"获取节点(graph={graph_id})"
         )
+        nodes, _ = GraphBuilderService._coalesce_duplicate_entities(nodes, [])
 
         nodes_data = []
         for node in nodes:
@@ -173,6 +175,11 @@ class ZepEntityReader:
             func=lambda: self.client.get_all_edges(graph_id),
             operation_name=f"获取边(graph={graph_id})"
         )
+        nodes = self._call_with_retry(
+            func=lambda: self.client.get_all_nodes(graph_id),
+            operation_name=f"获取节点(graph={graph_id})"
+        )
+        _, edges = GraphBuilderService._coalesce_duplicate_entities(nodes, edges)
 
         edges_data = []
         for edge in edges:
@@ -493,4 +500,3 @@ class ZepEntityReader:
             enrich_with_edges=enrich_with_edges
         )
         return result.entities
-

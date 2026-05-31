@@ -235,6 +235,145 @@ def test_graph_build_worker_runs_complete_flow_with_parallel_batches(monkeypatch
     assert "图谱实体抽取约束" in builder.client.episodes[0]["data"]
 
 
+def test_graph_data_coalesces_duplicate_graphiti_entities_by_name_and_type():
+    from app.services.zep_adapter import GraphEdge, GraphNode
+
+    class DuplicateEntityClient:
+        def get_all_nodes(self, graph_id):
+            return [
+                GraphNode(
+                    uuid="person-a",
+                    name="许国利",
+                    labels=["Entity", "嫌疑人"],
+                    summary="案件相关人员",
+                    attributes={"来源": "batch-1"},
+                    created_at="2021-01-02",
+                ),
+                GraphNode(
+                    uuid="person-b",
+                    name=" 许国利 ",
+                    labels=["Entity", "嫌疑人"],
+                    summary="杭州市民，案件核心嫌疑人",
+                    attributes={"来源": "batch-2", "年龄": "55"},
+                    created_at="2021-01-01",
+                ),
+                GraphNode(
+                    uuid="victim-a",
+                    name="来惠利",
+                    labels=["Entity", "受害人"],
+                    summary="案件受害人",
+                    attributes={},
+                    created_at="2021-01-03",
+                ),
+            ]
+
+        def get_all_edges(self, graph_id):
+            return [
+                GraphEdge(
+                    uuid="edge-a",
+                    name="家庭关系",
+                    fact="许国利与来惠利为夫妻关系",
+                    source_node_uuid="person-a",
+                    target_node_uuid="victim-a",
+                    attributes={},
+                ),
+                GraphEdge(
+                    uuid="edge-b",
+                    name="家庭关系",
+                    fact="许国利与来惠利为夫妻关系",
+                    source_node_uuid="person-b",
+                    target_node_uuid="victim-a",
+                    attributes={},
+                ),
+                GraphEdge(
+                    uuid="edge-c",
+                    name="起诉",
+                    fact="检方起诉许国利",
+                    source_node_uuid="victim-a",
+                    target_node_uuid="person-b",
+                    attributes={},
+                ),
+            ]
+
+    builder = GraphBuilderService.__new__(GraphBuilderService)
+    builder.client = DuplicateEntityClient()
+
+    graph_data = builder.get_graph_data("graph-1")
+
+    assert graph_data["node_count"] == 2
+    assert graph_data["edge_count"] == 2
+
+    merged_person = next(node for node in graph_data["nodes"] if node["name"] == "许国利")
+    assert merged_person["summary"] == "杭州市民，案件核心嫌疑人"
+    assert merged_person["created_at"] == "2021-01-01"
+    assert merged_person["attributes"]["年龄"] == "55"
+    assert merged_person["attributes"]["merged_duplicate_uuids"] == ["person-a", "person-b"]
+
+    person_edges = [
+        edge for edge in graph_data["edges"]
+        if edge["source_node_uuid"] == merged_person["uuid"] or edge["target_node_uuid"] == merged_person["uuid"]
+    ]
+    assert len(person_edges) == 2
+    assert {edge["source_node_name"] for edge in person_edges} | {edge["target_node_name"] for edge in person_edges} == {"许国利", "来惠利"}
+
+
+def test_entity_reader_uses_coalesced_graph_entities():
+    from app.services.zep_adapter import GraphEdge, GraphNode
+    from app.services.zep_entity_reader import ZepEntityReader
+
+    class DuplicateEntityClient:
+        def get_all_nodes(self, graph_id):
+            return [
+                GraphNode("person-a", "许国利", ["Entity", "嫌疑人"], "", {}),
+                GraphNode("person-b", "许国利", ["Entity", "嫌疑人"], "", {}),
+                GraphNode("victim-a", "来惠利", ["Entity", "受害人"], "", {}),
+            ]
+
+        def get_all_edges(self, graph_id):
+            return [
+                GraphEdge("edge-a", "家庭关系", "许国利与来惠利为夫妻关系", "person-a", "victim-a", {}),
+                GraphEdge("edge-b", "家庭关系", "许国利与来惠利为夫妻关系", "person-b", "victim-a", {}),
+            ]
+
+    reader = ZepEntityReader.__new__(ZepEntityReader)
+    reader.client = DuplicateEntityClient()
+
+    result = reader.filter_defined_entities("graph-1")
+
+    assert result.total_count == 2
+    assert result.filtered_count == 2
+    assert [entity.name for entity in result.entities] == ["许国利", "来惠利"]
+    assert len(result.entities[0].related_edges) == 1
+
+
+def test_zep_tools_statistics_use_coalesced_graph_entities():
+    from app.services.zep_adapter import GraphEdge, GraphNode
+    from app.services.zep_tools import ZepToolsService
+
+    class DuplicateEntityClient:
+        def get_all_nodes(self, graph_id):
+            return [
+                GraphNode("person-a", "许国利", ["Entity", "嫌疑人"], "", {}),
+                GraphNode("person-b", "许国利", ["Entity", "嫌疑人"], "", {}),
+                GraphNode("victim-a", "来惠利", ["Entity", "受害人"], "", {}),
+            ]
+
+        def get_all_edges(self, graph_id):
+            return [
+                GraphEdge("edge-a", "家庭关系", "许国利与来惠利为夫妻关系", "person-a", "victim-a", {}),
+                GraphEdge("edge-b", "家庭关系", "许国利与来惠利为夫妻关系", "person-b", "victim-a", {}),
+            ]
+
+    tools = ZepToolsService.__new__(ZepToolsService)
+    tools.client = DuplicateEntityClient()
+
+    stats = tools.get_graph_statistics("graph-1")
+
+    assert stats["total_nodes"] == 2
+    assert stats["total_edges"] == 1
+    assert stats["entity_types"] == {"嫌疑人": 1, "受害人": 1}
+
+
 def test_graph_build_api_passes_project_event_context_to_episodes(monkeypatch, tmp_path):
     monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", str(tmp_path))
     monkeypatch.setattr("app.api.graph.Config.ZEP_BACKEND", "graphiti")

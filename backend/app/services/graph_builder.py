@@ -12,6 +12,7 @@ import uuid
 import time
 import threading
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Dict, Any, List, Optional, Callable
@@ -59,6 +60,7 @@ class GraphBuilderService:
         "embedding",
         "embeddings",
     }
+    GENERIC_NODE_LABELS = {"Entity", "Node"}
 
     def __init__(
         self,
@@ -635,13 +637,14 @@ class GraphBuilderService:
         # 使用适配器获取节点和边
         nodes = self.client.get_all_nodes(graph_id)
         edges = self.client.get_all_edges(graph_id)
+        nodes, edges = self._coalesce_duplicate_entities(nodes, edges)
 
         # 统计实体类型
         entity_types = set()
         for node in nodes:
             if node.labels:
                 for label in node.labels:
-                    if label not in ["Entity", "Node"]:
+                    if label not in self.GENERIC_NODE_LABELS:
                         entity_types.add(label)
 
         return GraphInfo(
@@ -664,6 +667,7 @@ class GraphBuilderService:
         # 使用适配器获取节点和边
         nodes = self.client.get_all_nodes(graph_id)
         edges = self.client.get_all_edges(graph_id)
+        nodes, edges = self._coalesce_duplicate_entities(nodes, edges)
 
         # 创建节点映射用于获取节点名称
         node_map = {}
@@ -717,6 +721,155 @@ class GraphBuilderService:
             key: value for key, value in attributes.items()
             if str(key).lower() not in cls.INTERNAL_ATTRIBUTE_KEYS
         }
+
+    @classmethod
+    def _coalesce_duplicate_entities(
+        cls,
+        nodes: List[Any],
+        edges: List[Any],
+    ) -> tuple[List[Any], List[Any]]:
+        """按实体名称和主类型归并 Graphiti 重复抽取出的同名节点。"""
+        if not nodes:
+            return nodes, edges
+
+        canonical_by_key: Dict[tuple[str, str], Any] = {}
+        uuid_to_canonical: Dict[str, str] = {}
+        merged_sources_by_uuid: Dict[str, set[str]] = {}
+        canonical_nodes: List[Any] = []
+
+        for node in nodes:
+            node_uuid = getattr(node, "uuid", "") or ""
+            node_name = getattr(node, "name", "") or ""
+            merge_key = (cls._normalize_entity_name(node_name), cls._primary_entity_label(getattr(node, "labels", []) or []))
+            if not merge_key[0]:
+                if node_uuid:
+                    uuid_to_canonical[node_uuid] = node_uuid
+                    merged_sources_by_uuid.setdefault(node_uuid, set()).add(node_uuid)
+                canonical_nodes.append(node)
+                continue
+
+            canonical = canonical_by_key.get(merge_key)
+            if not canonical:
+                canonical_by_key[merge_key] = node
+                canonical_nodes.append(node)
+                if node_uuid:
+                    uuid_to_canonical[node_uuid] = node_uuid
+                    merged_sources_by_uuid.setdefault(node_uuid, set()).add(node_uuid)
+                continue
+
+            canonical_uuid = getattr(canonical, "uuid", "") or node_uuid
+            if node_uuid:
+                uuid_to_canonical[node_uuid] = canonical_uuid
+                merged_sources_by_uuid.setdefault(canonical_uuid, set()).add(node_uuid)
+            if canonical_uuid:
+                merged_sources_by_uuid.setdefault(canonical_uuid, set()).add(canonical_uuid)
+            cls._merge_node_into_canonical(canonical, node)
+
+        for node in canonical_nodes:
+            node_uuid = getattr(node, "uuid", "") or ""
+            if not node_uuid:
+                continue
+            source_uuids = sorted(merged_sources_by_uuid.get(node_uuid, {node_uuid}))
+            if len(source_uuids) <= 1:
+                continue
+            attributes = dict(getattr(node, "attributes", {}) or {})
+            attributes["merged_duplicate_uuids"] = source_uuids
+            setattr(node, "attributes", attributes)
+
+        redirected_edges = cls._redirect_edges_to_canonical(edges, uuid_to_canonical)
+        return canonical_nodes, redirected_edges
+
+    @classmethod
+    def _normalize_entity_name(cls, name: str) -> str:
+        """实体名称归一化，用于识别 Graphiti 跨批次重复实体。"""
+        normalized = str(name or "").strip().casefold()
+        normalized = re.sub(r"\s+", "", normalized)
+        normalized = re.sub(r"[《》“”\"'‘’`·•・,，.。:：;；!！?？\\-—_()（）\\[\\]【】{}<>]+", "", normalized)
+        return normalized
+
+    @classmethod
+    def _primary_entity_label(cls, labels: List[str]) -> str:
+        """提取实体主类型；没有主类型时回退到 Entity。"""
+        for label in labels or []:
+            if label not in cls.GENERIC_NODE_LABELS:
+                return str(label)
+        return "Entity"
+
+    @classmethod
+    def _merge_node_into_canonical(cls, canonical: Any, duplicate: Any) -> None:
+        """把重复节点的信息合并到 canonical 节点。"""
+        canonical.labels = cls._merge_unique_values(getattr(canonical, "labels", []) or [], getattr(duplicate, "labels", []) or [])
+
+        canonical_summary = getattr(canonical, "summary", "") or ""
+        duplicate_summary = getattr(duplicate, "summary", "") or ""
+        if len(duplicate_summary) > len(canonical_summary):
+            canonical.summary = duplicate_summary
+
+        canonical.attributes = cls._merge_attribute_dicts(
+            getattr(canonical, "attributes", {}) or {},
+            getattr(duplicate, "attributes", {}) or {},
+        )
+
+        canonical_created_at = getattr(canonical, "created_at", None)
+        duplicate_created_at = getattr(duplicate, "created_at", None)
+        if duplicate_created_at and (not canonical_created_at or str(duplicate_created_at) < str(canonical_created_at)):
+            canonical.created_at = duplicate_created_at
+
+    @classmethod
+    def _merge_attribute_dicts(cls, first: Dict[str, Any], second: Dict[str, Any]) -> Dict[str, Any]:
+        """合并节点属性，保留非空信息并对冲突值做列表化。"""
+        merged = dict(first or {})
+        for key, value in (second or {}).items():
+            if value in (None, "", [], {}):
+                continue
+            if key not in merged or merged[key] in (None, "", [], {}):
+                merged[key] = value
+                continue
+            if merged[key] == value:
+                continue
+            merged[key] = cls._merge_unique_values(
+                merged[key] if isinstance(merged[key], list) else [merged[key]],
+                value if isinstance(value, list) else [value],
+            )
+        return merged
+
+    @classmethod
+    def _merge_unique_values(cls, first: List[Any], second: List[Any]) -> List[Any]:
+        """按字符串表示保持顺序去重。"""
+        values = []
+        seen = set()
+        for value in [*(first or []), *(second or [])]:
+            marker = str(value)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            values.append(value)
+        return values
+
+    @classmethod
+    def _redirect_edges_to_canonical(cls, edges: List[Any], uuid_to_canonical: Dict[str, str]) -> List[Any]:
+        """把边端点改写到 canonical 节点，并去掉完全重复边。"""
+        redirected = []
+        seen = set()
+        for edge in edges or []:
+            source_uuid = uuid_to_canonical.get(getattr(edge, "source_node_uuid", ""), getattr(edge, "source_node_uuid", ""))
+            target_uuid = uuid_to_canonical.get(getattr(edge, "target_node_uuid", ""), getattr(edge, "target_node_uuid", ""))
+            if not source_uuid or not target_uuid:
+                continue
+
+            edge.source_node_uuid = source_uuid
+            edge.target_node_uuid = target_uuid
+            edge_key = (
+                source_uuid,
+                target_uuid,
+                getattr(edge, "name", "") or getattr(edge, "fact_type", ""),
+                getattr(edge, "fact", "") or "",
+            )
+            if edge_key in seen:
+                continue
+            seen.add(edge_key)
+            redirected.append(edge)
+        return redirected
     
     def delete_graph(self, graph_id: str):
         """删除图谱"""
