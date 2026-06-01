@@ -85,6 +85,30 @@ def test_graphiti_async_loop_waits_for_ready_when_thread_is_alive(monkeypatch):
         loop.close()
 
 
+def test_graphiti_embedding_throttle_waits_between_requests(monkeypatch):
+    from app.services import zep_graphiti_impl
+
+    sleeps = []
+    clock = {"value": 100.0}
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        clock["value"] += seconds
+
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_EMBEDDING_MIN_INTERVAL_SECONDS", 0.5)
+    monkeypatch.setattr("app.services.zep_graphiti_impl.time.monotonic", lambda: clock["value"])
+    monkeypatch.setattr("app.services.zep_graphiti_impl.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(zep_graphiti_impl, "_last_embedding_request_at", 0.0)
+
+    async def run_throttle():
+        await zep_graphiti_impl._throttle_embedding_request("embedding.create", 1)
+        await zep_graphiti_impl._throttle_embedding_request("embedding.create", 1)
+
+    asyncio.run(run_throttle())
+
+    assert sleeps == [0.5]
+
+
 def test_graph_builder_default_batch_size_uses_config(monkeypatch):
     monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
 

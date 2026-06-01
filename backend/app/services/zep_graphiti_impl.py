@@ -17,6 +17,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -54,6 +55,8 @@ _async_loop: Optional[asyncio.AbstractEventLoop] = None
 _async_thread: Optional[threading.Thread] = None
 _async_loop_ready = threading.Event()
 _init_lock = threading.Lock()
+_embedding_throttle_lock = asyncio.Lock()
+_last_embedding_request_at = 0.0
 
 
 def _start_async_loop():
@@ -121,6 +124,27 @@ def _run_async(coro):
         raise TimeoutError(f"Graphiti 异步操作超过 {timeout} 秒未返回") from exc
 
 
+async def _throttle_embedding_request(operation: str, item_count: int) -> None:
+    """对 DashScope embedding 请求做全局轻量节流，减少 429 后长时间重试。"""
+    min_interval = max(0.0, float(Config.GRAPHITI_EMBEDDING_MIN_INTERVAL_SECONDS or 0))
+    if min_interval <= 0:
+        return
+
+    global _last_embedding_request_at
+    async with _embedding_throttle_lock:
+        now = time.monotonic()
+        wait_seconds = min_interval - (now - _last_embedding_request_at)
+        if wait_seconds > 0:
+            logger.debug(
+                "Graphiti %s embedding 节流等待 %.2f 秒: items=%s",
+                operation,
+                wait_seconds,
+                item_count,
+            )
+            await asyncio.sleep(wait_seconds)
+        _last_embedding_request_at = time.monotonic()
+
+
 class DashScopeEmbedderWrapper:
     """
     DashScope 兼容的 Embedder 包装器
@@ -172,6 +196,7 @@ class DashScopeEmbedderWrapper:
         retry_seconds = max(0.0, float(Config.GRAPHITI_RATE_LIMIT_RETRY_SECONDS or 0))
         for attempt in range(max_retries + 1):
             try:
+                await _throttle_embedding_request(operation, item_count)
                 return await factory()
             except Exception as exc:
                 if not _is_rate_limit_error(exc) or attempt >= max_retries:
@@ -238,6 +263,7 @@ def _create_dashscope_embedder_wrapper(base_embedder: Any, max_batch_size: int =
                 retry_seconds = max(0.0, float(Config.GRAPHITI_RATE_LIMIT_RETRY_SECONDS or 0))
                 for attempt in range(max_retries + 1):
                     try:
+                        await _throttle_embedding_request(operation, item_count)
                         return await factory()
                     except Exception as exc:
                         if not _is_rate_limit_error(exc) or attempt >= max_retries:
