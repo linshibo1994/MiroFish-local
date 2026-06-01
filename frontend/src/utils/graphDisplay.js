@@ -103,6 +103,42 @@ const statusValueMap = {
   false: '否'
 }
 
+const timeKeyPattern = /(^|_)(created|updated|valid|invalid|expired)(_at)?$|_at$|time|date/i
+const camelCaseTimeKeyPattern = /(?:created|updated|valid|invalid|expired)At$|(?:time|date)$/i
+const isoLikeDatePattern = /^\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/
+
+export const isGraphTimeKey = (key) => {
+  const normalized = String(key || '')
+  return timeKeyPattern.test(normalized) || camelCaseTimeKeyPattern.test(normalized)
+}
+
+export const formatGraphDateTime = (value, fallback = '') => {
+  if (!value) return fallback
+
+  const normalizedValue = typeof value === 'number' && value > 946684800 && value < 1000000000000
+    ? value * 1000
+    : value
+  const date = normalizedValue instanceof Date ? normalizedValue : new Date(normalizedValue)
+  if (Number.isNaN(date.getTime())) return fallback || String(value)
+
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).format(date)
+}
+
+const isDateLikeValue = (value) => {
+  if (value instanceof Date) return true
+  if (typeof value === 'number') return value > 946684800
+  if (typeof value !== 'string') return false
+  const normalized = value.trim()
+  return isoLikeDatePattern.test(normalized)
+}
+
 const humanizeKey = (key) => {
   return String(key || '')
     .replace(/_/g, ' ')
@@ -144,6 +180,10 @@ export const formatGraphPropertyValue = (key, value) => {
   if (value === null || value === undefined || value === '') return '无'
 
   const lowerKey = String(key || '').toLowerCase()
+  if (isGraphTimeKey(key) && isDateLikeValue(value)) {
+    return formatGraphDateTime(value, String(value))
+  }
+
   if (lowerKey === 'entity_type_display_name' || lowerKey === 'display_name') {
     return value
   }

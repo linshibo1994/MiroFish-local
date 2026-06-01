@@ -77,6 +77,10 @@
                   <span class="detail-label">创建时间:</span>
                   <span class="detail-value">{{ formatDate(selectedItem.data.created_at) }}</span>
                 </div>
+                <div class="detail-row" v-if="selectedItem.data.updated_at">
+                  <span class="detail-label">更新时间:</span>
+                  <span class="detail-value">{{ formatDate(selectedItem.data.updated_at) }}</span>
+                </div>
                 
                 <!-- Properties / Attributes -->
                 <div class="detail-section" v-if="selectedNodeAttributes.length > 0">
@@ -149,6 +153,10 @@
                 <div class="detail-row" v-if="selectedItem.data.created_at">
                   <span class="detail-label">创建时间:</span>
                   <span class="detail-value">{{ formatDate(selectedItem.data.created_at) }}</span>
+                </div>
+                <div class="detail-row" v-if="selectedItem.data.updated_at">
+                  <span class="detail-label">更新时间:</span>
+                  <span class="detail-value">{{ formatDate(selectedItem.data.updated_at) }}</span>
                 </div>
                 <div class="detail-row" v-if="selectedItem.data.valid_at">
                   <span class="detail-label">有效起始:</span>
@@ -419,7 +427,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { generateOntology, getProject, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
 import { translateEntityType, translateRelationType } from '../utils/entityTranslations.js'
-import { getDisplayAttributes, translateGraphLabel } from '../utils/graphDisplay.js'
+import { formatGraphDateTime, getDisplayAttributes, translateGraphLabel } from '../utils/graphDisplay.js'
 import * as d3 from 'd3'
 
 const route = useRoute()
@@ -512,19 +520,7 @@ const closeDetailPanel = () => {
 
 // 格式化日期
 const formatDate = (dateStr) => {
-  if (!dateStr) return '-'
-  try {
-    const date = new Date(dateStr)
-    return date.toLocaleString('zh-CN', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    })
-  } catch {
-    return dateStr
-  }
+  return formatGraphDateTime(dateStr, '-')
 }
 
 // 选中节点

@@ -72,6 +72,10 @@
               <span class="detail-label">创建时间:</span>
               <span class="detail-value">{{ formatDateTime(selectedItem.data.created_at) }}</span>
             </div>
+            <div class="detail-row" v-if="selectedItem.data.updated_at">
+              <span class="detail-label">更新时间:</span>
+              <span class="detail-value">{{ formatDateTime(selectedItem.data.updated_at) }}</span>
+            </div>
             
             <!-- Properties -->
             <div class="detail-section" v-if="selectedNodeAttributes.length > 0">
@@ -143,6 +147,10 @@
                       <span class="detail-label">创建时间:</span>
                       <span class="detail-value">{{ formatDateTime(loop.created_at) }}</span>
                     </div>
+                    <div class="detail-row" v-if="loop.updated_at">
+                      <span class="detail-label">更新时间:</span>
+                      <span class="detail-value">{{ formatDateTime(loop.updated_at) }}</span>
+                    </div>
                     <div v-if="loop.episodes && loop.episodes.length > 0" class="self-loop-episodes">
                       <span class="detail-label">事件:</span>
                       <div class="episodes-list compact">
@@ -190,6 +198,10 @@
               <div class="detail-row" v-if="selectedItem.data.created_at">
                 <span class="detail-label">创建时间:</span>
                 <span class="detail-value">{{ formatDateTime(selectedItem.data.created_at) }}</span>
+              </div>
+              <div class="detail-row" v-if="selectedItem.data.updated_at">
+                <span class="detail-label">更新时间:</span>
+                <span class="detail-value">{{ formatDateTime(selectedItem.data.updated_at) }}</span>
               </div>
               <div class="detail-row" v-if="selectedItem.data.valid_at">
                 <span class="detail-label">有效起始:</span>
@@ -247,7 +259,7 @@
 import { ref, onMounted, onUnmounted, watch, nextTick, computed } from 'vue'
 import * as d3 from 'd3'
 import { translateEntityType, translateRelationType } from '../utils/entityTranslations.js'
-import { getDisplayAttributes, translateGraphLabel } from '../utils/graphDisplay.js'
+import { formatGraphDateTime, getDisplayAttributes, translateGraphLabel } from '../utils/graphDisplay.js'
 
 const props = defineProps({
   graphData: Object,
@@ -327,20 +339,7 @@ const entityTypes = computed(() => {
 
 // 格式化时间
 const formatDateTime = (dateStr) => {
-  if (!dateStr) return ''
-  try {
-    const date = new Date(dateStr)
-    return date.toLocaleString('en-US', { 
-      month: 'short', 
-      day: 'numeric', 
-      year: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true 
-    })
-  } catch {
-    return dateStr
-  }
+  return formatGraphDateTime(dateStr)
 }
 
 const closeDetailPanel = () => {
