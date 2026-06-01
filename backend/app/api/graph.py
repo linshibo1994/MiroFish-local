@@ -834,6 +834,13 @@ def build_graph():
         chunk_overlap = int(data.get('chunk_overlap') or Config.DEFAULT_CHUNK_OVERLAP)
         batch_size = max(1, int(data.get('batch_size') or Config.GRAPH_BUILD_BATCH_SIZE))
         graph_build_concurrency = max(1, int(data.get('concurrency') or Config.GRAPH_BUILD_CONCURRENCY))
+        batch_plan = GraphBuilderService.resolve_batch_plan(
+            batch_size=batch_size,
+            concurrency=graph_build_concurrency,
+            backend=Config.ZEP_BACKEND,
+        )
+        effective_batch_size = batch_plan.batch_size
+        effective_concurrency = batch_plan.concurrency
         
         # 更新项目配置
         project.chunk_size = chunk_size
@@ -869,8 +876,10 @@ def build_graph():
         task_manager.update_task(
             task_id,
             progress_detail={
-                "batch_size": batch_size,
-                "concurrency": graph_build_concurrency,
+                "batch_size": effective_batch_size,
+                "concurrency": effective_concurrency,
+                "requested_batch_size": batch_size,
+                "requested_concurrency": graph_build_concurrency,
                 "backend": Config.ZEP_BACKEND,
                 "llm_boost_enabled": bool(Config.LLM_BOOST_API_KEY and Config.LLM_BOOST_BASE_URL and Config.LLM_BOOST_MODEL_NAME),
             }
@@ -923,8 +932,10 @@ def build_graph():
                 task_manager.update_task(
                     task_id,
                     progress_detail={
-                        "batch_size": batch_size,
-                        "concurrency": graph_build_concurrency,
+                        "batch_size": effective_batch_size,
+                        "concurrency": effective_concurrency,
+                        "requested_batch_size": batch_size,
+                        "requested_concurrency": graph_build_concurrency,
                         "backend": Config.ZEP_BACKEND,
                         "llm_boost_enabled": bool(Config.LLM_BOOST_API_KEY and Config.LLM_BOOST_BASE_URL and Config.LLM_BOOST_MODEL_NAME),
                         "pending_graph_id": graph_id,
@@ -971,10 +982,10 @@ def build_graph():
                 episode_uuids = builder.add_text_batches(
                     graph_id, 
                     chunks,
-                    batch_size=batch_size,
+                    batch_size=effective_batch_size,
                     progress_callback=add_progress_callback,
                     extraction_context=extraction_context,
-                    concurrency=graph_build_concurrency,
+                    concurrency=effective_concurrency,
                 )
                 
                 # 等待Zep处理完成（查询每个episode的processed状态）
@@ -1019,8 +1030,10 @@ def build_graph():
                         "node_count": node_count,
                         "edge_count": edge_count,
                         "chunk_count": total_chunks,
-                        "batch_size": batch_size,
-                        "concurrency": graph_build_concurrency,
+                        "batch_size": effective_batch_size,
+                        "concurrency": effective_concurrency,
+                        "requested_batch_size": batch_size,
+                        "requested_concurrency": graph_build_concurrency,
                     }
                 )
                 

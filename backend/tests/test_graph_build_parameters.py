@@ -5,6 +5,7 @@ import time
 from app.config import Config
 from app import create_app
 from app.models.project import ProjectManager, ProjectStatus
+from app.models.task import TaskManager
 from app.services.graph_builder import GraphBuilderService
 
 
@@ -203,6 +204,7 @@ def test_graph_builder_default_batch_size_uses_config(monkeypatch):
 
     builder = GraphBuilderService.__new__(GraphBuilderService)
     builder.client = FakeClient()
+    builder._backend = "cloud"
 
     chunks = [f"chunk-{index}" for index in range(Config.GRAPH_BUILD_BATCH_SIZE + 1)]
     episode_uuids = builder.add_text_batches("graph_1", chunks)
@@ -211,8 +213,29 @@ def test_graph_builder_default_batch_size_uses_config(monkeypatch):
     assert len(episode_uuids) == len(chunks)
 
 
-def test_graph_builder_graphiti_uses_configured_concurrency_and_keeps_uuid_order(monkeypatch):
+def test_graph_builder_graphiti_caps_batch_size_for_stable_ingest(monkeypatch):
     monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_EPISODE_BATCH_SIZE", 1)
+
+    builder = GraphBuilderService.__new__(GraphBuilderService)
+    builder.client = OrderedFakeClient()
+    builder._backend = "graphiti"
+
+    episode_uuids = builder.add_text_batches(
+        "graph_1",
+        ["chunk-0", "chunk-1", "chunk-2"],
+        batch_size=3,
+        concurrency=1,
+    )
+
+    assert [len(batch[1]) for batch in builder.client.batches] == [1, 1, 1]
+    assert episode_uuids == ["chunk-0", "chunk-1", "chunk-2"]
+
+
+def test_graph_builder_graphiti_caps_ingest_concurrency(monkeypatch):
+    monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_EPISODE_BATCH_SIZE", 1)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_INGEST_CONCURRENCY", 2)
     captured_workers = []
 
     class InlineFuture:
@@ -252,10 +275,10 @@ def test_graph_builder_graphiti_uses_configured_concurrency_and_keeps_uuid_order
         "graph_1",
         ["chunk-0", "chunk-1", "chunk-2", "chunk-3"],
         batch_size=1,
-        concurrency=3,
+        concurrency=4,
     )
 
-    assert captured_workers == [3]
+    assert captured_workers == [2]
     assert episode_uuids == ["chunk-0", "chunk-1", "chunk-2", "chunk-3"]
 
 
@@ -685,11 +708,15 @@ def test_location_filter_keeps_speaking_actor_types_with_location_words():
 def test_graph_build_api_passes_project_event_context_to_episodes(monkeypatch, tmp_path):
     monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", str(tmp_path))
     monkeypatch.setattr("app.api.graph.Config.ZEP_BACKEND", "graphiti")
+    monkeypatch.setattr("app.api.graph.Config.GRAPHITI_INGEST_CONCURRENCY", 1)
+    monkeypatch.setattr("app.api.graph.Config.GRAPHITI_EPISODE_BATCH_SIZE", 1)
     monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
 
     captured = {}
 
     class FakeBuilder:
+        resolve_batch_plan = staticmethod(GraphBuilderService.resolve_batch_plan)
+
         def __init__(self, api_key=None, backend=None, build_mode=False):
             self.backend = backend
             self.build_mode = build_mode
@@ -755,10 +782,73 @@ def test_graph_build_api_passes_project_event_context_to_episodes(monkeypatch, t
     assert response.status_code == 200
     assert captured["extraction_context"]["event_topic"] == "张雪机车事件"
     assert captured["extraction_context"]["simulation_requirement"] == "推演赛事争议后续舆情走向"
-    assert captured["concurrency"] == 2
+    assert captured["batch_size"] == 1
+    assert captured["concurrency"] == 1
     assert "法国车手瓦伦丁·德比斯" in captured["extraction_context"]["entity_hints"]
     assert "网易游戏、阴阳师等无关实体即使出现在材料杂讯中也不要入图" in captured["wrapped_episode"]
     assert "张雪驾驶820RR-RS参加相关赛事讨论" in captured["wrapped_episode"]
+
+
+def test_graph_build_api_records_requested_and_effective_batch_plan(monkeypatch, tmp_path):
+    monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", str(tmp_path))
+    monkeypatch.setattr("app.api.graph.Config.ZEP_BACKEND", "graphiti")
+    monkeypatch.setattr("app.api.graph.Config.GRAPHITI_EPISODE_BATCH_SIZE", 1)
+    monkeypatch.setattr("app.api.graph.Config.GRAPHITI_INGEST_CONCURRENCY", 1)
+
+    class InlineBuilder:
+        resolve_batch_plan = staticmethod(GraphBuilderService.resolve_batch_plan)
+
+        def __init__(self, api_key=None, backend=None, build_mode=False):
+            pass
+
+        def create_graph(self, name):
+            return "mirofish_test_graph"
+
+        def set_ontology(self, graph_id, ontology):
+            pass
+
+        def add_text_batches(self, *args, **kwargs):
+            return ["episode_1"]
+
+        def _wait_for_episodes(self, episode_uuids, progress_callback=None):
+            pass
+
+        def get_graph_data(self, graph_id):
+            return {"node_count": 1, "edge_count": 1}
+
+    class InlineThread:
+        def __init__(self, target, daemon=False):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            self.target()
+
+    project = ProjectManager.create_project(name="批次计划测试")
+    project.status = ProjectStatus.ONTOLOGY_GENERATED
+    project.ontology = {
+        "entity_types": [{"name": "Person", "description": "person", "attributes": []}],
+        "edge_types": [],
+    }
+    ProjectManager.save_project(project)
+    ProjectManager.save_extracted_text(project.project_id, "用于测试图谱批次计划的文本。")
+
+    monkeypatch.setattr("app.api.graph.GraphBuilderService", InlineBuilder)
+    monkeypatch.setattr("app.api.graph.threading.Thread", InlineThread)
+
+    app = create_app()
+    response = app.test_client().post(
+        "/api/graph/build",
+        json={"project_id": project.project_id, "batch_size": 3, "chunk_size": 200, "concurrency": 4},
+    )
+
+    assert response.status_code == 200
+    task_id = response.get_json()["data"]["task_id"]
+    task = TaskManager().get_task(task_id)
+    assert task.result["batch_size"] == 1
+    assert task.result["concurrency"] == 1
+    assert task.result["requested_batch_size"] == 3
+    assert task.result["requested_concurrency"] == 4
 
 
 def test_graph_build_api_does_not_persist_graph_id_until_success(monkeypatch, tmp_path):
@@ -766,6 +856,8 @@ def test_graph_build_api_does_not_persist_graph_id_until_success(monkeypatch, tm
     monkeypatch.setattr("app.api.graph.Config.ZEP_BACKEND", "graphiti")
 
     class FailingBuilder:
+        resolve_batch_plan = staticmethod(GraphBuilderService.resolve_batch_plan)
+
         def __init__(self, api_key=None, backend=None, build_mode=False):
             pass
 

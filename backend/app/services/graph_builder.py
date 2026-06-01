@@ -49,6 +49,19 @@ class GraphInfo:
         }
 
 
+@dataclass(frozen=True)
+class GraphBatchPlan:
+    """图谱写入批次计划。"""
+    batch_size: int
+    concurrency: int
+
+    def to_dict(self) -> Dict[str, int]:
+        return {
+            "batch_size": self.batch_size,
+            "concurrency": self.concurrency,
+        }
+
+
 class GraphBuilderService:
     """
     图谱构建服务
@@ -369,18 +382,22 @@ class GraphBuilderService:
         if total_chunks == 0:
             return []
 
-        batch_size = max(1, int(batch_size or 1))
+        backend = getattr(self, "_backend", Config.ZEP_BACKEND)
+        batch_plan = self.resolve_batch_plan(
+            batch_size=batch_size,
+            concurrency=concurrency,
+            backend=backend,
+        )
+        batch_size = batch_plan.batch_size
+        concurrency = batch_plan.concurrency
+
         batch_specs = []
         total_batches = (total_chunks + batch_size - 1) // batch_size
         for start in range(0, total_chunks, batch_size):
             batch_chunks = chunks[start:start + batch_size]
             batch_specs.append((len(batch_specs), start, batch_chunks))
 
-        concurrency = clamp_concurrency(concurrency, Config.GRAPH_BUILD_CONCURRENCY, maximum=8)
-        backend = getattr(self, "_backend", Config.ZEP_BACKEND)
         # Cloud add_batch 自身是批量异步处理，保守串行提交；Graphiti 本地抽取才启用并发写入。
-        if backend != 'graphiti':
-            concurrency = 1
         use_worker_clients = (
             backend == 'graphiti'
             and concurrency > 1
@@ -462,11 +479,12 @@ class GraphBuilderService:
             worker_client = create_worker_client() if use_worker_clients else self.client
             try:
                 logger.info(
-                    "图谱批次写入开始: graph_id=%s, batch=%s/%s, chunks=%s, worker_client=%s",
+                    "图谱批次写入开始: graph_id=%s, batch=%s/%s, chunks=%s, concurrency=%s, worker_client=%s",
                     graph_id,
                     batch_num,
                     total_batches,
                     len(batch_chunks),
+                    concurrency,
                     worker_client is not self.client,
                 )
                 batch_uuids = worker_client.add_episode_batch(
@@ -549,6 +567,33 @@ class GraphBuilderService:
         for batch_index in range(total_batches):
             episode_uuids.extend(episode_uuids_by_batch.get(batch_index, []))
         return episode_uuids
+
+    @staticmethod
+    def resolve_batch_plan(
+        batch_size: int = Config.GRAPH_BUILD_BATCH_SIZE,
+        concurrency: int = Config.GRAPH_BUILD_CONCURRENCY,
+        backend: Optional[str] = None,
+    ) -> GraphBatchPlan:
+        """计算图谱写入实际生效的批次大小和并发数。"""
+        resolved_batch_size = max(1, int(batch_size or 1))
+        resolved_concurrency = clamp_concurrency(
+            concurrency,
+            Config.GRAPH_BUILD_CONCURRENCY,
+            maximum=8,
+        )
+
+        if (backend or Config.ZEP_BACKEND) == 'graphiti':
+            graphiti_batch_size = max(1, int(Config.GRAPHITI_EPISODE_BATCH_SIZE or 1))
+            graphiti_ingest_concurrency = max(1, int(Config.GRAPHITI_INGEST_CONCURRENCY or 1))
+            resolved_batch_size = min(resolved_batch_size, graphiti_batch_size)
+            resolved_concurrency = min(resolved_concurrency, graphiti_ingest_concurrency)
+        else:
+            resolved_concurrency = 1
+
+        return GraphBatchPlan(
+            batch_size=resolved_batch_size,
+            concurrency=resolved_concurrency,
+        )
 
     @classmethod
     def _wrap_chunk_with_event_constraints(
