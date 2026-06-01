@@ -559,6 +559,7 @@
             <div class="modal-name-row">
               <span class="modal-realname">{{ selectedProfile.username }}</span>
               <span class="modal-username">@{{ selectedProfile.name }}</span>
+              <span v-if="selectedProfile.country" class="modal-country">{{ selectedProfile.country }}</span>
             </div>
             <span class="modal-profession">{{ selectedProfile.profession }}</span>
           </div>
@@ -566,32 +567,6 @@
         </div>
         
         <div class="modal-body">
-          <!-- 基本信息 -->
-          <div class="modal-info-grid">
-            <div class="info-item">
-              <span class="info-label">事件外显年龄</span>
-              <span class="info-value">{{ selectedProfile.age || '-' }} 岁</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">事件外显性别</span>
-              <span class="info-value">{{ { male: '男', female: '女', other: '其他' }[selectedProfile.gender] || selectedProfile.gender }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">国家/地区</span>
-              <span class="info-value">{{ selectedProfile.country || '-' }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">事件外显MBTI</span>
-              <span class="info-value mbti">{{ selectedProfile.mbti || '-' }}</span>
-            </div>
-          </div>
-
-          <!-- 简介 -->
-          <div class="modal-section">
-            <span class="section-label">人设简介</span>
-            <p class="section-bio">{{ cleanDisplayText(selectedProfile.bio) || '暂无简介' }}</p>
-          </div>
-
           <!-- 关注话题 -->
           <div class="modal-section" v-if="selectedProfile.interested_topics?.length">
             <span class="section-label">现实事件关联话题</span>
@@ -610,22 +585,16 @@
             
             <!-- 人设维度概览 -->
             <div class="persona-dimensions">
-              <div class="dimension-card">
-                <span class="dim-title">事件全景经历</span>
-                <span class="dim-desc">在此事件中的完整行为轨迹</span>
-              </div>
-              <div class="dimension-card">
-                <span class="dim-title">行为模式侧写</span>
-                <span class="dim-desc">经验总结与行事风格偏好</span>
-              </div>
-              <div class="dimension-card">
-                <span class="dim-title">独特记忆印记</span>
-                <span class="dim-desc">基于现实事件形成的记忆</span>
-              </div>
-              <div class="dimension-card">
-                <span class="dim-title">社会关系网络</span>
-                <span class="dim-desc">个体链接与交互图谱</span>
-              </div>
+              <button
+                v-for="dimension in personaDimensions"
+                :key="dimension.key"
+                type="button"
+                class="dimension-card"
+                @click="openPersonaDimension(dimension)"
+              >
+                <span class="dim-title">{{ dimension.title }}</span>
+                <span class="dim-desc">{{ dimension.desc }}</span>
+              </button>
             </div>
 
             <div class="persona-content">
@@ -634,6 +603,23 @@
           </div>
         </div>
       </div>
+      </div>
+    </Transition>
+
+    <Transition name="modal">
+      <div v-if="activePersonaDimension" class="dimension-modal-overlay" @click.self="activePersonaDimension = null">
+        <div class="dimension-modal">
+          <div class="dimension-modal-header">
+            <div>
+              <span class="section-label">详细人设背景</span>
+              <h3 class="dimension-modal-title">{{ activePersonaDimension.title }}</h3>
+            </div>
+            <button class="close-btn" @click="activePersonaDimension = null">×</button>
+          </div>
+          <div class="dimension-modal-body">
+            <p class="dimension-detail-text">{{ activePersonaDimension.content }}</p>
+          </div>
+        </div>
       </div>
     </Transition>
 
@@ -685,6 +671,7 @@ const entityTypes = ref([])
 const expectedTotal = ref(null)
 const simulationConfig = ref(null)
 const selectedProfile = ref(null)
+const activePersonaDimension = ref(null)
 const showProfilesDetail = ref(true)
 const localSimulationId = ref('')
 const prepareStarted = ref(false)
@@ -722,6 +709,12 @@ watch(currentStage, (newStage) => {
     }
   } else if (newStage === '准备模拟脚本' || newStage === 'copying_scripts') {
     phase.value = 2 // 仍属于配置阶段
+  }
+})
+
+watch(selectedProfile, (profile) => {
+  if (!profile) {
+    activePersonaDimension.value = null
   }
 })
 
@@ -799,6 +792,123 @@ const cleanDisplayText = (text) => {
 
 const selectedProfilePersona = computed(() => cleanDisplayText(selectedProfile.value?.persona))
 
+const personaDimensionDefinitions = [
+  {
+    key: 'event_journey',
+    title: '事件全景经历',
+    desc: '在此事件中的完整行为轨迹',
+    headings: ['事件全景经历', '个人记忆', '机构记忆', '事件关联记忆', '重要经历', '人物背景']
+  },
+  {
+    key: 'behavior_profile',
+    title: '行为模式侧写',
+    desc: '经验总结与行事风格偏好',
+    headings: ['行为模式侧写', '社交媒体行为', '发言风格', '发布内容特点', '账号定位']
+  },
+  {
+    key: 'memory_signature',
+    title: '独特记忆印记',
+    desc: '基于现实事件形成的记忆',
+    headings: ['独特记忆印记', '独特特征', '个人记忆', '机构记忆', '事件关联记忆']
+  },
+  {
+    key: 'social_network',
+    title: '社会关系网络',
+    desc: '个体链接与交互图谱',
+    headings: ['社会关系网络', '社会关系', '与事件的关联', '关联实体信息', '相关事实和关系']
+  }
+]
+
+const escapeRegExp = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+const extractPersonaSection = (persona, headings) => {
+  const text = cleanDisplayText(persona)
+  if (!text) return ''
+
+  const headingPattern = headings.map(escapeRegExp).join('|')
+  const nextHeadingPattern = [
+    '基本信息',
+    '机构基本信息',
+    '人物背景',
+    '账号定位',
+    '性格特征',
+    '社交媒体行为',
+    '发言风格',
+    '发布内容特点',
+    '立场观点',
+    '立场态度',
+    '独特特征',
+    '特殊说明',
+    '个人记忆',
+    '机构记忆',
+    '事件关联记忆',
+    '事件全景经历',
+    '行为模式侧写',
+    '独特记忆印记',
+    '社会关系网络'
+  ].map(escapeRegExp).join('|')
+
+  const bracketPattern = new RegExp(`[【\\[]\\s*(${headingPattern})\\s*[】\\]]([\\s\\S]*?)(?=[【\\[]\\s*(?:${nextHeadingPattern})\\s*[】\\]]|$)`, 'u')
+  const bracketMatch = text.match(bracketPattern)
+  if (bracketMatch?.[2]?.trim()) {
+    return cleanDisplayText(bracketMatch[2])
+  }
+
+  const inlinePattern = new RegExp(`(?:^|[\\n。；;])\\s*(?:#{1,6}\\s*)?(${headingPattern})[：:]\\s*([\\s\\S]*?)(?=(?:^|[\\n。；;])\\s*(?:#{1,6}\\s*)?(?:${nextHeadingPattern})[：:]|$)`, 'u')
+  const inlineMatch = text.match(inlinePattern)
+  if (inlineMatch?.[2]?.trim()) {
+    return cleanDisplayText(inlineMatch[2])
+  }
+
+  return ''
+}
+
+const buildPersonaDimensionContent = (definition) => {
+  const profile = selectedProfile.value
+  const persona = selectedProfilePersona.value
+  const extracted = extractPersonaSection(persona, definition.headings)
+  if (extracted) {
+    return extracted
+  }
+
+  if (!persona) {
+    return '暂无对应详情。'
+  }
+
+  if (definition.key === 'event_journey') {
+    return persona
+  }
+
+  if (definition.key === 'behavior_profile') {
+    const parts = [
+      profile?.profession ? `职业/身份：${profile.profession}` : '',
+      profile?.bio ? `简介线索：${cleanDisplayText(profile.bio)}` : '',
+      persona
+    ].filter(Boolean)
+    return parts.join('\n\n')
+  }
+
+  if (definition.key === 'memory_signature') {
+    return persona
+  }
+
+  if (definition.key === 'social_network') {
+    const topics = profile?.interested_topics?.length
+      ? `现实事件关联话题：${profile.interested_topics.join('、')}`
+      : ''
+    return [topics, persona].filter(Boolean).join('\n\n')
+  }
+
+  return '暂无对应详情。'
+}
+
+const personaDimensions = computed(() => {
+  return personaDimensionDefinitions.map((definition) => ({
+    ...definition,
+    content: buildPersonaDimensionContent(definition)
+  }))
+})
+
 // Methods
 const addLog = (msg) => {
   emit('add-log', msg)
@@ -823,6 +933,11 @@ const handleStartSimulation = () => {
 
 const selectProfile = (profile) => {
   selectedProfile.value = profile
+  activePersonaDimension.value = null
+}
+
+const openPersonaDimension = (dimension) => {
+  activePersonaDimension.value = dimension
 }
 
 // 自动开始准备模拟
@@ -1987,6 +2102,15 @@ onUnmounted(() => {
   color: #999;
 }
 
+.modal-country {
+  font-size: 12px;
+  color: #666;
+  background: #F5F5F5;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
 .modal-profession {
   font-size: 12px;
   color: #666;
@@ -2122,11 +2246,23 @@ onUnmounted(() => {
   border-radius: 6px;
   border-left: 3px solid #DDD;
   transition: all 0.2s;
+  border-top: none;
+  border-right: none;
+  border-bottom: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  appearance: none;
 }
 
 .dimension-card:hover {
   background: #F0F0F0;
   border-left-color: #999;
+}
+
+.dimension-card:focus-visible {
+  outline: 2px solid #1565C0;
+  outline-offset: 2px;
 }
 
 .dim-title {
@@ -2166,6 +2302,69 @@ onUnmounted(() => {
   font-size: 13px;
   color: #555;
   line-height: 1.8;
+  margin: 0;
+  text-align: justify;
+}
+
+.dimension-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+  backdrop-filter: blur(3px);
+}
+
+.dimension-modal {
+  background: #FFF;
+  border-radius: 12px;
+  width: min(680px, 88vw);
+  max-height: 76vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 18px 54px rgba(0, 0, 0, 0.26);
+}
+
+.dimension-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 20px 24px;
+  border-bottom: 1px solid #F0F0F0;
+  flex-shrink: 0;
+}
+
+.dimension-modal-title {
+  font-size: 18px;
+  line-height: 1.4;
+  margin: 0;
+  color: #222;
+}
+
+.dimension-modal-body {
+  padding: 20px 24px 24px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.dimension-modal-body::-webkit-scrollbar {
+  width: 4px;
+}
+
+.dimension-modal-body::-webkit-scrollbar-thumb {
+  background: #DDD;
+  border-radius: 2px;
+}
+
+.dimension-detail-text {
+  font-size: 14px;
+  line-height: 1.85;
+  color: #444;
+  white-space: pre-wrap;
   margin: 0;
   text-align: justify;
 }
