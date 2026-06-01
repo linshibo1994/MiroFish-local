@@ -111,3 +111,43 @@ def test_profile_bio_truncates_on_sentence_boundary_when_saved(tmp_path):
 
     assert reddit_data[0]["bio"].endswith("。")
     assert "补充说明" not in reddit_data[0]["bio"]
+
+
+def test_person_profile_subject_mismatch_is_rebuilt():
+    generator = OasisProfileGenerator.__new__(OasisProfileGenerator)
+    entity = EntityNode(
+        uuid="person-xgl",
+        name="许国利",
+        labels=["Entity"],
+        summary="许国利是杭州杀妻案中的案发当事人和被告人。",
+        attributes={},
+        related_edges=[
+            {
+                "fact": "许国利因杭州杀妻案被追究刑事责任",
+                "edge_name": "INVOLVED_IN",
+                "direction": "outgoing",
+            }
+        ],
+    )
+    profile_data = {
+        "bio": "公安机关，负责刑事侦查与公共安全维护",
+        "persona": (
+            "机构正式名称：杭州市公安局江干区分局。机构性质：国家公安机关派出机构。"
+            "主要职能：维护辖区公共安全，侦破刑事案件，发布案件通报。"
+        ),
+        "profession": "公安机关",
+    }
+
+    rebuilt = generator._enforce_profile_subject_alignment(
+        entity=entity,
+        entity_type="Entity",
+        profile_data=profile_data,
+        resolved_real_entity=None,
+        context=generator._build_entity_context(entity),
+    )
+
+    assert rebuilt["profession"] == "个人实体"
+    assert "个人主体" in rebuilt["persona"]
+    assert "许国利" in rebuilt["persona"]
+    assert "不代表公安机关" in rebuilt["persona"]
+    assert "机构正式名称" not in rebuilt["persona"]

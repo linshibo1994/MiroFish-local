@@ -123,6 +123,82 @@ class RealEntityResolver:
         "socialmediaplatform",
         "platform",
     }
+    PERSON_TYPES = {
+        "person",
+        "publicfigure",
+        "expert",
+        "faculty",
+        "official",
+        "journalist",
+        "activist",
+        "celebrity",
+        "star",
+        "actor",
+        "actress",
+        "singer",
+        "artist",
+        "influencer",
+        "kol",
+        "keyopinionleader",
+        "entrepreneur",
+        "executive",
+        "ceo",
+        "founder",
+        "engineer",
+        "scientist",
+        "researcher",
+        "technologist",
+        "techperson",
+        "farmer",
+        "student",
+        "alumni",
+        "professor",
+    }
+    ORG_NAME_KEYWORDS = {
+        "公安",
+        "公安局",
+        "分局",
+        "派出所",
+        "法院",
+        "检察院",
+        "政府",
+        "委员会",
+        "大学",
+        "学院",
+        "学校",
+        "公司",
+        "集团",
+        "机构",
+        "组织",
+        "协会",
+        "媒体",
+        "日报",
+        "新闻网",
+        "平台",
+        "中心",
+        "部门",
+        "支队",
+        "大队",
+        "办公室",
+    }
+    ORG_IDENTITY_KEYWORDS = {
+        "公安机关",
+        "公安局",
+        "分局",
+        "派出所",
+        "检察院",
+        "法院",
+        "政府部门",
+        "官方账号",
+        "官方发布",
+        "机构正式名称",
+        "机构性质",
+        "主要职能",
+        "辖区",
+        "办案程序",
+        "编辑团队",
+        "新闻发布会",
+    }
 
     def __init__(
         self,
@@ -230,7 +306,7 @@ class RealEntityResolver:
         """根据联网来源判定实体真实性状态。"""
         search_error = ""
         sources = list(sources or [])
-        matched_sources = self._filter_matching_sources(entity.name, sources)
+        matched_sources = self._filter_matching_sources(entity, entity_type, sources)
         if len(matched_sources) < self.min_source_count:
             try:
                 if self.search_service:
@@ -238,7 +314,7 @@ class RealEntityResolver:
                     injected_sources = self._normalize_sources(raw_results)
                     if injected_sources:
                         sources = self._merge_sources(sources, injected_sources)
-                        matched_sources = self._filter_matching_sources(entity.name, sources)
+                        matched_sources = self._filter_matching_sources(entity, entity_type, sources)
             except Exception as exc:
                 logger.warning(f"真实实体显式搜索服务调用失败: entity={entity.name}, error={exc}")
                 search_error = f"显式搜索服务调用失败: {exc}"
@@ -694,7 +770,13 @@ class RealEntityResolver:
                 return candidate
         return []
 
-    def _filter_matching_sources(self, entity_name: str, sources: Sequence[RealEntitySource]) -> List[RealEntitySource]:
+    def _filter_matching_sources(
+        self,
+        entity: EntityNode,
+        entity_type: str,
+        sources: Sequence[RealEntitySource],
+    ) -> List[RealEntitySource]:
+        entity_name = entity.name
         name_tokens = self._tokens(entity_name)
         if not name_tokens:
             return []
@@ -704,12 +786,101 @@ class RealEntityResolver:
             haystack = f"{source.title} {source.snippet}".lower()
             normalized_name = entity_name.lower().strip()
             if normalized_name and normalized_name in haystack:
-                matched.append(source)
+                if self._source_matches_expected_identity(entity, entity_type, source):
+                    matched.append(source)
             elif all(token in haystack for token in name_tokens):
-                matched.append(source)
+                if self._source_matches_expected_identity(entity, entity_type, source):
+                    matched.append(source)
             elif len(name_tokens) >= 2 and sum(1 for token in name_tokens if token in haystack) >= 2:
-                matched.append(source)
+                if self._source_matches_expected_identity(entity, entity_type, source):
+                    matched.append(source)
         return matched
+
+    def _source_matches_expected_identity(
+        self,
+        entity: EntityNode,
+        entity_type: str,
+        source: RealEntitySource,
+    ) -> bool:
+        """校验来源描述的主体类别，避免把“相关机构资料”误贴到人物账号上。"""
+        category = self._infer_identity_category(entity, entity_type)
+        if category != "person":
+            return True
+
+        text = f"{source.title} {source.snippet}".strip()
+        if not text:
+            return False
+
+        name = (entity.name or "").strip()
+        if not name or name not in text:
+            return False
+
+        # 英文或非中文姓名缺少稳定句式，保持原有名称命中逻辑，只拦截明显机构身份。
+        if not self._looks_like_chinese_person_name(name):
+            return not self._has_org_identity_text(text)
+
+        has_person_anchor = self._has_person_anchor(name, text)
+        name_only_as_case = bool(re.search(fr"{re.escape(name)}\s*(案|案件|事件|专案)", text))
+        has_org_identity = self._has_org_identity_text(text)
+
+        if has_person_anchor:
+            return True
+
+        if name_only_as_case or has_org_identity:
+            logger.info(
+                "过滤主体不一致来源: entity=%s, expected=person, title=%s",
+                name,
+                source.title,
+            )
+            return False
+
+        return True
+
+    def _infer_identity_category(self, entity: EntityNode, entity_type: str) -> str:
+        type_lower = (entity_type or "").lower()
+        labels = {label.lower() for label in entity.labels or []}
+        name = (entity.name or "").strip()
+
+        if self._looks_like_chinese_person_name(name):
+            return "person"
+        if type_lower in self.PERSON_TYPES or labels & self.PERSON_TYPES:
+            return "person"
+        if type_lower in self.ORGANIZATION_TYPES or labels & self.ORGANIZATION_TYPES:
+            return "organization"
+        if type_lower in self.GROUP_AGENT_TYPES or labels & self.GROUP_AGENT_TYPES:
+            return "group"
+        return "unknown"
+
+    def _looks_like_chinese_person_name(self, name: str) -> bool:
+        value = (name or "").strip()
+        if not re.fullmatch(r"[\u4e00-\u9fff]{2,4}", value):
+            return False
+        if any(keyword in value for keyword in self.ORG_NAME_KEYWORDS):
+            return False
+        if value.endswith(("案", "事件", "平台", "官方", "通报", "警方")):
+            return False
+        return True
+
+    def _has_person_anchor(self, name: str, text: str) -> bool:
+        escaped = re.escape(name)
+        patterns = [
+            fr"被告人\s*{escaped}",
+            fr"犯罪嫌疑人\s*{escaped}",
+            fr"嫌疑人\s*{escaped}",
+            fr"当事人\s*{escaped}",
+            fr"丈夫\s*{escaped}",
+            fr"妻子\s*{escaped}",
+            fr"凶手\s*{escaped}",
+            fr"死刑犯\s*{escaped}",
+            fr"{escaped}\s*(?:被|因|于|将|向|承认|交代|供述|杀害|杀妻|分尸|获|一审|二审|执行|伏法|死亡|出生|系|为|是)",
+            fr"{escaped}\s*[，,]\s*(?:男|女)",
+        ]
+        return any(re.search(pattern, text) for pattern in patterns)
+
+    def _has_org_identity_text(self, text: str) -> bool:
+        if not text:
+            return False
+        return any(keyword in text for keyword in self.ORG_IDENTITY_KEYWORDS)
 
     def _looks_ambiguous(self, entity_name: str, sources: Sequence[RealEntitySource]) -> bool:
         name = entity_name.lower().strip()

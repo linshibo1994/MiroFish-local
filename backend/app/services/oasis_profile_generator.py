@@ -233,6 +233,52 @@ class OasisProfileGenerator:
         "governmentofficial", "government", "agency", "platform",
         "组织", "机构", "媒体机构", "政府机构", "公司", "企业"
     ]
+    PERSON_NAME_ORG_KEYWORDS = [
+        "公安",
+        "公安局",
+        "分局",
+        "派出所",
+        "法院",
+        "检察院",
+        "政府",
+        "委员会",
+        "大学",
+        "学院",
+        "学校",
+        "公司",
+        "集团",
+        "机构",
+        "组织",
+        "协会",
+        "媒体",
+        "日报",
+        "新闻网",
+        "平台",
+        "中心",
+        "部门",
+        "支队",
+        "大队",
+    ]
+    ORG_PROFILE_MARKERS = [
+        "机构正式名称",
+        "机构性质",
+        "主要职能",
+        "账号定位",
+        "官方账号",
+        "官方权威发布平台",
+        "公安机关",
+        "公安局",
+        "分局",
+        "派出所",
+        "法院",
+        "检察院",
+        "政府部门",
+        "编辑团队",
+        "新闻发布会",
+        "辖区",
+        "公共安全维护",
+        "刑事侦查",
+    ]
     
     def __init__(
         self,
@@ -342,6 +388,13 @@ class OasisProfileGenerator:
                     entity_attributes=entity.attributes
                 )
 
+        profile_data = self._enforce_profile_subject_alignment(
+            entity=entity,
+            entity_type=entity_type,
+            profile_data=profile_data,
+            resolved_real_entity=resolved_real_entity,
+            context=context,
+        )
         runtime_traits = profile_data.get("runtime_traits", {})
 
         return OasisAgentProfile(
@@ -454,6 +507,168 @@ class OasisProfileGenerator:
             "interested_topics": runtime_traits["interested_topics"],
             "runtime_traits": runtime_traits,
         }
+
+    def _enforce_profile_subject_alignment(
+        self,
+        entity: EntityNode,
+        entity_type: str,
+        profile_data: Dict[str, Any],
+        resolved_real_entity: Optional[ResolvedRealEntity],
+        context: str,
+    ) -> Dict[str, Any]:
+        """
+        生成人设后的主体一致性闸门。
+
+        指定实体是个人时，bio/persona 不能被 LLM 写成公安机关、媒体机构等相关主体账号。
+        一旦发现错配，直接使用图谱与已验证事实重建个人视角人设，避免把机构资料套到个人账号。
+        """
+        if not self._is_person_subject(entity.name, entity_type):
+            return profile_data
+
+        bio = self._clean_profile_text(profile_data.get("bio"), strip_sources=True)
+        persona = self._clean_profile_text(profile_data.get("persona"), strip_sources=True)
+        profession = self._clean_profile_text(profile_data.get("profession"), strip_sources=True)
+        combined = " ".join(part for part in [bio, persona, profession] if part)
+
+        if not combined:
+            return self._build_person_subject_fallback(entity, entity_type, resolved_real_entity, context)
+
+        mentions_name = entity.name and entity.name in combined
+        org_marker_count = self._org_profile_marker_count(combined)
+        looks_like_org = self._profile_looks_like_org_subject(combined, org_marker_count)
+        person_anchor_count = self._person_subject_anchor_count(entity.name, combined)
+        has_person_anchor = person_anchor_count > 0
+
+        if looks_like_org and (
+            not has_person_anchor
+            or not mentions_name
+            or org_marker_count > person_anchor_count
+        ):
+            logger.warning(
+                "检测到人设主体错配，已重建为个人主体: entity=%s, type=%s",
+                entity.name,
+                entity_type,
+            )
+            return self._build_person_subject_fallback(entity, entity_type, resolved_real_entity, context)
+
+        if not mentions_name and resolved_real_entity and resolved_real_entity.verification_status == VERIFIED:
+            profile_data["bio"] = self._clean_profile_text(
+                resolved_real_entity.real_identity_summary or bio,
+                max_chars=240,
+                strip_sources=True,
+            )
+            profile_data["persona"] = self._clean_profile_text(
+                self._join_text(resolved_real_entity.real_identity_summary, persona),
+                strip_sources=True,
+            )
+
+        return profile_data
+
+    def _build_person_subject_fallback(
+        self,
+        entity: EntityNode,
+        entity_type: str,
+        resolved_real_entity: Optional[ResolvedRealEntity],
+        context: str,
+    ) -> Dict[str, Any]:
+        """使用个人主体资料重建兜底人设，避免沿用错配机构文案。"""
+        summary_parts = []
+        if resolved_real_entity and resolved_real_entity.real_identity_summary:
+            summary_parts.append(resolved_real_entity.real_identity_summary)
+        if entity.summary:
+            summary_parts.append(entity.summary)
+
+        summary = self._join_text(*summary_parts)
+        if not summary:
+            summary = f"{entity.name} 是图谱中的个人实体，需围绕已知事件上下文保持个人主体一致。"
+
+        fact_text = ""
+        if resolved_real_entity:
+            facts = [fact for fact in resolved_real_entity.verified_facts if fact]
+            fact_text = " ".join(facts[:3])
+
+        event_memory = self._extract_event_memory(context)
+        persona_parts = [
+            f"个人主体：{summary}",
+            f"已验证事实：{fact_text}" if fact_text else "",
+            f"事件关联记忆：{event_memory}" if event_memory else "",
+            "行为边界：该账号代表上述个人主体，不代表公安机关、法院、检察院、媒体或其他机构；发言与记忆只能围绕此人在现实事件中的身份、行为轨迹、公开事实和社会关系展开。",
+        ]
+        persona = self._clean_profile_text(" ".join(part for part in persona_parts if part), strip_sources=True)
+
+        runtime_traits = {
+            "age": 30,
+            "gender": "other",
+            "mbti": "ISTJ",
+            "country": "中国",
+            "profession": entity_type,
+            "interested_topics": [],
+            "note": "OASIS运行必需默认字段，仅用于模拟引擎，不代表真实事实。",
+        }
+
+        return {
+            "bio": self._clean_profile_text(summary, max_chars=240, strip_sources=True),
+            "persona": persona,
+            "age": runtime_traits["age"],
+            "gender": runtime_traits["gender"],
+            "mbti": runtime_traits["mbti"],
+            "country": runtime_traits["country"],
+            "profession": "个人实体",
+            "interested_topics": runtime_traits["interested_topics"],
+            "runtime_traits": runtime_traits,
+        }
+
+    def _is_person_subject(self, entity_name: str, entity_type: str) -> bool:
+        type_lower = (entity_type or "").lower()
+        if type_lower in self.INDIVIDUAL_ENTITY_TYPES:
+            return True
+        if (entity_type or "") in self.INDIVIDUAL_ENTITY_TYPES:
+            return True
+        return self._looks_like_chinese_person_name(entity_name)
+
+    def _looks_like_chinese_person_name(self, name: str) -> bool:
+        value = (name or "").strip()
+        if not re.fullmatch(r"[\u4e00-\u9fff]{2,4}", value):
+            return False
+        if any(keyword in value for keyword in self.PERSON_NAME_ORG_KEYWORDS):
+            return False
+        if value.endswith(("案", "事件", "平台", "官方", "通报", "警方")):
+            return False
+        return True
+
+    def _org_profile_marker_count(self, text: str) -> int:
+        if not text:
+            return 0
+        return sum(1 for marker in self.ORG_PROFILE_MARKERS if marker in text)
+
+    def _profile_looks_like_org_subject(self, text: str, marker_count: Optional[int] = None) -> bool:
+        if not text:
+            return False
+        if marker_count is None:
+            marker_count = self._org_profile_marker_count(text)
+        has_formal_org_phrase = bool(re.search(r"(机构|官方|本局|我局|分局|公安机关).{0,18}(负责|发布|通报|维护|侦查|回应|声明)", text))
+        return marker_count >= 2 or has_formal_org_phrase
+
+    def _has_person_subject_anchor(self, name: str, text: str) -> bool:
+        return self._person_subject_anchor_count(name, text) > 0
+
+    def _person_subject_anchor_count(self, name: str, text: str) -> int:
+        if not name:
+            return 0
+        escaped = re.escape(name)
+        patterns = [
+            fr"被告人\s*{escaped}",
+            fr"犯罪嫌疑人\s*{escaped}",
+            fr"嫌疑人\s*{escaped}",
+            fr"当事人\s*{escaped}",
+            fr"丈夫\s*{escaped}",
+            fr"妻子\s*{escaped}",
+            fr"凶手\s*{escaped}",
+            fr"死刑犯\s*{escaped}",
+            fr"{escaped}\s*(?:被|因|于|将|向|承认|交代|供述|杀害|杀妻|分尸|获|一审|二审|执行|伏法|死亡|出生|系|为|是)",
+            fr"{escaped}\s*[，,]\s*(?:男|女)",
+        ]
+        return sum(1 for pattern in patterns if re.search(pattern, text))
 
     def _build_verified_identity_context(self, resolved_real_entity: ResolvedRealEntity) -> str:
         """把联网核验结果转成生成上下文，不把 URL 暴露给最终人设正文。"""

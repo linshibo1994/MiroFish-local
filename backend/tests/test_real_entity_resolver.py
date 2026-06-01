@@ -1,6 +1,6 @@
 import json
 
-from app.services.real_entity_resolver import RealEntityResolver, RealEntitySource, UNSUPPORTED, VERIFIED
+from app.services.real_entity_resolver import RealEntityResolver, RealEntitySource, UNSUPPORTED, UNVERIFIED, VERIFIED
 from app.services.zep_entity_reader import EntityNode
 
 
@@ -474,3 +474,58 @@ def test_llm_source_validation_only_filters_invalid_urls(monkeypatch):
     )
 
     assert [source.url for source in validated] == ["https://example.com/alice"]
+
+
+def test_person_entity_rejects_related_organization_source():
+    entity = EntityNode(
+        uuid="person-xgl",
+        name="许国利",
+        labels=["Entity", "Person"],
+        summary="许国利是杭州杀妻案中的被告人，与案件行为轨迹直接相关。",
+        attributes={},
+    )
+    resolver = RealEntityResolver(min_source_count=1)
+
+    result = resolver._resolve_from_sources(
+        entity=entity,
+        entity_type="Person",
+        raw_query="许国利 杭州杀妻案 被告人",
+        sources=[
+            RealEntitySource(
+                title="杭州公安通报许国利案侦办情况",
+                url="https://example.com/police-xgl-case",
+                snippet="杭州市公安局江干区分局是公安机关，负责刑事侦查、案件通报和公共安全维护。",
+            )
+        ],
+    )
+
+    assert result.verification_status == UNVERIFIED
+    assert result.source_citations == []
+    assert "可引用来源不足" in result.skip_reason
+
+
+def test_person_entity_accepts_source_with_person_anchor():
+    entity = EntityNode(
+        uuid="person-xgl",
+        name="许国利",
+        labels=["Entity", "Person"],
+        summary="许国利是杭州杀妻案中的被告人，与案件行为轨迹直接相关。",
+        attributes={},
+    )
+    resolver = RealEntityResolver(min_source_count=1)
+
+    result = resolver._resolve_from_sources(
+        entity=entity,
+        entity_type="Person",
+        raw_query="许国利 杭州杀妻案 被告人",
+        sources=[
+            RealEntitySource(
+                title="许国利一审被判死刑",
+                url="https://example.com/xgl-person",
+                snippet="被告人许国利因故意杀人罪被判处死刑，案件与杭州杀妻案相关。",
+            )
+        ],
+    )
+
+    assert result.verification_status == VERIFIED
+    assert result.source_citations[0]["url"] == "https://example.com/xgl-person"
