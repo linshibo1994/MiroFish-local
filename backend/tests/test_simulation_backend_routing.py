@@ -1,6 +1,9 @@
+import json
+
 from app import create_app
 from app.api import simulation as simulation_api
 from app.models.project import Project, ProjectStatus
+from app.services.simulation_manager import SimulationState
 
 
 def test_entities_uses_graph_backend_instead_of_global_cloud(monkeypatch):
@@ -56,3 +59,59 @@ def test_entities_uses_graph_backend_instead_of_global_cloud(monkeypatch):
     assert captured["backend"] == "graphiti"
     assert captured["graph_id"] == "graph_123"
 
+
+def test_profiles_realtime_separates_expected_total_from_verified_count(tmp_path, monkeypatch):
+    app = create_app()
+    client = app.test_client()
+    simulation_id = "sim_expected_total"
+    sim_dir = tmp_path / simulation_id
+    sim_dir.mkdir()
+
+    (sim_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "status": "preparing",
+                "entities_count": 41,
+                "verification_candidate_count": 41,
+                "verification_verified_count": 2,
+                "verification_skipped_count": 39,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (sim_dir / "reddit_profiles.json").write_text(
+        json.dumps(
+            [
+                {"username": "福建电视台第一帮帮团_610", "name": "福建电视台第一帮帮团"},
+                {"username": "漳州市食品安全委员会办公室_183", "name": "漳州市食品安全委员会办公室"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(simulation_api.Config, "OASIS_SIMULATION_DATA_DIR", str(tmp_path))
+
+    def fake_get_simulation(self, requested_simulation_id):
+        assert requested_simulation_id == simulation_id
+        return SimulationState(
+            simulation_id=simulation_id,
+            project_id="proj_1",
+            graph_id="graph_1",
+            entities_count=41,
+            verification_candidate_count=41,
+            verification_verified_count=2,
+            verification_skipped_count=39,
+        )
+
+    monkeypatch.setattr(simulation_api.SimulationManager, "get_simulation", fake_get_simulation)
+
+    response = client.get(f"/api/simulation/{simulation_id}/profiles/realtime?platform=reddit")
+
+    assert response.status_code == 200
+    data = response.get_json()["data"]
+    assert data["count"] == 2
+    assert data["total_expected"] == 41
+    assert data["expected_agents_count"] == 41
+    assert data["verified_count"] == 2

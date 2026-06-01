@@ -459,6 +459,7 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
             return True, {
                 "status": status,
                 "entities_count": state_data.get("entities_count", 0),
+                "expected_agents_count": state_data.get("entities_count", 0),
                 "profiles_count": profiles_count,
                 "entity_types": state_data.get("entity_types", []),
                 "verification_candidate_count": state_data.get("verification_candidate_count", 0),
@@ -775,6 +776,7 @@ def prepare_simulation():
                 "message": "准备任务已启动，请通过 /api/simulation/prepare/status 查询进度",
                 "already_prepared": False,
                 "expected_entities_count": state.entities_count,  # 预期的Agent总数
+                "expected_agents_count": state.entities_count,  # 预期的Agent总数（语义化字段）
                 "entity_types": state.entity_types,  # 实体类型列表
                 "use_real_profiles": use_real_profiles,
                 "strict_real_mode": strict_real_mode,
@@ -1006,6 +1008,7 @@ def get_simulation_profiles(simulation_id: str):
         manager = SimulationManager()
         profiles = manager.get_profiles(simulation_id, platform=platform)
         state = manager.get_simulation(simulation_id)
+        expected_agents_count = state.entities_count if state else None
         profiles = _enrich_profiles_for_dialogue(
             profiles,
             simulation_id=simulation_id,
@@ -1018,6 +1021,8 @@ def get_simulation_profiles(simulation_id: str):
             "data": {
                 "platform": platform,
                 "count": len(profiles),
+                "total_expected": expected_agents_count,
+                "expected_agents_count": expected_agents_count,
                 "verified_count": state.verification_verified_count if state else 0,
                 "skipped_count": state.verification_skipped_count if state else 0,
                 "skipped_entities": state.verification_skipped_entities if state else [],
@@ -1162,6 +1167,7 @@ def get_simulation_profiles_realtime(simulation_id: str):
                 "platform": platform,
                 "count": len(profiles),
                 "total_expected": total_expected,
+                "expected_agents_count": total_expected,
                 "verified_count": verified_count,
                 "skipped_count": skipped_count,
                 "skipped_entities": skipped_entities,

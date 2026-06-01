@@ -90,7 +90,7 @@
               <span class="stat-label">当前智能体数</span>
             </div>
             <div class="stat-card">
-              <span class="stat-value">{{ expectedTotal || '-' }}</span>
+              <span class="stat-value">{{ expectedTotal ?? '-' }}</span>
               <span class="stat-label">预期智能体总数</span>
             </div>
             <div class="stat-card">
@@ -699,6 +699,16 @@ let lastLoggedConfigStage = ''
 const useCustomRounds = ref(false) // 默认使用自动配置轮数
 const customMaxRounds = ref(40)   // 默认推荐40轮
 
+const pickExpectedAgentTotal = (data = {}) => {
+  const value = data.expected_agents_count ?? data.expected_entities_count ?? data.total_expected
+  if (value === null || value === undefined || value === '') {
+    return null
+  }
+
+  const count = Number(value)
+  return Number.isFinite(count) ? count : null
+}
+
 // Watch stage to update phase
 watch(currentStage, (newStage) => {
   if (newStage === '生成智能体人设' || newStage === 'generating_profiles') {
@@ -908,9 +918,10 @@ const startPrepareSimulation = async () => {
       addLog(`  └─ Task ID: ${res.data.task_id}`)
       
       // 立即设置预期Agent总数（从prepare接口返回值获取）
-      if (res.data.expected_entities_count) {
-        expectedTotal.value = res.data.expected_entities_count
-        addLog(`从Zep图谱读取到 ${res.data.expected_entities_count} 个实体`)
+      const preparedExpectedTotal = pickExpectedAgentTotal(res.data)
+      if (preparedExpectedTotal !== null) {
+        expectedTotal.value = preparedExpectedTotal
+        addLog(`从Zep图谱读取到 ${preparedExpectedTotal} 个实体`)
         if (res.data.entity_types && res.data.entity_types.length > 0) {
           addLog(`  └─ 实体类型: ${res.data.entity_types.map(t => translateEntityType(t)).join(', ')}`)
         }
@@ -1026,7 +1037,10 @@ const fetchProfilesRealtime = async () => {
     if (res.success && res.data) {
       const prevCount = profiles.value.length
       profiles.value = res.data.profiles || []
-      expectedTotal.value = res.data.verified_count || res.data.total_expected
+      const realtimeExpectedTotal = pickExpectedAgentTotal(res.data)
+      if (realtimeExpectedTotal !== null) {
+        expectedTotal.value = realtimeExpectedTotal
+      }
       
       // 提取实体类型
       const types = new Set()
