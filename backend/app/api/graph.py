@@ -919,9 +919,19 @@ def build_graph():
                     progress=10
                 )
                 graph_id = builder.create_graph(name=graph_name)
-                
-                # 更新项目的graph_id
-                project.graph_id = graph_id
+
+                task_manager.update_task(
+                    task_id,
+                    progress_detail={
+                        "batch_size": batch_size,
+                        "concurrency": graph_build_concurrency,
+                        "backend": Config.ZEP_BACKEND,
+                        "llm_boost_enabled": bool(Config.LLM_BOOST_API_KEY and Config.LLM_BOOST_BASE_URL and Config.LLM_BOOST_MODEL_NAME),
+                        "pending_graph_id": graph_id,
+                    }
+                )
+
+                # graph_id 只在构建成功后写入项目，避免失败时前端读取到半成品图谱。
                 project.graph_backend = Config.ZEP_BACKEND
                 project.graph_provider = "graphiti" if Config.ZEP_BACKEND == "graphiti" else "zep"
                 project.graph_schema_version = "v1"
@@ -989,6 +999,7 @@ def build_graph():
                 graph_data = builder.get_graph_data(graph_id)
                 
                 # 更新项目状态
+                project.graph_id = graph_id
                 project.status = ProjectStatus.GRAPH_COMPLETED
                 ProjectManager.save_project(project)
                 

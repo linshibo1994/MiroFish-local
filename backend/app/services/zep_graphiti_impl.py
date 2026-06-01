@@ -37,11 +37,39 @@ logger = logging.getLogger('mirofish.graphiti_client')
 
 def _is_rate_limit_error(exc: Exception) -> bool:
     """识别 OpenAI-compatible 服务的限流错误。"""
-    status_code = getattr(exc, "status_code", None)
-    if status_code == 429:
-        return True
-    text = str(exc).lower()
-    return "rate" in text and ("limit" in text or "429" in text)
+    for current in _iter_exception_chain(exc):
+        status_code = getattr(current, "status_code", None)
+        if status_code == 429:
+            return True
+        text = str(current).lower()
+        if (
+            "429" in text
+            or ("rate" in text and "limit" in text)
+            or "insufficient_quota" in text
+            or "quota" in text
+        ):
+            return True
+    return False
+
+
+def _iter_exception_chain(exc: Exception):
+    """遍历异常链，兼容 Graphiti 包装后的上游 OpenAI 异常。"""
+    seen = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+
+
+def _is_quota_exhausted_error(exc: Exception) -> bool:
+    """识别明确的额度耗尽错误，这类错误重试通常无效。"""
+    text = " ".join(str(current).lower() for current in _iter_exception_chain(exc))
+    return (
+        "insufficient_quota" in text
+        or "exceeded your current quota" in text
+        or "check your plan and billing" in text
+    )
 
 
 # ============================================================================
@@ -56,7 +84,9 @@ _async_thread: Optional[threading.Thread] = None
 _async_loop_ready = threading.Event()
 _init_lock = threading.Lock()
 _embedding_throttle_lock = asyncio.Lock()
+_llm_throttle_lock = asyncio.Lock()
 _last_embedding_request_at = 0.0
+_last_llm_request_at = 0.0
 
 
 def _start_async_loop():
@@ -145,6 +175,100 @@ async def _throttle_embedding_request(operation: str, item_count: int) -> None:
         _last_embedding_request_at = time.monotonic()
 
 
+async def _throttle_llm_request(operation: str, item_count: int) -> None:
+    """对 Graphiti LLM 抽取请求做全局节流，避免单批内部并发打爆额度。"""
+    min_interval = max(0.0, float(Config.GRAPHITI_LLM_MIN_INTERVAL_SECONDS or 0))
+    if min_interval <= 0:
+        return
+
+    global _last_llm_request_at
+    async with _llm_throttle_lock:
+        now = time.monotonic()
+        wait_seconds = min_interval - (now - _last_llm_request_at)
+        if wait_seconds > 0:
+            logger.debug(
+                "Graphiti %s LLM 节流等待 %.2f 秒: items=%s",
+                operation,
+                wait_seconds,
+                item_count,
+            )
+            await asyncio.sleep(wait_seconds)
+        _last_llm_request_at = time.monotonic()
+
+
+async def _call_with_graphiti_rate_limit_retry(factory, operation: str, item_count: int):
+    """统一处理 Graphiti 对 LLM/Embedding 的限流重试。"""
+    max_retries = max(0, int(Config.GRAPHITI_RATE_LIMIT_MAX_RETRIES or 0))
+    retry_seconds = max(0.0, float(Config.GRAPHITI_RATE_LIMIT_RETRY_SECONDS or 0))
+    for attempt in range(max_retries + 1):
+        try:
+            if operation.startswith("embedding."):
+                await _throttle_embedding_request(operation, item_count)
+            elif operation.startswith("llm."):
+                await _throttle_llm_request(operation, item_count)
+            return await factory()
+        except Exception as exc:
+            if not _is_rate_limit_error(exc) or _is_quota_exhausted_error(exc) or attempt >= max_retries:
+                raise
+            delay = retry_seconds * (attempt + 1)
+            logger.warning(
+                "Graphiti %s 触发限流，%.1f 秒后重试: items=%s, attempt=%s/%s, error=%s",
+                operation,
+                delay,
+                item_count,
+                attempt + 1,
+                max_retries,
+                exc,
+            )
+            await asyncio.sleep(delay)
+
+
+def _create_graphiti_llm_rate_limit_wrapper(base_llm_client: Any) -> Any:
+    """
+    创建 Graphiti LLM client 包装器。
+
+    这里动态继承 Graphiti 的 LLMClient，避免 GraphitiClients 的 Pydantic
+    类型校验拒绝普通代理对象。
+    """
+    try:
+        from graphiti_core.llm_client.client import LLMClient
+
+        class _GraphitiRateLimitedLLMClient(LLMClient):
+            """动态生成的 Graphiti LLMClient 子类。"""
+
+            def __init__(self, llm_client: Any):
+                self._llm_client = llm_client
+                concurrency = max(1, int(Config.GRAPHITI_LLM_CONCURRENCY or 1))
+                self._semaphore = asyncio.Semaphore(concurrency)
+
+                for attr in ("config", "model", "small_model", "temperature", "max_tokens", "tracer"):
+                    if hasattr(llm_client, attr):
+                        setattr(self, attr, getattr(llm_client, attr))
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self._llm_client, name)
+
+            def set_tracer(self, tracer: Any) -> None:
+                if hasattr(self._llm_client, "set_tracer"):
+                    self._llm_client.set_tracer(tracer)
+                self.tracer = tracer
+
+            async def _generate_response(self, *args, **kwargs) -> Dict[str, Any]:
+                return await self._llm_client._generate_response(*args, **kwargs)
+
+            async def generate_response(self, *args, **kwargs) -> Dict[str, Any]:
+                async with self._semaphore:
+                    return await _call_with_graphiti_rate_limit_retry(
+                        lambda: self._llm_client.generate_response(*args, **kwargs),
+                        operation="llm.generate_response",
+                        item_count=1,
+                    )
+
+        return _GraphitiRateLimitedLLMClient(base_llm_client)
+    except ImportError:
+        return base_llm_client
+
+
 class DashScopeEmbedderWrapper:
     """
     DashScope 兼容的 Embedder 包装器
@@ -164,7 +288,7 @@ class DashScopeEmbedderWrapper:
 
     async def create(self, input_data) -> list[float]:
         """单条 embedding 请求；遇到限流时退避重试。"""
-        return await self._call_with_rate_limit_retry(
+        return await _call_with_graphiti_rate_limit_retry(
             lambda: self._embedder.create(input_data),
             operation="embedding.create",
             item_count=1,
@@ -173,7 +297,7 @@ class DashScopeEmbedderWrapper:
     async def create_batch(self, input_data_list: list[str]) -> list[list[float]]:
         """批量 embedding 请求（分块处理）"""
         if len(input_data_list) <= self.max_batch_size:
-            return await self._call_with_rate_limit_retry(
+            return await _call_with_graphiti_rate_limit_retry(
                 lambda: self._embedder.create_batch(input_data_list),
                 operation="embedding.create_batch",
                 item_count=len(input_data_list),
@@ -183,35 +307,13 @@ class DashScopeEmbedderWrapper:
         results = []
         for i in range(0, len(input_data_list), self.max_batch_size):
             chunk = input_data_list[i : i + self.max_batch_size]
-            chunk_results = await self._call_with_rate_limit_retry(
+            chunk_results = await _call_with_graphiti_rate_limit_retry(
                 lambda chunk=chunk: self._embedder.create_batch(chunk),
                 operation="embedding.create_batch",
                 item_count=len(chunk),
             )
             results.extend(chunk_results)
         return results
-
-    async def _call_with_rate_limit_retry(self, factory, operation: str, item_count: int):
-        max_retries = max(0, int(Config.GRAPHITI_RATE_LIMIT_MAX_RETRIES or 0))
-        retry_seconds = max(0.0, float(Config.GRAPHITI_RATE_LIMIT_RETRY_SECONDS or 0))
-        for attempt in range(max_retries + 1):
-            try:
-                await _throttle_embedding_request(operation, item_count)
-                return await factory()
-            except Exception as exc:
-                if not _is_rate_limit_error(exc) or attempt >= max_retries:
-                    raise
-                delay = retry_seconds * (attempt + 1)
-                logger.warning(
-                    "Graphiti %s 触发限流，%.1f 秒后重试: items=%s, attempt=%s/%s, error=%s",
-                    operation,
-                    delay,
-                    item_count,
-                    attempt + 1,
-                    max_retries,
-                    exc,
-                )
-                await asyncio.sleep(delay)
 
 
 def _create_dashscope_embedder_wrapper(base_embedder: Any, max_batch_size: int = 10) -> Any:
@@ -233,7 +335,7 @@ def _create_dashscope_embedder_wrapper(base_embedder: Any, max_batch_size: int =
                     self.config = embedder.config
 
             async def create(self, input_data) -> list[float]:
-                return await self._call_with_rate_limit_retry(
+                return await _call_with_graphiti_rate_limit_retry(
                     lambda: self._embedder.create(input_data),
                     operation="embedding.create",
                     item_count=1,
@@ -241,7 +343,7 @@ def _create_dashscope_embedder_wrapper(base_embedder: Any, max_batch_size: int =
 
             async def create_batch(self, input_data_list: list[str]) -> list[list[float]]:
                 if len(input_data_list) <= self.max_batch_size:
-                    return await self._call_with_rate_limit_retry(
+                    return await _call_with_graphiti_rate_limit_retry(
                         lambda: self._embedder.create_batch(input_data_list),
                         operation="embedding.create_batch",
                         item_count=len(input_data_list),
@@ -250,35 +352,13 @@ def _create_dashscope_embedder_wrapper(base_embedder: Any, max_batch_size: int =
                 results = []
                 for i in range(0, len(input_data_list), self.max_batch_size):
                     chunk = input_data_list[i : i + self.max_batch_size]
-                    chunk_results = await self._call_with_rate_limit_retry(
+                    chunk_results = await _call_with_graphiti_rate_limit_retry(
                         lambda chunk=chunk: self._embedder.create_batch(chunk),
                         operation="embedding.create_batch",
                         item_count=len(chunk),
                     )
                     results.extend(chunk_results)
                 return results
-
-            async def _call_with_rate_limit_retry(self, factory, operation: str, item_count: int):
-                max_retries = max(0, int(Config.GRAPHITI_RATE_LIMIT_MAX_RETRIES or 0))
-                retry_seconds = max(0.0, float(Config.GRAPHITI_RATE_LIMIT_RETRY_SECONDS or 0))
-                for attempt in range(max_retries + 1):
-                    try:
-                        await _throttle_embedding_request(operation, item_count)
-                        return await factory()
-                    except Exception as exc:
-                        if not _is_rate_limit_error(exc) or attempt >= max_retries:
-                            raise
-                        delay = retry_seconds * (attempt + 1)
-                        logger.warning(
-                            "Graphiti %s 触发限流，%.1f 秒后重试: items=%s, attempt=%s/%s, error=%s",
-                            operation,
-                            delay,
-                            item_count,
-                            attempt + 1,
-                            max_retries,
-                            exc,
-                        )
-                        await asyncio.sleep(delay)
 
         return _DashScopeEmbedderClient(base_embedder, max_batch_size)
 
@@ -352,15 +432,18 @@ class GraphitiClient(ZepClientAdapter):
                 llm_client = self._llm_client
                 if llm_client is None:
                     llm_client = self._build_default_llm_client()
+                llm_client = _create_graphiti_llm_rate_limit_wrapper(llm_client)
 
                 embedder = self._embedder
                 if embedder is None:
                     embedder = self._build_default_embedder()
 
                 # 创建 Graphiti 实例。并发构建时允许使用独立实例，避免单例内部状态互相抢占。
+                max_coroutines = max(1, int(Config.GRAPHITI_LLM_CONCURRENCY or 1))
                 graphiti_kwargs = {
                     "llm_client": llm_client,
                     "embedder": embedder,
+                    "max_coroutines": max_coroutines,
                 }
                 try:
                     self._graphiti = Graphiti(
@@ -375,7 +458,8 @@ class GraphitiClient(ZepClientAdapter):
                         self.neo4j_uri,
                         self.neo4j_user,
                         self.neo4j_password,
-                        **graphiti_kwargs,
+                        llm_client=llm_client,
+                        embedder=embedder,
                     )
 
                 # 初始化索引和约束

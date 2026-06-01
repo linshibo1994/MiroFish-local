@@ -390,6 +390,7 @@ class GraphBuilderService:
         completed_batches = 0
         episode_uuids_by_batch: Dict[int, List[str]] = {}
         progress_lock = threading.Lock()
+        failure_event = threading.Event()
         max_reported_ratio = 0.0
 
         def build_episodes(batch_chunks: List[str]) -> List[Dict[str, Any]]:
@@ -413,11 +414,31 @@ class GraphBuilderService:
                 reported_ratio = max_reported_ratio
             progress_callback(message, reported_ratio)
 
+        def iter_exception_messages(exc: Exception) -> List[str]:
+            messages: List[str] = []
+            seen = set()
+            current = exc
+            while current is not None and id(current) not in seen:
+                seen.add(id(current))
+                messages.append(str(current) or current.__class__.__name__)
+                current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+            return messages
+
         def raise_batch_error(batch_num: int, exc: Exception) -> None:
             if isinstance(exc, TimeoutError) or isinstance(exc, FutureTimeoutError):
                 message = f"批次 {batch_num} 写入超过 Graphiti 超时限制"
             else:
-                message = str(exc) or exc.__class__.__name__
+                exception_text = " ".join(iter_exception_messages(exc)).lower()
+                if (
+                    "insufficient_quota" in exception_text
+                    or "exceeded your current quota" in exception_text
+                    or "check your plan and billing" in exception_text
+                ):
+                    message = "LLM 服务额度不足或账单配额已耗尽，请检查 API Key、套餐/余额，或切换 Graphiti 使用的模型后重试"
+                elif "429" in exception_text or ("rate" in exception_text and "limit" in exception_text):
+                    message = "LLM 服务触发限流，请稍后重试；若频繁出现，请降低 GRAPHITI_LLM_CONCURRENCY 或调大 GRAPHITI_LLM_MIN_INTERVAL_SECONDS"
+                else:
+                    message = str(exc) or exc.__class__.__name__
             report_progress(f"批次 {batch_num} 发送失败: {message}", 0)
             raise RuntimeError(f"批次 {batch_num} 图谱写入失败: {message}") from exc
 
@@ -452,18 +473,28 @@ class GraphBuilderService:
                     graph_id=graph_id,
                     episodes=build_episodes(batch_chunks),
                 )
-                logger.info(
-                    "图谱批次写入完成: graph_id=%s, batch=%s/%s, episodes=%s",
-                    graph_id,
-                    batch_num,
-                    total_batches,
-                    len(batch_uuids),
-                )
+                if failure_event.is_set():
+                    logger.info(
+                        "图谱批次写入完成但任务已失败，结果丢弃: graph_id=%s, batch=%s/%s, episodes=%s",
+                        graph_id,
+                        batch_num,
+                        total_batches,
+                        len(batch_uuids),
+                    )
+                else:
+                    logger.info(
+                        "图谱批次写入完成: graph_id=%s, batch=%s/%s, episodes=%s",
+                        graph_id,
+                        batch_num,
+                        total_batches,
+                        len(batch_uuids),
+                    )
                 delay = max(0.0, float(Config.GRAPH_BUILD_BATCH_DELAY_SECONDS or 0))
                 if delay:
                     time.sleep(delay)
                 return batch_uuids
             except Exception:
+                failure_event.set()
                 logger.exception(
                     "图谱批次写入异常: graph_id=%s, batch=%s/%s",
                     graph_id,
@@ -500,6 +531,9 @@ class GraphBuilderService:
                     try:
                         episode_uuids_by_batch[batch_index] = future.result()
                     except Exception as e:
+                        for pending_future in future_to_batch:
+                            if pending_future is not future:
+                                pending_future.cancel()
                         raise_batch_error(batch_index + 1, e)
 
                     with progress_lock:

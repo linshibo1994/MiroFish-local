@@ -99,6 +99,8 @@ class Config:
     GRAPHITI_OPERATION_TIMEOUT_SECONDS = int(os.environ.get('GRAPHITI_OPERATION_TIMEOUT_SECONDS', '900'))  # Graphiti 单次写入超时
     GRAPHITI_RATE_LIMIT_MAX_RETRIES = int(os.environ.get('GRAPHITI_RATE_LIMIT_MAX_RETRIES', '3'))  # Graphiti 限流重试次数
     GRAPHITI_RATE_LIMIT_RETRY_SECONDS = float(os.environ.get('GRAPHITI_RATE_LIMIT_RETRY_SECONDS', '20'))  # Graphiti 限流退避秒数
+    GRAPHITI_LLM_CONCURRENCY = int(os.environ.get('GRAPHITI_LLM_CONCURRENCY', '1'))  # Graphiti 内部 LLM 抽取并发数
+    GRAPHITI_LLM_MIN_INTERVAL_SECONDS = float(os.environ.get('GRAPHITI_LLM_MIN_INTERVAL_SECONDS', '0.5'))  # Graphiti LLM 请求最小间隔
     GRAPHITI_EMBEDDING_MIN_INTERVAL_SECONDS = float(os.environ.get('GRAPHITI_EMBEDDING_MIN_INTERVAL_SECONDS', '0.5'))  # Graphiti embedding 请求最小间隔
     GRAPH_MEMORY_STOP_TIMEOUT_SECONDS = float(os.environ.get('GRAPH_MEMORY_STOP_TIMEOUT_SECONDS', '3'))  # 图谱记忆写回停止等待秒数
     

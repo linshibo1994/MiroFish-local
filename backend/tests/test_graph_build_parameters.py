@@ -109,6 +109,95 @@ def test_graphiti_embedding_throttle_waits_between_requests(monkeypatch):
     assert sleeps == [0.5]
 
 
+def test_graphiti_llm_rate_limit_wrapper_throttles_and_retries(monkeypatch):
+    from app.services import zep_graphiti_impl
+    from graphiti_core.llm_client.config import LLMConfig
+    from graphiti_core.llm_client.errors import RateLimitError
+
+    sleeps = []
+    clock = {"value": 100.0}
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        clock["value"] += seconds
+
+    class FakeLLM:
+        config = LLMConfig(model="fake-model", temperature=0, max_tokens=128)
+        model = "fake-model"
+        small_model = None
+        temperature = 0
+        max_tokens = 128
+
+        def __init__(self):
+            self.calls = 0
+
+        def set_tracer(self, tracer):
+            self.tracer = tracer
+
+        async def generate_response(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise RateLimitError("Rate limit exceeded. Please try again later.")
+            return {"ok": True}
+
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_LLM_CONCURRENCY", 1)
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_LLM_MIN_INTERVAL_SECONDS", 0.5)
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_RATE_LIMIT_MAX_RETRIES", 2)
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_RATE_LIMIT_RETRY_SECONDS", 20)
+    monkeypatch.setattr("app.services.zep_graphiti_impl.time.monotonic", lambda: clock["value"])
+    monkeypatch.setattr("app.services.zep_graphiti_impl.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(zep_graphiti_impl, "_last_llm_request_at", 0.0)
+
+    fake_llm = FakeLLM()
+    wrapped = zep_graphiti_impl._create_graphiti_llm_rate_limit_wrapper(fake_llm)
+
+    async def run_calls():
+        first = await wrapped.generate_response([])
+        second = await wrapped.generate_response([])
+        return first, second
+
+    first_result, second_result = asyncio.run(run_calls())
+
+    assert first_result == {"ok": True}
+    assert second_result == {"ok": True}
+    assert fake_llm.calls == 3
+    assert sleeps == [20, 0.5]
+
+
+def test_graphiti_quota_exhausted_error_does_not_retry(monkeypatch):
+    from app.services import zep_graphiti_impl
+    from graphiti_core.llm_client.errors import RateLimitError
+
+    calls = {"count": 0}
+
+    async def fake_sleep(seconds):
+        raise AssertionError("额度耗尽错误不应进入退避等待")
+
+    async def always_quota_error():
+        calls["count"] += 1
+        upstream = Exception("Error code: 429 - insufficient_quota: You exceeded your current quota")
+        raise RateLimitError("Rate limit exceeded. Please try again later.") from upstream
+
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_RATE_LIMIT_MAX_RETRIES", 3)
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_RATE_LIMIT_RETRY_SECONDS", 20)
+    monkeypatch.setattr("app.services.zep_graphiti_impl.asyncio.sleep", fake_sleep)
+
+    try:
+        asyncio.run(
+            zep_graphiti_impl._call_with_graphiti_rate_limit_retry(
+                always_quota_error,
+                operation="llm.generate_response",
+                item_count=1,
+            )
+        )
+    except Exception as exc:
+        assert zep_graphiti_impl._is_quota_exhausted_error(exc)
+    else:
+        raise AssertionError("应抛出额度耗尽异常")
+
+    assert calls["count"] == 1
+
+
 def test_graph_builder_default_batch_size_uses_config(monkeypatch):
     monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
 
@@ -168,6 +257,26 @@ def test_graph_builder_graphiti_uses_configured_concurrency_and_keeps_uuid_order
 
     assert captured_workers == [3]
     assert episode_uuids == ["chunk-0", "chunk-1", "chunk-2", "chunk-3"]
+
+
+def test_graph_builder_formats_quota_error_message(monkeypatch):
+    monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
+
+    class QuotaClient:
+        def add_episode_batch(self, graph_id, episodes):
+            upstream = Exception("Error code: 429 - insufficient_quota: You exceeded your current quota")
+            raise Exception("Rate limit exceeded. Please try again later.") from upstream
+
+    builder = GraphBuilderService.__new__(GraphBuilderService)
+    builder.client = QuotaClient()
+    builder._backend = "graphiti"
+
+    try:
+        builder.add_text_batches("graph_1", ["chunk-0"], batch_size=1)
+    except RuntimeError as exc:
+        assert "LLM 服务额度不足" in str(exc)
+    else:
+        raise AssertionError("应抛出批次写入失败异常")
 
 
 def test_graph_builder_keeps_raw_chunk_without_extraction_context(monkeypatch):
@@ -650,3 +759,53 @@ def test_graph_build_api_passes_project_event_context_to_episodes(monkeypatch, t
     assert "法国车手瓦伦丁·德比斯" in captured["extraction_context"]["entity_hints"]
     assert "网易游戏、阴阳师等无关实体即使出现在材料杂讯中也不要入图" in captured["wrapped_episode"]
     assert "张雪驾驶820RR-RS参加相关赛事讨论" in captured["wrapped_episode"]
+
+
+def test_graph_build_api_does_not_persist_graph_id_until_success(monkeypatch, tmp_path):
+    monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", str(tmp_path))
+    monkeypatch.setattr("app.api.graph.Config.ZEP_BACKEND", "graphiti")
+
+    class FailingBuilder:
+        def __init__(self, api_key=None, backend=None, build_mode=False):
+            pass
+
+        def create_graph(self, name):
+            return "mirofish_partial_graph"
+
+        def set_ontology(self, graph_id, ontology):
+            pass
+
+        def add_text_batches(self, *args, **kwargs):
+            raise RuntimeError("批次 1 图谱写入失败: Rate limit exceeded. Please try again later.")
+
+    class InlineThread:
+        def __init__(self, target, daemon=False):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            self.target()
+
+    project = ProjectManager.create_project(name="限流测试")
+    project.status = ProjectStatus.ONTOLOGY_GENERATED
+    project.ontology = {
+        "entity_types": [{"name": "Person", "description": "person", "attributes": []}],
+        "edge_types": [],
+    }
+    ProjectManager.save_project(project)
+    ProjectManager.save_extracted_text(project.project_id, "用于测试图谱构建失败的文本。")
+
+    monkeypatch.setattr("app.api.graph.GraphBuilderService", FailingBuilder)
+    monkeypatch.setattr("app.api.graph.threading.Thread", InlineThread)
+
+    app = create_app()
+    response = app.test_client().post(
+        "/api/graph/build",
+        json={"project_id": project.project_id, "batch_size": 1, "chunk_size": 200},
+    )
+
+    assert response.status_code == 200
+    saved_project = ProjectManager.get_project(project.project_id)
+    assert saved_project.status == ProjectStatus.FAILED
+    assert saved_project.graph_id is None
+    assert "Rate limit exceeded" in saved_project.error
