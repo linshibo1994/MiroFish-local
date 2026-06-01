@@ -317,11 +317,11 @@ const statusText = computed(() => {
   if (simulationCreating.value) return '创建中'
   if (currentStep.value === 2) {
     if (envSetupStatus.value === 'error') return '错误'
-    if (envSetupStatus.value === 'completed') return 'Ready'
+    if (envSetupStatus.value === 'completed') return '就绪'
     return '准备中'
   }
-  if (currentPhase.value >= 2) return 'Ready'
-  if (currentPhase.value === 1) return 'Building'
+  if (currentPhase.value >= 2) return '就绪'
+  if (currentPhase.value === 1) return '构建中'
   if (currentPhase.value === 0) return '生成中'
   return '等待输入'
 })
