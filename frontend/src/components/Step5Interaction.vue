@@ -269,10 +269,20 @@
                   </span>
                   <span class="message-time">{{ formatTime(msg.timestamp) }}</span>
                 </div>
-                <div class="message-text" v-html="renderMarkdown(msg.content)"></div>
+                <div
+                  v-if="msg.content"
+                  class="message-text"
+                  :class="{ streaming: msg.streaming }"
+                  v-html="renderMarkdown(msg.content)"
+                ></div>
+                <div v-else-if="msg.streaming" class="typing-indicator inline-typing">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </div>
               </div>
             </div>
-            <div v-if="isSending" class="chat-message assistant">
+            <div v-if="showTypingIndicator" class="chat-message assistant">
               <div class="message-avatar">
                 <span>{{ chatTarget === 'report_agent' ? 'R' : getAgentInitial(selectedAgent) }}</span>
               </div>
@@ -437,6 +447,7 @@ const chatInput = ref('')
 const chatHistory = ref([])
 const chatHistoryCache = ref({}) // 缓存所有对话记录: { 'report_agent': [], 'agent_<stable_key>': ... }
 const isSending = ref(false)
+const isAgentStreaming = ref(false)
 const streamAbortController = ref(null)
 const chatMessages = ref(null)
 const chatInputRef = ref(null)
@@ -458,6 +469,11 @@ const profiles = ref([])
 const isSectionCompleted = (sectionIndex) => {
   return !!generatedSections.value[sectionIndex]
 }
+
+const showTypingIndicator = computed(() => {
+  if (!isSending.value) return false
+  return chatTarget.value === 'report_agent' || !isAgentStreaming.value
+})
 
 // Refs
 const leftPanel = ref(null)
@@ -511,10 +527,22 @@ const getChatCacheKey = () => {
 }
 
 const abortAgentStream = () => {
+  if (streamAbortController.value && isAgentStreaming.value) {
+    chatHistory.value = chatHistory.value.map(msg => (
+      msg.streaming
+        ? {
+            ...msg,
+            streaming: false,
+            content: msg.content || '（对话已中断）'
+          }
+        : msg
+    ))
+  }
   if (streamAbortController.value) {
     streamAbortController.value.abort()
     streamAbortController.value = null
   }
+  isAgentStreaming.value = false
 }
 
 // 保存当前对话记录到缓存
@@ -523,7 +551,7 @@ const saveChatHistory = () => {
   
   const cacheKey = getChatCacheKey()
   if (cacheKey) {
-    chatHistoryCache.value[cacheKey] = [...chatHistory.value]
+    chatHistoryCache.value[cacheKey] = chatHistory.value.map(({ id, streaming, ...msg }) => msg)
   }
 }
 
@@ -734,15 +762,28 @@ const sendToAgent = async (message) => {
     }))
 
   const assistantMessage = {
+    id: `agent-stream-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     role: 'assistant',
     content: '',
+    streaming: true,
     timestamp: new Date().toISOString()
   }
   chatHistory.value.push(assistantMessage)
+  let streamedContent = ''
   scrollToBottom()
 
   const controller = new AbortController()
   streamAbortController.value = controller
+  isAgentStreaming.value = true
+
+  const updateAssistantMessage = (patch) => {
+    const assistantIndex = chatHistory.value.findIndex(msg => msg.id === assistantMessage.id)
+    if (assistantIndex < 0) return
+    chatHistory.value[assistantIndex] = {
+      ...chatHistory.value[assistantIndex],
+      ...patch
+    }
+  }
 
   try {
     await streamAgentChat(props.simulationId, {
@@ -758,33 +799,50 @@ const sendToAgent = async (message) => {
         if (event.event === 'meta') {
           addLog(`${event.agent?.name || agentName} 正在回复...`)
         } else if (event.event === 'delta') {
-          assistantMessage.content += event.content || ''
+          streamedContent += event.content || ''
+          updateAssistantMessage({
+            content: streamedContent,
+            streaming: true
+          })
           scrollToBottom()
         } else if (event.event === 'done') {
+          updateAssistantMessage({
+            streaming: false
+          })
           addLog(`${event.agent?.name || agentName} 已回复`)
         }
       }
     })
   } catch (err) {
     if (err.name === 'AbortError') {
-      assistantMessage.content = assistantMessage.content || '（对话已中断）'
+      updateAssistantMessage({
+        content: streamedContent || '（对话已中断）',
+        streaming: false
+      })
       return
     }
-    if (!assistantMessage.content.trim()) {
-      const index = chatHistory.value.indexOf(assistantMessage)
-      if (index >= 0) {
-        chatHistory.value.splice(index, 1)
+    updateAssistantMessage({
+      streaming: false
+    })
+    if (!streamedContent.trim()) {
+      const assistantIndex = chatHistory.value.findIndex(msg => msg.id === assistantMessage.id)
+      if (assistantIndex >= 0 && assistantIndex < chatHistory.value.length) {
+        chatHistory.value.splice(assistantIndex, 1)
       }
     }
     throw err
+  } finally {
+    isAgentStreaming.value = false
+    if (streamAbortController.value === controller) {
+      streamAbortController.value = null
+    }
   }
 
-  if (!assistantMessage.content.trim()) {
-    assistantMessage.content = '（本次没有生成有效回复）'
-  }
-
-  if (streamAbortController.value === controller) {
-    streamAbortController.value = null
+  if (!streamedContent.trim()) {
+    updateAssistantMessage({
+      content: '（本次没有生成有效回复）',
+      streaming: false
+    })
   }
 }
 
@@ -2093,6 +2151,12 @@ watch(() => props.simulationId, (newId) => {
   border-bottom-left-radius: 4px;
 }
 
+.inline-typing {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: 2px;
+}
+
 .typing-indicator span {
   width: 8px;
   height: 8px;
@@ -2108,6 +2172,23 @@ watch(() => props.simulationId, (newId) => {
 @keyframes typing {
   0%, 60%, 100% { transform: translateY(0); }
   30% { transform: translateY(-8px); }
+}
+
+.message-text.streaming::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 16px;
+  margin-left: 3px;
+  vertical-align: -2px;
+  background: #4B5563;
+  border-radius: 2px;
+  animation: cursorBlink 0.9s steps(2, start) infinite;
+}
+
+@keyframes cursorBlink {
+  0%, 45% { opacity: 1; }
+  46%, 100% { opacity: 0; }
 }
 
 /* Chat Input */

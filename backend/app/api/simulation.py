@@ -1228,7 +1228,7 @@ def stream_agent_chat(simulation_id: str):
 
     return Response(
         stream_with_context(generate()),
-        mimetype="application/x-ndjson",
+        mimetype="application/x-ndjson; charset=utf-8",
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",

@@ -44,6 +44,9 @@ def test_agent_chat_stream_returns_ndjson(monkeypatch):
     )
 
     assert response.status_code == 200
+    assert response.content_type == "application/x-ndjson; charset=utf-8"
+    assert response.headers["Cache-Control"] == "no-cache"
+    assert response.headers["X-Accel-Buffering"] == "no"
     lines = [json.loads(line) for line in response.data.decode("utf-8").strip().splitlines()]
     assert [line["event"] for line in lines] == ["meta", "delta", "done"]
     assert lines[0]["agent"]["name"] == "张雪"
