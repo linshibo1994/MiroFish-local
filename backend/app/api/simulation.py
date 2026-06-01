@@ -2587,13 +2587,6 @@ def interview_agents_batch():
                     "error": f"采访列表第{i+1}项的platform只能是 'twitter' 或 'reddit'"
                 }), 400
 
-        # 检查环境状态
-        if not SimulationRunner.check_env_alive(simulation_id):
-            return jsonify({
-                "success": False,
-                "error": "模拟环境未运行或已关闭。请确保模拟已完成并进入等待命令模式。"
-            }), 400
-
         # 优化每个采访项的prompt，添加前缀避免Agent调用工具
         optimized_interviews = []
         for interview in interviews:
@@ -2601,19 +2594,51 @@ def interview_agents_batch():
             optimized_interview['prompt'] = optimize_interview_prompt(interview.get('prompt', ''))
             optimized_interviews.append(optimized_interview)
 
-        result = SimulationRunner.interview_agents_batch(
-            simulation_id=simulation_id,
-            interviews=optimized_interviews,
-            platform=platform,
-            timeout=timeout
-        )
+        def run_profile_survey_fallback(reason: str):
+            return AgentDialogueService().interview_agents_from_profiles(
+                simulation_id=simulation_id,
+                interviews=optimized_interviews,
+                platform=platform or "reddit",
+                fallback_reason=reason,
+            )
+
+        if SimulationRunner.check_env_alive(simulation_id):
+            try:
+                result = SimulationRunner.interview_agents_batch(
+                    simulation_id=simulation_id,
+                    interviews=optimized_interviews,
+                    platform=platform,
+                    timeout=timeout
+                )
+                if not result.get("success", False):
+                    error_message = result.get("error") or "OASIS批量Interview返回失败"
+                    logger.warning(
+                        "OASIS批量Interview返回失败，切换到profile问卷: simulation_id=%s, error=%s",
+                        simulation_id,
+                        error_message,
+                    )
+                    result = run_profile_survey_fallback(error_message)
+            except (ValueError, TimeoutError) as e:
+                logger.warning(
+                    "OASIS批量Interview不可用，切换到profile问卷: simulation_id=%s, error=%s",
+                    simulation_id,
+                    str(e),
+                )
+                result = run_profile_survey_fallback(str(e))
+        else:
+            logger.info(
+                "模拟环境未运行，使用profile问卷降级: simulation_id=%s, count=%s",
+                simulation_id,
+                len(optimized_interviews),
+            )
+            result = run_profile_survey_fallback("模拟环境未运行或已关闭")
 
         return jsonify({
             "success": result.get("success", False),
             "data": result
         })
 
-    except ValueError as e:
+    except (ValueError, AgentDialogueError) as e:
         return jsonify({
             "success": False,
             "error": str(e)

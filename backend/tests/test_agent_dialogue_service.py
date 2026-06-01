@@ -183,3 +183,37 @@ def test_stream_chat_emits_meta_delta_done(tmp_path, monkeypatch):
     assert events[0]["agent"]["name"] == "张雪"
     assert [event["event"] for event in events[1:]] == ["delta", "delta", "done"]
     assert "".join(event.get("content", "") for event in events) == "我是张雪"
+
+
+def test_interview_agents_from_profiles_returns_batch_shape(tmp_path, monkeypatch):
+    project = make_project()
+    monkeypatch.setattr("app.services.agent_dialogue_service.ProjectManager.get_project", lambda _: project)
+    write_simulation(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "user_id": 0,
+                "name": "张雪",
+                "username": "zhangxue",
+                "bio": "张雪是本事件相关人物。",
+                "persona": "张雪会结合个人处境回应舆论。",
+                "provenance": {"source_entity_uuid": "entity-zhangxue"},
+            }
+        ],
+    )
+    service = AgentDialogueService(llm_client=FakeLLMClient())
+
+    result = service.interview_agents_from_profiles(
+        simulation_id="sim_dialogue",
+        interviews=[{"agent_id": 0, "prompt": "你怎么看？"}],
+        platform="reddit",
+        fallback_reason="模拟环境未运行或已关闭",
+    )
+
+    assert result["success"] is True
+    assert result["interviews_count"] == 1
+    assert result["result"]["source"] == "profile_llm"
+    assert result["result"]["fallback_reason"] == "模拟环境未运行或已关闭"
+    assert result["result"]["results"]["reddit_0"]["response"] == "我是张雪"
+    assert result["result"]["results"]["reddit_0"]["agent"]["name"] == "张雪"

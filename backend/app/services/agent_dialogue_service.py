@@ -1,8 +1,8 @@
 """
-Step5 人设 Agent 流式对话服务。
+Step5 人设 Agent 对话服务。
 
-该服务只服务于“深入对话”页面中的单人人设聊天，不参与 Step4 报告生成、
-OASIS 模拟运行或批量 interview 逻辑。
+该服务用于“深入对话”页面中的单人人设聊天，也为 Step5 问卷提供
+不依赖 OASIS 运行进程的持久化 profile 采访能力。
 """
 
 import hashlib
@@ -176,11 +176,12 @@ def enrich_profile_for_dialogue(
 
 
 class AgentDialogueService:
-    """Step5 单人人设 LLM 对话服务。"""
+    """Step5 人设 LLM 对话服务。"""
 
     MAX_HISTORY_MESSAGES = 12
     MAX_SEED_CONTEXT_CHARS = 9000
     MAX_PROFILE_TEXT_CHARS = 7000
+    MAX_SURVEY_AGENTS = 50
 
     def __init__(
         self,
@@ -425,6 +426,110 @@ class AgentDialogueService:
         return {
             "response": response,
             "agent": context.agent_meta(),
+        }
+
+    def interview_agents_from_profiles(
+        self,
+        simulation_id: str,
+        interviews: List[Dict[str, Any]],
+        platform: str = "reddit",
+        fallback_reason: str = "",
+    ) -> Dict[str, Any]:
+        """
+        使用已持久化的 profile 批量执行 Step5 问卷。
+
+        这条路径不依赖 OASIS 模拟进程或 IPC 等待命令模式，适用于报告生成后、
+        Flask debug reload 后，或用户稍后回到 Step5 继续向模拟世界发问卷。
+        """
+        if not simulation_id:
+            raise AgentDialogueError("请提供 simulation_id")
+        if not interviews or not isinstance(interviews, list):
+            raise AgentDialogueError("请提供 interviews（采访列表）")
+        if len(interviews) > self.MAX_SURVEY_AGENTS:
+            raise AgentDialogueError(f"单次问卷最多支持 {self.MAX_SURVEY_AGENTS} 个对象")
+
+        state = self.simulation_manager.get_simulation(simulation_id)
+        if not state:
+            raise AgentDialogueError(f"模拟不存在: {simulation_id}")
+
+        project = ProjectManager.get_project(state.project_id)
+        if not project:
+            raise AgentDialogueError(f"项目不存在: {state.project_id}")
+        if not (project.simulation_requirement or "").strip():
+            raise AgentDialogueError("缺少 Step1 推演背景，无法执行问卷")
+
+        default_platform = normalize_platform(platform or "reddit")
+        profiles_cache: Dict[str, List[Dict[str, Any]]] = {}
+        results: Dict[str, Dict[str, Any]] = {}
+
+        for index, interview in enumerate(interviews, start=1):
+            try:
+                agent_id = int(interview.get("agent_id"))
+            except (TypeError, ValueError):
+                raise AgentDialogueError(f"采访列表第{index}项的 agent_id 必须是整数")
+
+            if agent_id < 0:
+                raise AgentDialogueError(f"采访列表第{index}项的 agent_id 不能为负数")
+
+            prompt = str(interview.get("prompt") or "").strip()
+            if not prompt:
+                raise AgentDialogueError(f"采访列表第{index}项缺少 prompt")
+
+            item_platform = normalize_platform(interview.get("platform") or default_platform)
+            if item_platform not in profiles_cache:
+                profiles_cache[item_platform] = self.simulation_manager.get_profiles(
+                    simulation_id,
+                    platform=item_platform,
+                )
+
+            profiles = profiles_cache[item_platform]
+            if agent_id >= len(profiles):
+                raise AgentDialogueError(
+                    f"采访列表第{index}项的 agent_id 超出 {item_platform} Profile 范围"
+                )
+
+            profile = enrich_profile_for_dialogue(
+                profiles[agent_id],
+                simulation_id=simulation_id,
+                platform=item_platform,
+                has_simulation_requirement=True,
+            )
+            user_id = get_profile_user_id(profile)
+            agent_key = build_stable_agent_key(profile, simulation_id, item_platform)
+            context = AgentDialogueContext(
+                state=state,
+                project=project,
+                platform=item_platform,
+                profile=profile,
+                agent_key=agent_key,
+                user_id=user_id,
+            )
+            messages = self.build_messages(context, prompt, [])
+            response = self.llm_client.chat(messages=messages, temperature=0.6, max_tokens=1536)
+
+            self._append_dialogue_log(context, "user", prompt)
+            self._append_dialogue_log(context, "assistant", response)
+
+            result_key = f"{item_platform}_{agent_id}"
+            results[result_key] = {
+                "agent_id": agent_id,
+                "response": response,
+                "answer": response,
+                "platform": item_platform,
+                "source": "profile_llm",
+                "agent": context.agent_meta(),
+            }
+
+        return {
+            "success": True,
+            "interviews_count": len(interviews),
+            "result": {
+                "interviews_count": len(results),
+                "results": results,
+                "source": "profile_llm",
+                "fallback_reason": fallback_reason,
+            },
+            "timestamp": datetime.now().isoformat(),
         }
 
     @staticmethod
