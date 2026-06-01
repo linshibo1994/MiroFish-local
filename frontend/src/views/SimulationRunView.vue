@@ -83,6 +83,7 @@ import WorkflowTopbar from '../components/WorkflowTopbar.vue'
 import { getProject, getGraphData } from '../api/graph'
 import { getSimulation, getSimulationConfig, stopSimulation, closeSimulationEnv, getEnvStatus } from '../api/simulation'
 import { checkReportStatus } from '../api/report'
+import { getProjectDisplayTitle } from '../utils/projectTitle.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -134,11 +135,7 @@ const statusText = computed(() => {
 const isSimulating = computed(() => currentStatus.value === 'processing')
 
 const projectTitle = computed(() => {
-  const directTitle = projectData.value?.simulation_requirement || projectData.value?.search_query
-  if (directTitle) return directTitle
-  const summary = projectData.value?.seed_summary_md || projectData.value?.analysis_summary || ''
-  const firstLine = summary.split('\n').map(line => line.replace(/^#+\s*/, '').trim()).find(Boolean)
-  return firstLine || '事件概述'
+  return getProjectDisplayTitle(projectData.value)
 })
 
 // --- Helpers ---

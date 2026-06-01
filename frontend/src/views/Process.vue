@@ -447,8 +447,8 @@ const graphSvg = ref(null)
 // 轮询定时器
 let pollTimer = null
 let graphPollCount = 0
-const GRAPH_BUILD_POLL_INTERVAL_MS = 60000
-const GRAPH_BUILD_MAX_POLL_COUNT = 3
+const GRAPH_BUILD_POLL_INTERVAL_MS = 5000
+const GRAPH_BUILD_MAX_POLL_COUNT = 240
 
 // 计算属性
 const statusClass = computed(() => {
@@ -727,10 +727,11 @@ const startGraphPolling = () => {
   if (graphPollTimer) return
   graphPollCount = 0
 
-  // 构建中只做低频、有限次检查；完成后再加载完整图谱。
+  // 图谱创建后立即尝试读取，让左侧视图随批次写入逐步刷新。
+  fetchGraphData({ quiet: true })
   graphPollTimer = setInterval(async () => {
     graphPollCount += 1
-    await fetchGraphData({ skipBuilding: true })
+    await fetchGraphData({ quiet: true })
     if (graphPollCount >= GRAPH_BUILD_MAX_POLL_COUNT) {
       stopGraphPolling()
     }
@@ -762,9 +763,6 @@ const fetchGraphData = async (options = {}) => {
     if (projectResponse.success && projectResponse.data.graph_id) {
       const graphId = projectResponse.data.graph_id
       projectData.value = projectResponse.data
-      if (options.skipBuilding && projectResponse.data.status === 'graph_building') {
-        return
-      }
       
       // 获取图谱数据
       const graphResponse = await getGraphData(graphId)
@@ -772,15 +770,20 @@ const fetchGraphData = async (options = {}) => {
       if (graphResponse.success && graphResponse.data) {
         const newData = graphResponse.data
         const newNodeCount = newData.node_count || newData.nodes?.length || 0
+        const newEdgeCount = newData.edge_count || newData.edges?.length || 0
         const oldNodeCount = graphData.value?.node_count || graphData.value?.nodes?.length || 0
+        const oldEdgeCount = graphData.value?.edge_count || graphData.value?.edges?.length || 0
         
-        console.log('Fetching graph data, nodes:', newNodeCount, 'edges:', newData.edge_count || newData.edges?.length || 0)
+        console.log('Fetching graph data, nodes:', newNodeCount, 'edges:', newEdgeCount)
         
         // 数据有变化时更新渲染
-        if (newNodeCount !== oldNodeCount || !graphData.value) {
+        if (newNodeCount !== oldNodeCount || newEdgeCount !== oldEdgeCount || !graphData.value) {
           graphData.value = newData
           await nextTick()
           renderGraph()
+          if (!options.quiet) {
+            console.log('Graph refreshed manually')
+          }
         }
       }
     }

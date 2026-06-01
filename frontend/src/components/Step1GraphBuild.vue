@@ -467,6 +467,7 @@ import {
   streamSearchSeedByKeyword
 } from '../api/graph'
 import { translateEntityType, translateRelationType } from '../utils/entityTranslations.js'
+import { formatSimulationRequirement } from '../utils/projectTitle.js'
 
 const props = defineProps({
   currentPhase: { type: Number, default: -1 },
@@ -540,7 +541,7 @@ const renderedSummary = computed(() => {
 })
 
 const formatSuggestion = (text) => {
-  return String(text || '').replace(/可模拟/g, '推演')
+  return formatSimulationRequirement(text)
 }
 
 const currentProjectId = computed(() => seedResult.value?.project_id || props.projectData?.project_id || '')

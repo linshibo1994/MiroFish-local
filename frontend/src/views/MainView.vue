@@ -184,6 +184,7 @@ import { createSimulation, listSimulations } from '../api/simulation'
 import { checkReportStatus } from '../api/report'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
 import { getSessions, addSession } from '../store/sessionHistory'
+import { getProjectDisplayTitle } from '../utils/projectTitle.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -222,12 +223,7 @@ const sessions = ref(getSessions())
 const isLandingMode = computed(() => currentStep.value === 1 && currentPhase.value < 0 && !projectData.value?.ontology)
 
 const projectTitle = computed(() => {
-  const directTitle = projectData.value?.simulation_requirement || projectData.value?.search_query
-  if (directTitle) return directTitle
-  const summary = projectData.value?.seed_summary_md || projectData.value?.analysis_summary || ''
-  const firstLine = summary.split('\n').map(line => line.replace(/^#+\s*/, '').trim()).find(Boolean)
-  if (firstLine) return firstLine
-  return '事件概述'
+  return getProjectDisplayTitle(projectData.value)
 })
 
 const refreshSessions = () => { sessions.value = getSessions() }
@@ -293,9 +289,7 @@ const startNewSession = () => {
 
 let pollTimer = null
 let graphPollTimer = null
-let graphPollCount = 0
-const GRAPH_BUILD_POLL_INTERVAL_MS = 60000
-const GRAPH_BUILD_MAX_POLL_COUNT = 3
+const GRAPH_BUILD_POLL_INTERVAL_MS = 5000
 
 const leftPanelStyle = computed(() => {
   if (viewMode.value === 'graph') return { width: '100%', opacity: 1 }
@@ -649,13 +643,9 @@ const startBuildGraph = async () => {
 
 const startGraphPolling = () => {
   if (graphPollTimer) return
-  graphPollCount = 0
+  fetchGraphData({ quiet: true })
   graphPollTimer = setInterval(async () => {
-    graphPollCount += 1
-    await fetchGraphData({ skipBuilding: true, quiet: true })
-    if (graphPollCount >= GRAPH_BUILD_MAX_POLL_COUNT) {
-      stopGraphPolling()
-    }
+    await fetchGraphData({ quiet: true })
   }, GRAPH_BUILD_POLL_INTERVAL_MS)
 }
 
@@ -664,7 +654,6 @@ const fetchGraphData = async (options = {}) => {
     const projRes = await getProject(currentProjectId.value)
     if (projRes.success && projRes.data.graph_id) {
       projectData.value = projRes.data
-      if (options.skipBuilding && projRes.data.status === 'graph_building') return
       const gRes = await getGraphData(projRes.data.graph_id)
       if (gRes.success) {
         graphData.value = gRes.data
@@ -752,7 +741,7 @@ const refreshGraph = () => {
 }
 
 const stopPolling = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } }
-const stopGraphPolling = () => { if (graphPollTimer) { clearInterval(graphPollTimer); graphPollTimer = null } ; graphPollCount = 0 }
+const stopGraphPolling = () => { if (graphPollTimer) { clearInterval(graphPollTimer); graphPollTimer = null } }
 
 onMounted(() => { initProject() })
 
