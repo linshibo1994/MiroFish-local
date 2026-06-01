@@ -135,10 +135,10 @@ const isSimulating = computed(() => currentStatus.value === 'processing')
 
 const projectTitle = computed(() => {
   const directTitle = projectData.value?.simulation_requirement || projectData.value?.search_query
-  if (directTitle) return directTitle.slice(0, 54)
+  if (directTitle) return directTitle
   const summary = projectData.value?.seed_summary_md || projectData.value?.analysis_summary || ''
   const firstLine = summary.split('\n').map(line => line.replace(/^#+\s*/, '').trim()).find(Boolean)
-  return firstLine ? firstLine.slice(0, 54) : '事件概述'
+  return firstLine || '事件概述'
 })
 
 // --- Helpers ---
@@ -367,21 +367,37 @@ onUnmounted(() => {
 
 /* Header */
 .app-header {
-  height: 60px;
+  min-height: 60px;
+  height: auto;
   border-bottom: 1px solid #EAEAEA;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(180px, 1fr);
   align-items: center;
-  justify-content: space-between;
-  padding: 0 24px;
+  column-gap: 18px;
+  padding: 10px 24px;
   background: #FFF;
   z-index: 100;
   position: relative;
 }
 
+.header-left {
+  min-width: 0;
+}
+
+.event-title {
+  color: #1A1A2E;
+  display: block;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.45;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .header-center {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
+  justify-self: center;
+  min-width: max-content;
 }
 
 .brand {
@@ -421,7 +437,9 @@ onUnmounted(() => {
 .header-right {
   display: flex;
   align-items: center;
+  justify-self: end;
   gap: 16px;
+  white-space: nowrap;
 }
 
 .workflow-step {
@@ -469,6 +487,25 @@ onUnmounted(() => {
 .status-indicator.error .dot { background: #F44336; }
 
 @keyframes pulse { 50% { opacity: 0.5; } }
+
+@media (max-width: 960px) {
+  .app-header {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    align-items: stretch;
+    padding: 12px 16px;
+  }
+
+  .header-center,
+  .header-right {
+    justify-self: start;
+  }
+
+  .header-right {
+    flex-wrap: wrap;
+    white-space: normal;
+  }
+}
 
 /* Content */
 .content-area {
