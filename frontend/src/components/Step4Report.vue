@@ -8,8 +8,7 @@
           <!-- Report Header -->
           <div class="report-header-block">
             <div class="report-meta">
-              <span class="report-tag">预测报告</span>
-              <span class="report-id">ID: {{ reportId || 'REF-2024-X92' }}</span>
+              <span class="report-tag">{{ reportTimeLabel }}</span>
             </div>
             <h1 class="main-title">{{ reportOutline.title }}</h1>
             <p class="sub-title">{{ reportOutline.summary }}</p>
@@ -395,6 +394,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, h, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { getAgentLog, getConsoleLog, getReport, getReportSections } from '../api/report'
+import { getRunStatus, getSimulationConfig } from '../api/simulation'
 import { translateEntityType } from '../utils/entityTranslations.js'
 import { sanitizeReportContent } from '../utils/reportContent'
 
@@ -434,6 +434,11 @@ const leftPanel = ref(null)
 const rightPanel = ref(null)
 const logContent = ref(null)
 const showRawResult = reactive({})
+const simulationTiming = ref({
+  totalRounds: null,
+  minutesPerRound: null,
+  totalHours: null
+})
 
 // Toggle functions
 const toggleRawResult = (timestamp, event) => {
@@ -1719,6 +1724,34 @@ const displayLogs = computed(() => {
   return agentLogs.value
 })
 
+const formatDurationLabel = (hours) => {
+  if (!Number.isFinite(hours) || hours <= 0) return '预测报告'
+  if (Number.isInteger(hours)) return `${hours}小时推演报告`
+
+  const minutes = Math.round(hours * 60)
+  if (minutes < 60) return `${minutes}分钟推演报告`
+
+  const wholeHours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  return remainingMinutes === 0
+    ? `${wholeHours}小时推演报告`
+    : `${wholeHours}小时${remainingMinutes}分钟推演报告`
+}
+
+const reportTimeLabel = computed(() => {
+  const { totalRounds, minutesPerRound, totalHours } = simulationTiming.value
+
+  if (Number.isFinite(totalRounds) && totalRounds > 0 && Number.isFinite(minutesPerRound) && minutesPerRound > 0) {
+    return formatDurationLabel((totalRounds * minutesPerRound) / 60)
+  }
+
+  if (Number.isFinite(totalHours) && totalHours > 0) {
+    return formatDurationLabel(totalHours)
+  }
+
+  return '预测报告'
+})
+
 // Workflow steps overview (status-based, no nested cards)
 const activeSectionIndex = computed(() => {
   if (isComplete.value) return null
@@ -2075,6 +2108,50 @@ const fetchGeneratedSections = async () => {
   }
 }
 
+const mergeSimulationTiming = (partial = {}) => {
+  simulationTiming.value = {
+    ...simulationTiming.value,
+    ...Object.fromEntries(
+      Object.entries(partial).filter(([, value]) => Number.isFinite(value) && value > 0)
+    )
+  }
+}
+
+const fetchSimulationTiming = async () => {
+  if (!props.simulationId) return
+
+  try {
+    const [statusRes, configRes] = await Promise.allSettled([
+      getRunStatus(props.simulationId),
+      getSimulationConfig(props.simulationId)
+    ])
+
+    if (statusRes.status === 'fulfilled' && statusRes.value?.success && statusRes.value.data) {
+      const status = statusRes.value.data
+      mergeSimulationTiming({
+        totalRounds: Number(status.total_rounds)
+      })
+    }
+
+    if (configRes.status === 'fulfilled' && configRes.value?.success && configRes.value.data) {
+      const timeConfig = configRes.value.data.time_config || {}
+      const minutesPerRound = Number(timeConfig.minutes_per_round)
+      const totalHours = Number(timeConfig.total_simulation_hours)
+      const configRounds = minutesPerRound > 0 && totalHours > 0
+        ? Math.floor((totalHours * 60) / minutesPerRound)
+        : null
+
+      mergeSimulationTiming({
+        minutesPerRound,
+        totalHours,
+        totalRounds: simulationTiming.value.totalRounds || configRounds
+      })
+    }
+  } catch (err) {
+    console.warn('Failed to fetch simulation timing:', err)
+  }
+}
+
 const fetchAgentLog = async () => {
   if (!props.reportId) return
   
@@ -2230,6 +2307,7 @@ const fetchConsoleLog = async () => {
 const startPolling = () => {
   if (agentLogTimer || consoleLogTimer) return
   
+  fetchSimulationTiming()
   fetchReportSnapshot()
   fetchGeneratedSections()
   fetchAgentLog()
@@ -2282,10 +2360,20 @@ watch(() => props.reportId, (newId) => {
     isComplete.value = false
     isFailed.value = false
     startTime.value = null
+    simulationTiming.value = {
+      totalRounds: null,
+      minutesPerRound: null,
+      totalHours: null
+    }
     
+    fetchSimulationTiming()
     startPolling()
   }
 }, { immediate: true })
+
+watch(() => props.simulationId, () => {
+  fetchSimulationTiming()
+})
 </script>
 
 <style scoped>
@@ -2461,13 +2549,6 @@ watch(() => props.reportId, (newId) => {
   padding: 4px 8px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-}
-
-.report-id {
-  font-size: 11px;
-  color: #9CA3AF;
-  font-weight: 500;
-  letter-spacing: 0.02em;
 }
 
 .main-title {
