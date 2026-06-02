@@ -269,12 +269,13 @@ def _create_graphiti_llm_rate_limit_wrapper(base_llm_client: Any) -> Any:
         return base_llm_client
 
 
-class DashScopeEmbedderWrapper:
+class GraphitiEmbeddingBatchWrapper:
     """
-    DashScope 兼容的 Embedder 包装器
+    Graphiti Embedder 包装器
 
-    DashScope API 有批次大小限制（max 10），graphiti-core 的 OpenAIEmbedder
-    会将所有输入一次性发送。此包装器对请求进行分块处理。
+    一些 OpenAI-compatible embedding 服务有批次大小或限流约束，
+    graphiti-core 的 OpenAIEmbedder 会将所有输入一次性发送。
+    此包装器统一做分块、节流和限流重试。
 
     注意：此类动态继承 EmbedderClient 以满足 Pydantic 类型检查。
     """
@@ -316,21 +317,21 @@ class DashScopeEmbedderWrapper:
         return results
 
 
-def _create_dashscope_embedder_wrapper(base_embedder: Any, max_batch_size: int = 10) -> Any:
+def _create_graphiti_embedding_wrapper(base_embedder: Any, max_batch_size: int = 10) -> Any:
     """
-    创建 DashScope 兼容的 Embedder 包装器
+    创建 Graphiti Embedder 包装器
 
     动态继承 EmbedderClient 以满足 graphiti-core 的 Pydantic 类型检查。
     """
     try:
         from graphiti_core.embedder.client import EmbedderClient
 
-        class _DashScopeEmbedderClient(EmbedderClient):
+        class _GraphitiEmbeddingClient(EmbedderClient):
             """动态生成的 EmbedderClient 子类"""
 
             def __init__(self, embedder: Any, batch_size: int):
                 self._embedder = embedder
-                self.max_batch_size = batch_size
+                self.max_batch_size = max(1, int(batch_size or 1))
                 if hasattr(embedder, 'config'):
                     self.config = embedder.config
 
@@ -360,11 +361,11 @@ def _create_dashscope_embedder_wrapper(base_embedder: Any, max_batch_size: int =
                     results.extend(chunk_results)
                 return results
 
-        return _DashScopeEmbedderClient(base_embedder, max_batch_size)
+        return _GraphitiEmbeddingClient(base_embedder, max_batch_size)
 
     except ImportError:
         # fallback: 返回普通包装器
-        return DashScopeEmbedderWrapper(base_embedder, max_batch_size)
+        return GraphitiEmbeddingBatchWrapper(base_embedder, max_batch_size)
 
 
 class GraphitiClient(ZepClientAdapter):
@@ -518,37 +519,50 @@ class GraphitiClient(ZepClientAdapter):
         """
         构建 Graphiti 默认 Embedder（OpenAI-compatible /embeddings）
 
-        默认 embedding model 是 `text-embedding-3-small`（OpenAI），DashScope 下需要显式配置：
-        - GRAPHITI_EMBEDDING_MODEL=text-embedding-v4
+        未显式配置 GRAPHITI_EMBEDDING_BASE_URL 时，保持现有行为：
+        - api_key/base_url 读取 OPENAI_*（Config 会从 LLM_* 自动映射）
+        - embedding_model 可用 GRAPHITI_EMBEDDING_MODEL 覆盖
 
-        注意：DashScope API 有批次大小限制（max 10），使用 DashScopeEmbedderWrapper 处理。
+        显式配置 GRAPHITI_EMBEDDING_BASE_URL 时，embedding 会走独立 endpoint，
+        不影响 Graphiti 的 LLM 实体/关系抽取。
+
+        注意：graphiti-core 0.25.x 会按 embedding_dim 截断向量，切换到
+        Qwen3-Embedding-4B 这类 2560 维模型时需配置 GRAPHITI_EMBEDDING_DIM=2560。
         """
         from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 
-        api_key = os.environ.get('OPENAI_API_KEY')
-        base_url = os.environ.get('OPENAI_BASE_URL')
-        embedding_model = os.environ.get('GRAPHITI_EMBEDDING_MODEL')
+        api_key = Config.GRAPHITI_EMBEDDING_API_KEY
+        base_url = Config.GRAPHITI_EMBEDDING_BASE_URL
+        if not base_url:
+            api_key = os.environ.get('OPENAI_API_KEY')
+            base_url = os.environ.get('OPENAI_BASE_URL')
 
-        if embedding_model:
-            config = OpenAIEmbedderConfig(
-                api_key=api_key,
-                base_url=base_url,
-                embedding_model=embedding_model,
-            )
-        else:
-            config = OpenAIEmbedderConfig(
-                api_key=api_key,
-                base_url=base_url,
-            )
+        # OpenAI SDK 要求 api_key 非空；内网无鉴权 embedding 服务可用 dummy key。
+        if base_url and not api_key:
+            api_key = "dummy"
+
+        config_kwargs: Dict[str, Any] = {
+            "api_key": api_key,
+            "base_url": base_url,
+            "embedding_dim": max(1, int(Config.GRAPHITI_EMBEDDING_DIM or 1024)),
+        }
+        if Config.GRAPHITI_EMBEDDING_MODEL:
+            config_kwargs["embedding_model"] = Config.GRAPHITI_EMBEDDING_MODEL
+
+        config = OpenAIEmbedderConfig(**config_kwargs)
 
         base_embedder = OpenAIEmbedder(config=config)
 
-        # DashScope API 有批次大小限制，需要包装
-        if self._is_openai_compatible_only():
-            logger.info("检测到非标准 OpenAI API，启用 DashScope Embedder 分块处理")
-            return _create_dashscope_embedder_wrapper(base_embedder, max_batch_size=10)
-
-        return base_embedder
+        batch_size = max(1, int(Config.GRAPHITI_EMBEDDING_BATCH_SIZE or 10))
+        logger.info(
+            "Graphiti embedding 配置: base_url=%s, model=%s, dim=%s, batch_size=%s, independent_endpoint=%s",
+            base_url,
+            config.embedding_model,
+            config.embedding_dim,
+            batch_size,
+            bool(Config.GRAPHITI_EMBEDDING_BASE_URL),
+        )
+        return _create_graphiti_embedding_wrapper(base_embedder, max_batch_size=batch_size)
 
     # ==================== Graph 操作 ====================
 

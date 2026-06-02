@@ -110,6 +110,105 @@ def test_graphiti_embedding_throttle_waits_between_requests(monkeypatch):
     assert sleeps == [0.5]
 
 
+def test_graphiti_default_embedder_uses_independent_embedding_endpoint(monkeypatch):
+    from app.services.zep_graphiti_impl import GraphitiClient
+
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_EMBEDDING_API_KEY", "")
+    monkeypatch.setattr(
+        "app.services.zep_graphiti_impl.Config.GRAPHITI_EMBEDDING_BASE_URL",
+        "http://10.200.89.13:9997/v1",
+    )
+    monkeypatch.setattr(
+        "app.services.zep_graphiti_impl.Config.GRAPHITI_EMBEDDING_MODEL",
+        "Qwen3-Embedding-4B",
+    )
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_EMBEDDING_DIM", 2560)
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_EMBEDDING_BATCH_SIZE", 32)
+    monkeypatch.setenv("OPENAI_API_KEY", "llm-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+
+    embedder = GraphitiClient("bolt://unused", "neo4j", "password")._build_default_embedder()
+
+    assert embedder.config.api_key == "dummy"
+    assert embedder.config.base_url == "http://10.200.89.13:9997/v1"
+    assert embedder.config.embedding_model == "Qwen3-Embedding-4B"
+    assert embedder.config.embedding_dim == 2560
+    assert embedder.max_batch_size == 32
+
+
+def test_graphiti_embedding_endpoint_does_not_change_llm_client(monkeypatch):
+    from app.services.zep_graphiti_impl import GraphitiClient
+
+    monkeypatch.setattr(
+        "app.services.zep_graphiti_impl.Config.GRAPHITI_EMBEDDING_BASE_URL",
+        "http://10.200.89.13:9997/v1",
+    )
+    monkeypatch.setattr(
+        "app.services.zep_graphiti_impl.Config.GRAPHITI_EMBEDDING_MODEL",
+        "Qwen3-Embedding-4B",
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "llm-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    monkeypatch.setenv("GRAPHITI_LLM_MODEL", "qwen-plus")
+    monkeypatch.setenv("LLM_MODEL_NAME", "fallback-model")
+
+    llm_client = GraphitiClient("bolt://unused", "neo4j", "password")._build_default_llm_client()
+
+    assert llm_client.config.api_key == "llm-key"
+    assert llm_client.config.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert llm_client.config.model == "qwen-plus"
+
+
+def test_graphiti_default_embedder_falls_back_to_openai_env(monkeypatch):
+    from app.services.zep_graphiti_impl import GraphitiClient
+
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_EMBEDDING_API_KEY", "")
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_EMBEDDING_BASE_URL", "")
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_EMBEDDING_MODEL", "text-embedding-v4")
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_EMBEDDING_DIM", 1024)
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_EMBEDDING_BATCH_SIZE", 10)
+    monkeypatch.setenv("OPENAI_API_KEY", "llm-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+
+    embedder = GraphitiClient("bolt://unused", "neo4j", "password")._build_default_embedder()
+
+    assert embedder.config.api_key == "llm-key"
+    assert embedder.config.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert embedder.config.embedding_model == "text-embedding-v4"
+    assert embedder.config.embedding_dim == 1024
+    assert embedder.max_batch_size == 10
+
+
+def test_graphiti_embedding_wrapper_chunks_batch(monkeypatch):
+    from app.services import zep_graphiti_impl
+
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_EMBEDDING_MIN_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_RATE_LIMIT_MAX_RETRIES", 0)
+
+    class FakeEmbedder:
+        def __init__(self):
+            self.config = object()
+            self.calls = []
+
+        async def create(self, input_data):
+            return [float(len(input_data))]
+
+        async def create_batch(self, input_data_list):
+            self.calls.append(list(input_data_list))
+            return [[float(len(item))] for item in input_data_list]
+
+    fake_embedder = FakeEmbedder()
+    wrapped = zep_graphiti_impl._create_graphiti_embedding_wrapper(fake_embedder, max_batch_size=2)
+
+    async def run_create_batch():
+        return await wrapped.create_batch(["a", "bb", "ccc", "dddd", "eeeee"])
+
+    result = asyncio.run(run_create_batch())
+
+    assert result == [[1.0], [2.0], [3.0], [4.0], [5.0]]
+    assert fake_embedder.calls == [["a", "bb"], ["ccc", "dddd"], ["eeeee"]]
+
+
 def test_graphiti_llm_rate_limit_wrapper_throttles_and_retries(monkeypatch):
     from app.services import zep_graphiti_impl
     from graphiti_core.llm_client.config import LLMConfig

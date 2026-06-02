@@ -103,6 +103,11 @@ class Config:
     GRAPHITI_RATE_LIMIT_RETRY_SECONDS = float(os.environ.get('GRAPHITI_RATE_LIMIT_RETRY_SECONDS', '20'))  # Graphiti 限流退避秒数
     GRAPHITI_LLM_CONCURRENCY = int(os.environ.get('GRAPHITI_LLM_CONCURRENCY', '1'))  # Graphiti 内部 LLM 抽取并发数
     GRAPHITI_LLM_MIN_INTERVAL_SECONDS = float(os.environ.get('GRAPHITI_LLM_MIN_INTERVAL_SECONDS', '0.5'))  # Graphiti LLM 请求最小间隔
+    GRAPHITI_EMBEDDING_API_KEY = os.environ.get('GRAPHITI_EMBEDDING_API_KEY')  # Graphiti embedding 独立 API Key（可选）
+    GRAPHITI_EMBEDDING_BASE_URL = os.environ.get('GRAPHITI_EMBEDDING_BASE_URL')  # Graphiti embedding 独立 endpoint（可选）
+    GRAPHITI_EMBEDDING_MODEL = os.environ.get('GRAPHITI_EMBEDDING_MODEL')  # Graphiti embedding 模型名
+    GRAPHITI_EMBEDDING_DIM = int(os.environ.get('GRAPHITI_EMBEDDING_DIM', '1024'))  # Graphiti embedding 写入维度
+    GRAPHITI_EMBEDDING_BATCH_SIZE = int(os.environ.get('GRAPHITI_EMBEDDING_BATCH_SIZE', '10'))  # Graphiti embedding 分块大小
     GRAPHITI_EMBEDDING_MIN_INTERVAL_SECONDS = float(os.environ.get('GRAPHITI_EMBEDDING_MIN_INTERVAL_SECONDS', '0.5'))  # Graphiti embedding 请求最小间隔
     GRAPH_MEMORY_STOP_TIMEOUT_SECONDS = float(os.environ.get('GRAPH_MEMORY_STOP_TIMEOUT_SECONDS', '3'))  # 图谱记忆写回停止等待秒数
     

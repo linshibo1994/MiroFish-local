@@ -158,9 +158,27 @@ NEO4J_PASSWORD=password
 # Graphiti 使用的 LLM 模型（推荐显式配置）
 GRAPHITI_LLM_MODEL=qwen3-max
 GRAPHITI_EMBEDDING_MODEL=text-embedding-v4
+
+# Graphiti embedding 独立配置（可选）
+# 留空时继续复用 LLM_API_KEY / LLM_BASE_URL；接入内网 embedding-only 服务时只配置这里
+GRAPHITI_EMBEDDING_API_KEY=
+GRAPHITI_EMBEDDING_BASE_URL=
+GRAPHITI_EMBEDDING_DIM=1024
+GRAPHITI_EMBEDDING_BATCH_SIZE=10
 ```
 
 > `OPENAI_API_KEY` / `OPENAI_BASE_URL` 会自动从 `LLM_API_KEY` / `LLM_BASE_URL` 映射，无需重复配置。如需单独指定 Graphiti 使用的 LLM，可显式设置 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`。
+> 如果只想替换 Graphiti 的 embedding 能力，请使用 `GRAPHITI_EMBEDDING_BASE_URL`，不要修改 `OPENAI_BASE_URL`，否则可能影响 Graphiti 的实体/关系抽取 LLM。
+
+接入内网 Qwen3 embedding 服务示例：
+
+```env
+GRAPHITI_EMBEDDING_BASE_URL=http://10.200.89.13:9997/v1
+GRAPHITI_EMBEDDING_API_KEY=
+GRAPHITI_EMBEDDING_MODEL=Qwen3-Embedding-4B
+GRAPHITI_EMBEDDING_DIM=2560
+GRAPHITI_EMBEDDING_BATCH_SIZE=32
+```
 
 #### 加速 LLM 配置（可选）
 
