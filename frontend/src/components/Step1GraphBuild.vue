@@ -55,50 +55,62 @@
               @drop.prevent="handleDrop"
             >
               <!-- 分析日志 -->
-              <div v-if="showAnalysisLog" ref="analysisLogPanel" class="analysis-log-panel">
-                <div class="analysis-log-header">
-                  <div class="analysis-title-group">
-                    <span class="analysis-live-dot"></span>
-                    <span class="analysis-title">{{ inputMode === 'web_search' ? '联网查询与总结流程' : '文件解析与总结流程' }}</span>
+              <div v-if="showAnalysisLog" class="upload-stream-content">
+                <div v-if="files.length > 0" class="file-list streaming-file-list">
+                  <div v-for="(file, index) in files" :key="`${file.name}-${index}`" class="file-card">
+                    <div class="file-info">
+                      <span class="file-type-tag">{{ file.name.split('.').pop().toUpperCase() }}</span>
+                      <span class="file-name">{{ file.name }}</span>
+                      <span class="file-size">{{ (file.size / 1024).toFixed(1) }} KB</span>
+                    </div>
+                    <button type="button" class="file-remove-btn" :disabled="isBusy" @click.stop="removeFile(index)">×</button>
                   </div>
-                  <span class="analysis-progress">{{ analysisProgress }}%</span>
                 </div>
-                <div class="analysis-progress-bar">
-                  <span :style="{ width: `${analysisProgress}%` }"></span>
-                </div>
-                <div class="analysis-log-list">
-                  <div
-                    v-for="log in executionLogs"
-                    :key="log.id"
-                    class="analysis-log-item"
-                    :class="log.level"
-                  >
-                    <span class="log-status-dot"></span>
-                    <div class="log-body">
-                      <div class="log-line">
-                        <span class="log-time">{{ log.time }}</span>
-                        <span class="log-message">{{ log.message }}</span>
-                      </div>
-                      <div v-if="log.sources?.length" class="log-source-list">
-                        <a
-                          v-for="source in log.sources"
-                          :key="source.url || source.title"
-                          class="log-source"
-                          :href="source.url"
-                          target="_blank"
-                          rel="noopener noreferrer nofollow"
-                          @click.stop
-                        >
-                          <span class="log-source-title">{{ source.title }}</span>
-                          <span class="log-source-site">{{ source.site_name || source.date_published || '来源返回' }}</span>
-                        </a>
-                      </div>
-                      <div v-if="log.suggestions?.length" class="log-suggestion-list">
-                        <span
-                          v-for="suggestion in log.suggestions"
-                          :key="suggestion"
-                          class="log-suggestion"
-                        >{{ formatSuggestion(suggestion) }}</span>
+                <div ref="analysisLogPanel" class="analysis-log-panel">
+                  <div class="analysis-log-header">
+                    <div class="analysis-title-group">
+                      <span class="analysis-live-dot"></span>
+                      <span class="analysis-title">{{ inputMode === 'web_search' ? '联网查询与总结流程' : '文件解析与总结流程' }}</span>
+                    </div>
+                    <span class="analysis-progress">{{ analysisProgress }}%</span>
+                  </div>
+                  <div class="analysis-progress-bar">
+                    <span :style="{ width: `${analysisProgress}%` }"></span>
+                  </div>
+                  <div class="analysis-log-list">
+                    <div
+                      v-for="log in executionLogs"
+                      :key="log.id"
+                      class="analysis-log-item"
+                      :class="log.level"
+                    >
+                      <span class="log-status-dot"></span>
+                      <div class="log-body">
+                        <div class="log-line">
+                          <span class="log-time">{{ log.time }}</span>
+                          <span class="log-message">{{ log.message }}</span>
+                        </div>
+                        <div v-if="log.sources?.length" class="log-source-list">
+                          <a
+                            v-for="source in log.sources"
+                            :key="source.url || source.title"
+                            class="log-source"
+                            :href="source.url"
+                            target="_blank"
+                            rel="noopener noreferrer nofollow"
+                            @click.stop
+                          >
+                            <span class="log-source-title">{{ source.title }}</span>
+                            <span class="log-source-site">{{ source.site_name || source.date_published || '来源返回' }}</span>
+                          </a>
+                        </div>
+                        <div v-if="log.suggestions?.length" class="log-suggestion-list">
+                          <span
+                            v-for="suggestion in log.suggestions"
+                            :key="suggestion"
+                            class="log-suggestion"
+                          >{{ formatSuggestion(suggestion) }}</span>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1083,24 +1095,44 @@ onUnmounted(() => {
 }
 
 .upload-zone.streaming {
-  min-height: 188px;
+  min-height: 224px;
   align-items: stretch;
   justify-content: stretch;
   cursor: default;
   border-style: solid;
-  border-color: #B8CAF2;
-  background: #F8FBFF;
+  border-color: #C6D4EA;
+  background: #FFFFFF;
+}
+
+.upload-stream-content {
+  width: 100%;
+  padding: 12px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.streaming-file-list {
+  padding: 0;
+}
+
+.upload-stream-content .file-card {
+  background: #F8FAFF;
 }
 
 .analysis-log-panel {
   width: 100%;
-  min-height: 172px;
-  max-height: 248px;
+  min-height: 156px;
+  max-height: 220px;
   padding: 12px;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  border: 1px solid #B8CAF2;
+  border-radius: 12px;
+  background: #F8FBFF;
 }
 
 .analysis-log-header {
