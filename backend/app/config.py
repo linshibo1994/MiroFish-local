@@ -100,6 +100,7 @@ class Config:
     GRAPH_BUILD_DUAL_LLM_ENABLED = os.environ.get('GRAPH_BUILD_DUAL_LLM_ENABLED', 'true').lower() in {'1', 'true', 'yes', 'on'}  # 是否启用图谱构建双模型分摊
     GRAPH_BUILD_LLM_BASE_WEIGHT = int(os.environ.get('GRAPH_BUILD_LLM_BASE_WEIGHT', '1'))  # 图谱构建默认 LLM 分摊权重
     GRAPH_BUILD_LLM_BOOST_WEIGHT = int(os.environ.get('GRAPH_BUILD_LLM_BOOST_WEIGHT', '1'))  # 图谱构建加速 LLM 分摊权重
+    GRAPH_BUILD_LLM_ROUTE_RETRY_ENABLED = os.environ.get('GRAPH_BUILD_LLM_ROUTE_RETRY_ENABLED', 'true').lower() in {'1', 'true', 'yes', 'on'}  # 单路由失败时是否换另一路由重试该批次
     GRAPHITI_EPISODE_BATCH_SIZE = int(os.environ.get('GRAPHITI_EPISODE_BATCH_SIZE', '1'))  # Graphiti 单次写入 episode 数
     GRAPHITI_INGEST_CONCURRENCY = int(os.environ.get('GRAPHITI_INGEST_CONCURRENCY', '2'))  # Graphiti 批次提交并发数
     GRAPHITI_USE_BULK_INGEST = os.environ.get('GRAPHITI_USE_BULK_INGEST', 'false').lower() in {'1', 'true', 'yes', 'on'}  # 是否启用 Graphiti bulk ingestion

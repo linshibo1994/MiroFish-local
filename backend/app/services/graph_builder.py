@@ -141,7 +141,7 @@ class GraphBuilderService:
         """兼容不同 endpoint pool 接口，按批次选择端点。"""
         if endpoint_pool is None:
             return None
-        for method_name in ("select_endpoint", "get_endpoint", "endpoint_for_batch", "select"):
+        for method_name in ("endpoint_for_index", "select_endpoint", "get_endpoint", "endpoint_for_batch", "select"):
             selector = getattr(endpoint_pool, method_name, None)
             if callable(selector):
                 return selector(batch_index)
@@ -163,6 +163,20 @@ class GraphBuilderService:
     @staticmethod
     def _llm_model_name(endpoint: Any) -> Optional[str]:
         return getattr(endpoint, "model", None) if endpoint is not None else None
+
+    @classmethod
+    def _alternate_llm_endpoint_from_pool(cls, endpoint_pool: Any, current_endpoint: Any) -> Any:
+        """从 endpoint pool 中选择一个不同路由的备用端点，用于批次级失败重试。"""
+        if endpoint_pool is None or current_endpoint is None:
+            return None
+
+        candidates = getattr(endpoint_pool, "endpoints", None) or []
+        current_route = cls._llm_route_name(current_endpoint)
+        for candidate in candidates:
+            endpoint = getattr(candidate, "endpoint", candidate)
+            if cls._llm_route_name(endpoint) != current_route:
+                return endpoint
+        return None
 
     def get_llm_observability(self) -> Dict[str, Any]:
         """返回图谱构建 LLM 路由观测信息。"""
@@ -614,27 +628,84 @@ class GraphBuilderService:
                 min(start_index / total_chunks, completed_batches / total_batches),
             )
 
-            worker_client = create_worker_client(endpoint) if use_worker_clients else self.client
+            def run_with_endpoint(current_endpoint: Any, is_retry: bool = False) -> tuple[List[str], str, Optional[str], float]:
+                current_route = self._llm_route_name(current_endpoint)
+                current_model = self._llm_model_name(current_endpoint)
+                attempt_started_at = time.monotonic()
+                worker_client = create_worker_client(current_endpoint) if use_worker_clients else self.client
+                try:
+                    logger.info(
+                        "图谱批次写入开始: graph_id=%s, batch=%s/%s, chunks=%s, concurrency=%s, worker_client=%s, llm_route=%s, llm_model=%s, retry=%s",
+                        graph_id,
+                        batch_num,
+                        total_batches,
+                        len(batch_chunks),
+                        concurrency,
+                        worker_client is not self.client,
+                        current_route,
+                        current_model,
+                        is_retry,
+                    )
+                    batch_uuids = worker_client.add_episode_batch(
+                        graph_id=graph_id,
+                        episodes=build_episodes(batch_chunks),
+                    )
+                    return batch_uuids, current_route, current_model, time.monotonic() - attempt_started_at
+                finally:
+                    if worker_client is not self.client and hasattr(worker_client, "close"):
+                        try:
+                            worker_client.close()
+                        except Exception:
+                            pass
+
             try:
-                logger.info(
-                    "图谱批次写入开始: graph_id=%s, batch=%s/%s, chunks=%s, concurrency=%s, worker_client=%s, llm_route=%s, llm_model=%s",
-                    graph_id,
-                    batch_num,
-                    total_batches,
-                    len(batch_chunks),
-                    concurrency,
-                    worker_client is not self.client,
-                    route_name,
-                    model_name,
-                )
-                batch_uuids = worker_client.add_episode_batch(
-                    graph_id=graph_id,
-                    episodes=build_episodes(batch_chunks),
-                )
+                try:
+                    batch_uuids, route_name, model_name, batch_elapsed = run_with_endpoint(endpoint)
+                except Exception as first_exc:
+                    alternate_endpoint = None
+                    if (
+                        use_worker_clients
+                        and Config.GRAPH_BUILD_LLM_ROUTE_RETRY_ENABLED
+                        and not failure_event.is_set()
+                    ):
+                        alternate_endpoint = self._alternate_llm_endpoint_from_pool(
+                            getattr(self, "_llm_endpoint_pool", None),
+                            endpoint,
+                        )
+
+                    if alternate_endpoint is None:
+                        raise
+
+                    alternate_route = self._llm_route_name(alternate_endpoint)
+                    alternate_model = self._llm_model_name(alternate_endpoint)
+                    logger.warning(
+                        "图谱批次首选 LLM 路由失败，切换备用路由重试: graph_id=%s, batch=%s/%s, failed_route=%s, failed_model=%s, retry_route=%s, retry_model=%s, error=%s",
+                        graph_id,
+                        batch_num,
+                        total_batches,
+                        route_name,
+                        model_name,
+                        alternate_route,
+                        alternate_model,
+                        first_exc,
+                    )
+                    report_progress(
+                        f"第 {batch_num}/{total_batches} 批首选 {route_name} 路由失败，切换 {alternate_route} 重试...",
+                        min(start_index / total_chunks, completed_batches / total_batches),
+                    )
+                    try:
+                        batch_uuids, route_name, model_name, batch_elapsed = run_with_endpoint(
+                            alternate_endpoint,
+                            is_retry=True,
+                        )
+                    except Exception as retry_exc:
+                        raise RuntimeError(
+                            f"首选路由 {self._llm_route_name(endpoint)} 失败后，备用路由 {alternate_route} 重试仍失败"
+                        ) from retry_exc
+
                 with progress_lock:
                     llm_route_counts[route_name] = llm_route_counts.get(route_name, 0) + 1
                     self._llm_route_counts = dict(llm_route_counts)
-                batch_elapsed = time.monotonic() - batch_started_at
                 if failure_event.is_set():
                     logger.info(
                         "图谱批次写入完成但任务已失败，结果丢弃: graph_id=%s, batch=%s/%s, episodes=%s, llm_route=%s, llm_model=%s, elapsed=%.1fs",
@@ -672,12 +743,6 @@ class GraphBuilderService:
                     model_name,
                 )
                 raise
-            finally:
-                if worker_client is not self.client and hasattr(worker_client, "close"):
-                    try:
-                        worker_client.close()
-                    except Exception:
-                        pass
 
         if concurrency <= 1 or total_batches == 1:
             for batch_index, start_index, batch_chunks in batch_specs:
@@ -691,19 +756,38 @@ class GraphBuilderService:
                 except Exception as e:
                     raise_batch_error(batch_index + 1, e)
         else:
-            with ThreadPoolExecutor(max_workers=min(concurrency, total_batches)) as executor:
-                future_to_batch = {
-                    executor.submit(submit_batch, batch_index, start_index, batch_chunks): batch_index
-                    for batch_index, start_index, batch_chunks in batch_specs
-                }
-                for future in as_completed(future_to_batch):
-                    batch_index = future_to_batch[future]
+            worker_count = min(concurrency, total_batches)
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                future_to_batch: Dict[Any, int] = {}
+                next_batch_index = 0
+
+                def submit_next_batch() -> None:
+                    nonlocal next_batch_index
+                    if failure_event.is_set() or next_batch_index >= len(batch_specs):
+                        return
+                    batch_index, start_index, batch_chunks = batch_specs[next_batch_index]
+                    future = executor.submit(submit_batch, batch_index, start_index, batch_chunks)
+                    future_to_batch[future] = batch_index
+                    next_batch_index += 1
+
+                for _ in range(worker_count):
+                    submit_next_batch()
+
+                while future_to_batch:
+                    completed_future = None
+                    for future in as_completed(list(future_to_batch)):
+                        completed_future = future
+                        break
+                    if completed_future is None:
+                        break
+
+                    batch_index = future_to_batch.pop(completed_future)
                     try:
-                        episode_uuids_by_batch[batch_index] = future.result()
+                        episode_uuids_by_batch[batch_index] = completed_future.result()
                     except Exception as e:
+                        failure_event.set()
                         for pending_future in future_to_batch:
-                            if pending_future is not future:
-                                pending_future.cancel()
+                            pending_future.cancel()
                         raise_batch_error(batch_index + 1, e)
 
                     with progress_lock:
@@ -714,6 +798,7 @@ class GraphBuilderService:
                         f"已完成第 {current_completed}/{total_batches} 批数据写入",
                         current_completed / total_batches,
                     )
+                    submit_next_batch()
 
         episode_uuids: List[str] = []
         for batch_index in range(total_batches):

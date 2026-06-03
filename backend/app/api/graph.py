@@ -20,6 +20,7 @@ from ..services.web_search_provider import WebSearchProviderFactory
 from ..services.text_processor import TextProcessor
 from ..utils.file_parser import FileParser
 from ..utils.logger import get_logger
+from ..utils.llm_routing import get_graph_build_llm_endpoint_pool
 from ..utils.neo4j_errors import format_neo4j_auth_error, is_neo4j_auth_error
 from ..models.task import TaskManager, TaskStatus
 from ..models.project import ProjectManager, ProjectStatus
@@ -150,6 +151,19 @@ def _get_graph_build_llm_observability(builder=None) -> dict:
     if builder is None:
         if Config.ZEP_BACKEND != "graphiti":
             return fallback
+        try:
+            pool = get_graph_build_llm_endpoint_pool(build_mode=True)
+            routes = list(getattr(pool, "route_names", None) or [])
+            weights = dict(getattr(pool, "weights", None) or {})
+            if routes:
+                return {
+                    **fallback,
+                    "dual_llm_enabled": bool(getattr(pool, "dual_enabled", False)),
+                    "llm_routes": routes,
+                    "llm_route_weights": weights,
+                }
+        except Exception as exc:
+            logger.debug("读取图谱构建 LLM endpoint pool 初始观测失败: %s", exc)
         if Config.LLM_BOOST_API_KEY and Config.LLM_BOOST_BASE_URL and Config.LLM_BOOST_MODEL_NAME:
             return {
                 **fallback,

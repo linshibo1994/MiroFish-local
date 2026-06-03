@@ -1454,14 +1454,44 @@ class GraphitiClient(ZepClientAdapter):
 
     def close(self):
         """关闭连接"""
-        if self._graphiti:
-            _run_async(self._graphiti.close())
+        graphiti = self._graphiti
+        if not graphiti:
+            return
+
+        close_coro = None
+        try:
+            close_result = graphiti.close()
+            if inspect.isawaitable(close_result):
+                close_coro = close_result
+                _run_async(close_coro)
+                close_coro = None
+        except Exception:
+            if close_coro is not None and hasattr(close_coro, "close"):
+                try:
+                    close_coro.close()
+                except RuntimeError:
+                    pass
+            raise
+        finally:
+            self._graphiti = None
+            self._driver = None
             self._initialized = False
-            logger.info("Graphiti 连接已关闭")
+        logger.info("Graphiti 连接已关闭")
 
     def __del__(self):
         """析构时关闭连接"""
         try:
-            self.close()
+            loop_alive = (
+                _async_thread is not None
+                and _async_thread.is_alive()
+                and _async_loop is not None
+                and not _async_loop.is_closed()
+            )
+            if loop_alive:
+                self.close()
+            else:
+                self._graphiti = None
+                self._driver = None
+                self._initialized = False
         except Exception:
             pass

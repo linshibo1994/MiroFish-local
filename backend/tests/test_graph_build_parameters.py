@@ -114,6 +114,34 @@ def test_graphiti_async_loop_waits_for_ready_when_thread_is_alive(monkeypatch):
         loop.close()
 
 
+def test_graphiti_client_close_is_idempotent(monkeypatch):
+    from app.services.zep_graphiti_impl import GraphitiClient
+
+    closed = []
+
+    class FakeGraphiti:
+        async def close(self):
+            closed.append("close")
+
+    def fake_run_async(coro):
+        return asyncio.run(coro)
+
+    client = GraphitiClient("bolt://unused", "neo4j", "password")
+    client._graphiti = FakeGraphiti()
+    client._driver = object()
+    client._initialized = True
+
+    monkeypatch.setattr("app.services.zep_graphiti_impl._run_async", fake_run_async)
+
+    client.close()
+    client.close()
+
+    assert closed == ["close"]
+    assert client._graphiti is None
+    assert client._driver is None
+    assert client._initialized is False
+
+
 def test_graphiti_embedding_throttle_waits_between_requests(monkeypatch):
     from app.services import zep_graphiti_impl
 
@@ -716,6 +744,258 @@ def test_graph_builder_routes_parallel_batches_by_llm_endpoint_pool(monkeypatch)
         "boost",
     ]
     assert episode_uuids == [f"chunk-{index}" for index in range(6)]
+
+
+def test_graph_builder_supports_llm_endpoint_pool_endpoint_for_index(monkeypatch):
+    monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_USE_BULK_INGEST", False)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_EPISODE_BATCH_SIZE", 1)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_INGEST_CONCURRENCY", 2)
+
+    class Endpoint:
+        def __init__(self, route_name, model, is_boost=False):
+            self.route_name = route_name
+            self.model = model
+            self.is_boost = is_boost
+
+    base_endpoint = Endpoint("base", "base-model")
+    boost_endpoint = Endpoint("boost", "boost-model", is_boost=True)
+
+    class EndpointForIndexPool:
+        endpoints = (base_endpoint, boost_endpoint)
+        weights = {"base": 1, "boost": 1}
+        dual_enabled = True
+
+        def endpoint_for_index(self, batch_index):
+            return self.endpoints[batch_index % len(self.endpoints)]
+
+    class MainClient:
+        def set_ontology_from_cache(self, graph_id, source_client):
+            raise AssertionError("主 client 不应作为 worker 复制本体")
+
+    created_routes = []
+
+    class WorkerClient:
+        def __init__(self, endpoint):
+            self.endpoint = endpoint
+
+        def set_ontology_from_cache(self, graph_id, source_client):
+            pass
+
+        def add_episode_batch(self, graph_id, episodes):
+            created_routes.append((self.endpoint.route_name, self.endpoint.model))
+            return [episodes[0]["data"]]
+
+        def close(self):
+            pass
+
+    def fake_create_zep_client(**kwargs):
+        endpoint = kwargs["llm_endpoint"]
+        assert endpoint is not None
+        assert hasattr(endpoint, "model")
+        return WorkerClient(endpoint)
+
+    class InlineFuture:
+        def __init__(self, result):
+            self._result = result
+
+        def result(self):
+            return self._result
+
+    class FakeExecutor:
+        def __init__(self, max_workers):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, *args):
+            return InlineFuture(fn(*args))
+
+    builder = GraphBuilderService.__new__(GraphBuilderService)
+    builder.client = MainClient()
+    builder._backend = "graphiti"
+    builder._llm_endpoint_pool = EndpointForIndexPool()
+
+    monkeypatch.setattr("app.services.graph_builder.create_zep_client", fake_create_zep_client)
+    monkeypatch.setattr("app.services.graph_builder.ThreadPoolExecutor", FakeExecutor)
+    monkeypatch.setattr("app.services.graph_builder.as_completed", lambda futures: list(futures))
+
+    episode_uuids = builder.add_text_batches(
+        "graph_1",
+        ["chunk-0", "chunk-1"],
+        batch_size=1,
+        concurrency=2,
+    )
+
+    assert episode_uuids == ["chunk-0", "chunk-1"]
+    assert created_routes == [("base", "base-model"), ("boost", "boost-model")]
+    assert builder.get_llm_observability()["llm_route_counts"] == {"base": 1, "boost": 1}
+
+
+def test_graph_builder_does_not_submit_new_batches_after_parallel_failure(monkeypatch):
+    monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_USE_BULK_INGEST", False)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_EPISODE_BATCH_SIZE", 1)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_INGEST_CONCURRENCY", 2)
+
+    submitted_batches = []
+
+    class FailingClient:
+        def set_ontology_from_cache(self, graph_id, source_client):
+            pass
+
+        def add_episode_batch(self, graph_id, episodes):
+            batch_name = episodes[0]["data"]
+            submitted_batches.append(batch_name)
+            if batch_name == "chunk-1":
+                raise RuntimeError("模拟批次失败")
+            return [batch_name]
+
+        def close(self):
+            pass
+
+    def fake_create_zep_client(**kwargs):
+        return FailingClient()
+
+    class InlineFuture:
+        def __init__(self, fn, args):
+            self.fn = fn
+            self.args = args
+            self._done = False
+            self._result = None
+            self._exc = None
+
+        def run_once(self):
+            if self._done:
+                return
+            try:
+                self._result = self.fn(*self.args)
+            except Exception as exc:
+                self._exc = exc
+            self._done = True
+
+        def result(self):
+            self.run_once()
+            if self._exc:
+                raise self._exc
+            return self._result
+
+        def cancel(self):
+            self._done = True
+            return True
+
+    class FakeExecutor:
+        def __init__(self, max_workers):
+            self.max_workers = max_workers
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, *args):
+            return InlineFuture(fn, args)
+
+    def fake_as_completed(futures):
+        futures = list(futures)
+        for future in futures:
+            future.run_once()
+            yield future
+
+    builder = GraphBuilderService.__new__(GraphBuilderService)
+    builder.client = type("MainClient", (), {"set_ontology_from_cache": lambda self, graph_id, source_client: None})()
+    builder._backend = "graphiti"
+    builder._llm_endpoint_pool = None
+    builder._llm_endpoint = None
+
+    monkeypatch.setattr("app.services.graph_builder.create_zep_client", fake_create_zep_client)
+    monkeypatch.setattr("app.services.graph_builder.ThreadPoolExecutor", FakeExecutor)
+    monkeypatch.setattr("app.services.graph_builder.as_completed", fake_as_completed)
+
+    try:
+        builder.add_text_batches(
+            "graph_1",
+            ["chunk-0", "chunk-1", "chunk-2", "chunk-3"],
+            batch_size=1,
+            concurrency=2,
+        )
+    except RuntimeError as exc:
+        assert "模拟批次失败" in str(exc)
+    else:
+        raise AssertionError("并发批次失败时应抛出异常")
+
+    assert submitted_batches == ["chunk-0", "chunk-1"]
+
+
+def test_graph_builder_retries_failed_batch_with_alternate_llm_route(monkeypatch):
+    monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_USE_BULK_INGEST", False)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_EPISODE_BATCH_SIZE", 1)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_INGEST_CONCURRENCY", 2)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPH_BUILD_LLM_ROUTE_RETRY_ENABLED", True)
+
+    class Endpoint:
+        def __init__(self, route_name, model, is_boost=False):
+            self.route_name = route_name
+            self.model = model
+            self.is_boost = is_boost
+
+    base_endpoint = Endpoint("base", "base-model")
+    boost_endpoint = Endpoint("boost", "boost-model", is_boost=True)
+
+    class EndpointPool:
+        endpoints = (base_endpoint, boost_endpoint)
+        weights = {"base": 1, "boost": 1}
+        dual_enabled = True
+
+        def endpoint_for_index(self, batch_index):
+            return base_endpoint if batch_index == 0 else boost_endpoint
+
+    attempts = []
+
+    class WorkerClient:
+        def __init__(self, endpoint):
+            self.endpoint = endpoint
+
+        def set_ontology_from_cache(self, graph_id, source_client):
+            pass
+
+        def add_episode_batch(self, graph_id, episodes):
+            attempts.append(self.endpoint.route_name)
+            if self.endpoint.route_name == "base":
+                raise TimeoutError("base 路由超时")
+            return ["episode-boost"]
+
+        def close(self):
+            pass
+
+    def fake_create_zep_client(**kwargs):
+        return WorkerClient(kwargs["llm_endpoint"])
+
+    builder = GraphBuilderService.__new__(GraphBuilderService)
+    builder.client = type("MainClient", (), {"set_ontology_from_cache": lambda self, graph_id, source_client: None})()
+    builder._backend = "graphiti"
+    builder._llm_endpoint_pool = EndpointPool()
+    builder._llm_endpoint = base_endpoint
+
+    monkeypatch.setattr("app.services.graph_builder.create_zep_client", fake_create_zep_client)
+
+    episode_uuids = builder.add_text_batches(
+        "graph_1",
+        ["chunk-0", "chunk-1"],
+        batch_size=1,
+        concurrency=2,
+    )
+
+    assert episode_uuids == ["episode-boost", "episode-boost"]
+    assert attempts.count("base") == 1
+    assert attempts.count("boost") == 2
+    assert builder.get_llm_observability()["llm_route_counts"] == {"boost": 2}
 
 
 def test_graph_builder_falls_back_to_single_endpoint_pool_when_route_pool_missing(monkeypatch):
