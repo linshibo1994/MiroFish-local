@@ -18,14 +18,29 @@
         <!-- 输入卡片 -->
         <div class="input-card">
           <!-- 文字输入区 -->
-          <div v-if="shouldShowTextInput" class="text-input-section">
+          <div v-if="shouldShowTextInput" class="text-input-section" @click="keywordTextarea?.focus()">
             <textarea
+              ref="keywordTextarea"
               v-model="searchQuery"
               class="keyword-textarea"
-              placeholder="请输入你想要推演的主题"
+              aria-label="推演主题输入框"
+              placeholder=""
               :disabled="isBusy"
               @input="onTextInput"
+              @keydown.tab="handleRecommendationTab"
             ></textarea>
+            <div
+              v-if="showRecommendationHint"
+              class="recommendation-ghost"
+              aria-hidden="true"
+            >
+              <Transition name="recommendation-roll" mode="out-in">
+                <span :key="activeRecommendationIndex" class="recommendation-text">
+                  {{ activeRecommendation.text }}
+                </span>
+              </Transition>
+              <span class="tab-hint">tab键直接填入</span>
+            </div>
           </div>
 
           <!-- 分隔线 -->
@@ -463,7 +478,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { marked } from 'marked'
 import {
   analyzeUploadedSeed,
@@ -500,6 +515,7 @@ const ontologyGenerating = ref(false)
 const localError = ref('')
 const isDragOver = ref(false)
 const fileInput = ref(null)
+const keywordTextarea = ref(null)
 const analysisLogPanel = ref(null)
 const selectedOntologyItem = ref(null)
 const showSources = ref(true)
@@ -507,6 +523,46 @@ const showSummary = ref(true)
 const executionLogs = ref([])
 const analysisProgress = ref(0)
 let analysisHeartbeatTimer = null
+let recommendationTimer = null
+
+const hotTopicRecommendations = [
+  {
+    text: '围绕张雪机车夺冠后的品牌声量、赛事规则讨论与国产品牌叙事，推演舆情热度和风险拐点。'
+  },
+  {
+    text: '以福建漳州“泡药杨梅”食品安全整治为背景，推演地方回应、消费者信任与产区品牌修复路径。'
+  },
+  {
+    text: '围绕湖南石门救灾女干部“金耳环”网暴事件，推演基层干部形象、平台治理和公众情绪的后续演化。'
+  },
+  {
+    text: '模拟一次突发公共事件从短视频平台发酵到主流媒体介入后的传播链路和治理窗口。'
+  }
+]
+const activeRecommendationIndex = ref(0)
+
+const activeRecommendation = computed(() => hotTopicRecommendations[activeRecommendationIndex.value])
+const showRecommendationHint = computed(() => {
+  return shouldShowTextInput.value && !isBusy.value && !searchQuery.value.trim()
+})
+
+const rotateRecommendation = () => {
+  activeRecommendationIndex.value = (activeRecommendationIndex.value + 1) % hotTopicRecommendations.length
+}
+
+const stopRecommendationRotation = () => {
+  if (recommendationTimer) {
+    clearInterval(recommendationTimer)
+    recommendationTimer = null
+  }
+}
+
+const startRecommendationRotation = () => {
+  stopRecommendationRotation()
+  recommendationTimer = setInterval(() => {
+    if (showRecommendationHint.value) rotateRecommendation()
+  }, 3200)
+}
 
 const resetToInput = () => {
   stopAnalysisHeartbeat()
@@ -631,6 +687,31 @@ const onTextInput = () => {
   if (searchQuery.value.trim()) {
     inputMode.value = 'web_search'
   }
+}
+
+const getVisibleRecommendationText = () => {
+  const visibleText = keywordTextarea.value
+    ?.parentElement
+    ?.querySelector('.recommendation-text')
+    ?.textContent
+    ?.trim()
+  return visibleText || activeRecommendation.value?.text || ''
+}
+
+const fillActiveRecommendation = async () => {
+  const recommendationText = getVisibleRecommendationText()
+  if (!showRecommendationHint.value || !recommendationText) return
+  searchQuery.value = recommendationText
+  inputMode.value = 'web_search'
+  resetAnalysisResult()
+  await nextTick()
+  keywordTextarea.value?.focus()
+}
+
+const handleRecommendationTab = (event) => {
+  if (!showRecommendationHint.value) return
+  event.preventDefault()
+  fillActiveRecommendation()
 }
 
 const triggerFileInput = () => {
@@ -887,8 +968,16 @@ watch(() => props.pendingUpload, (pending) => {
   }
 }, { immediate: true })
 
+onMounted(() => {
+  startRecommendationRotation()
+  nextTick(() => {
+    if (showRecommendationHint.value) keywordTextarea.value?.focus()
+  })
+})
+
 onUnmounted(() => {
   stopAnalysisHeartbeat()
+  stopRecommendationRotation()
 })
 
 </script>
@@ -1019,6 +1108,11 @@ onUnmounted(() => {
   gap: 12px;
 }
 
+.text-input-section {
+  position: relative;
+  min-height: 132px;
+}
+
 .keyword-textarea {
   width: 100%;
   min-height: 132px;
@@ -1036,6 +1130,59 @@ onUnmounted(() => {
 
 .keyword-textarea::placeholder {
   color: #9CA3AF;
+}
+
+.recommendation-ghost {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #8A99B8;
+  font-family: inherit;
+  font-size: 16px;
+  line-height: 24px;
+  text-align: left;
+  pointer-events: none;
+}
+
+.recommendation-text {
+  min-width: 0;
+  flex: 1;
+  display: block;
+}
+
+.tab-hint {
+  flex-shrink: 0;
+  margin-top: 1px;
+  padding: 2px 9px;
+  border: 1px solid #DDE4EF;
+  border-radius: 6px;
+  background: #FFFFFF;
+  color: #8A99B8;
+  font-size: 13px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.recommendation-roll-enter-active,
+.recommendation-roll-leave-active {
+  transition: opacity 0.24s ease, transform 0.24s ease;
+}
+
+.recommendation-roll-enter-from {
+  opacity: 0;
+  transform: translateY(14px);
+}
+
+.recommendation-roll-leave-to {
+  opacity: 0;
+  transform: translateY(-14px);
 }
 
 .context-textarea {
@@ -2288,6 +2435,17 @@ onUnmounted(() => {
   .features-title {
     font-size: 22px;
     line-height: 30px;
+  }
+
+  .recommendation-ghost {
+    flex-direction: column;
+    gap: 8px;
+    font-size: 14px;
+    line-height: 22px;
+  }
+
+  .tab-hint {
+    font-size: 12px;
   }
 }
 </style>
