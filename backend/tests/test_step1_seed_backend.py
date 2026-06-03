@@ -214,8 +214,43 @@ def test_web_search_seed_stream_emits_progress_and_result(monkeypatch, tmp_path)
         "progress",
         "complete",
     ]
+    provider_event = events[1]
+    assert provider_event["message"] == "准备进行 Web Search，抓取可引用网页来源"
+    assert "provider" not in provider_event
+    assert "博查" not in provider_event["message"]
+    assert "百炼" not in provider_event["message"]
     assert events[-1]["data"]["seed_summary_md"] == "## Seed"
     assert events[-1]["data"]["seed_metadata"]["web_search_provider"] == "bailian"
+
+
+def test_web_search_seed_stream_masks_provider_error(monkeypatch):
+    app = create_app()
+    client = app.test_client()
+
+    class FailingSearchService:
+        def search(self, query, count=None, freshness=None, summary=True):
+            raise RuntimeError("博查搜索请求失败")
+
+    monkeypatch.setattr("app.api.graph.WebSearchProviderFactory.get_provider_name", lambda provider=None: "bocha")
+    monkeypatch.setattr("app.api.graph.WebSearchProviderFactory.create", lambda provider=None: FailingSearchService())
+
+    response = client.post(
+        "/api/graph/seed/web-search/stream",
+        json={"search_query": "测试关键词"},
+    )
+
+    assert response.status_code == 200
+    events = [
+        json.loads(line)
+        for line in response.get_data(as_text=True).splitlines()
+        if line.strip()
+    ]
+
+    assert events[-1]["event"] == "error"
+    assert events[-1]["message"] == "Web Search 处理失败，请稍后重试或调整检索关键词"
+    assert "博查" not in events[-1]["message"]
+    assert "百炼" not in events[-1]["message"]
+    assert "traceback" not in events[-1]
 
 
 def test_uploaded_seed_uses_extracted_file_text_as_full_content(monkeypatch, tmp_path):

@@ -49,10 +49,6 @@ def _source_preview(sources, limit: int = 5):
     return previews
 
 
-def _provider_display_name(provider_name: str) -> str:
-    return "阿里百炼联网搜索" if provider_name == "bailian" else "博查 Web Search"
-
-
 def allowed_file(filename: str) -> bool:
     """检查文件扩展名是否允许"""
     if not filename or '.' not in filename:
@@ -370,10 +366,9 @@ def create_seed_from_web_search_stream():
             provider_name = WebSearchProviderFactory.get_provider_name(data.get('provider'))
             yield _stream_event(
                 "progress",
-                f"准备调用{_provider_display_name(provider_name)}，抓取可引用网页来源",
+                "准备进行 Web Search，抓取可引用网页来源",
                 step="provider",
                 progress=12,
-                provider=provider_name,
             )
             search_service = WebSearchProviderFactory.create(provider_name)
             sources = search_service.search(
@@ -459,11 +454,13 @@ def create_seed_from_web_search_stream():
             )
 
         except ValueError as exc:
-            yield _stream_event("error", str(exc))
+            logger.error("流式联网 seed 分析失败: %s", exc)
+            logger.debug(traceback.format_exc())
+            yield _stream_event("error", "Web Search 处理失败，请稍后重试或调整检索关键词")
         except Exception as exc:
             logger.error("流式联网 seed 分析失败: %s", exc)
             logger.debug(traceback.format_exc())
-            yield _stream_event("error", str(exc), traceback=traceback.format_exc())
+            yield _stream_event("error", "Web Search 处理失败，请稍后重试或调整检索关键词")
 
     return Response(
         stream_with_context(generate()),
