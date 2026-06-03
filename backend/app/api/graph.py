@@ -138,6 +138,74 @@ def _merge_task_progress_detail(task_manager: TaskManager, task_id: str, **updat
     return detail
 
 
+def _get_graph_build_llm_observability(builder=None) -> dict:
+    """读取图谱构建 LLM 路由观测信息，兼容单模型和未来 Builder 实现。"""
+    fallback = {
+        "dual_llm_enabled": False,
+        "llm_routes": [],
+        "llm_route_weights": {},
+        "llm_route_counts": {},
+    }
+
+    if builder is None:
+        if Config.ZEP_BACKEND != "graphiti":
+            return fallback
+        if Config.LLM_BOOST_API_KEY and Config.LLM_BOOST_BASE_URL and Config.LLM_BOOST_MODEL_NAME:
+            return {
+                **fallback,
+                "llm_routes": ["boost"],
+                "llm_route_weights": {"boost": 1},
+            }
+        if Config.LLM_API_KEY and Config.LLM_BASE_URL and Config.LLM_MODEL_NAME:
+            return {
+                **fallback,
+                "llm_routes": ["base"],
+                "llm_route_weights": {"base": 1},
+            }
+        return fallback
+
+    for method_name in (
+        "get_llm_observability",
+        "get_llm_route_observability",
+        "describe_llm_routes",
+    ):
+        method = getattr(builder, method_name, None)
+        if callable(method):
+            try:
+                payload = method()
+                if isinstance(payload, dict):
+                    return {**fallback, **payload}
+            except Exception as exc:
+                logger.debug("读取图谱构建 LLM 路由观测方法失败: %s", exc)
+
+    pool = getattr(builder, "_llm_endpoint_pool", None)
+    describe_pool = getattr(builder, "_describe_llm_endpoint_pool", None)
+    if callable(describe_pool):
+        try:
+            payload = describe_pool(pool)
+            if isinstance(payload, dict):
+                fallback.update(payload)
+        except Exception as exc:
+            logger.debug("读取图谱构建 LLM endpoint pool 失败: %s", exc)
+
+    for attr_name, target_key in (
+        ("dual_llm_enabled", "dual_llm_enabled"),
+        ("llm_routes", "llm_routes"),
+        ("llm_route_weights", "llm_route_weights"),
+        ("llm_route_counts", "llm_route_counts"),
+        ("_llm_route_counts", "llm_route_counts"),
+    ):
+        value = getattr(builder, attr_name, None)
+        if value is not None:
+            fallback[target_key] = value
+
+    fallback["dual_llm_enabled"] = bool(fallback.get("dual_llm_enabled"))
+    fallback["llm_routes"] = list(fallback.get("llm_routes") or [])
+    fallback["llm_route_weights"] = dict(fallback.get("llm_route_weights") or {})
+    fallback["llm_route_counts"] = dict(fallback.get("llm_route_counts") or {})
+    return fallback
+
+
 @graph_bp.route('/type-translations', methods=['GET'])
 def get_type_translations():
     """获取实体类型和关系类型翻译表。"""
@@ -890,6 +958,7 @@ def build_graph():
                 "requested_concurrency": graph_build_concurrency,
                 "backend": Config.ZEP_BACKEND,
                 "llm_boost_enabled": bool(Config.LLM_BOOST_API_KEY and Config.LLM_BOOST_BASE_URL and Config.LLM_BOOST_MODEL_NAME),
+                **_get_graph_build_llm_observability(),
                 "current_stage": "queued",
             }
         )
@@ -916,6 +985,15 @@ def build_graph():
                     api_key=Config.ZEP_API_KEY,
                     backend=Config.ZEP_BACKEND,
                     build_mode=True,
+                )
+                llm_observability = _get_graph_build_llm_observability(builder)
+                task_manager.update_task(
+                    task_id,
+                    progress_detail=_merge_task_progress_detail(
+                        task_manager,
+                        task_id,
+                        **llm_observability,
+                    )
                 )
                 
                 # 分块
@@ -1029,6 +1107,7 @@ def build_graph():
                         current_stage="ingest_episodes",
                         total_chunks=total_chunks,
                         total_batches=total_batches,
+                        **llm_observability,
                     )
                 )
                 
@@ -1042,6 +1121,7 @@ def build_graph():
                     concurrency=effective_concurrency,
                 )
                 ingest_elapsed = time.monotonic() - ingest_started_at
+                llm_observability = _get_graph_build_llm_observability(builder)
                 build_logger.info(
                     "[%s] 图谱 episode 写入完成: graph_id=%s, chunks=%s, batches=%s, episodes=%s, elapsed=%.1fs, bulk_ingest=%s",
                     task_id,
@@ -1064,6 +1144,7 @@ def build_graph():
                         current_stage="wait_episodes",
                         episode_count=len(episode_uuids),
                         ingest_elapsed_seconds=round(ingest_elapsed, 1),
+                        **llm_observability,
                     )
                 )
                 
@@ -1126,6 +1207,7 @@ def build_graph():
                         "ingest_elapsed_seconds": round(ingest_elapsed, 1),
                         "load_graph_elapsed_seconds": round(graph_data_elapsed, 1),
                         "total_elapsed_seconds": round(total_elapsed, 1),
+                        **llm_observability,
                     }
                 )
                 

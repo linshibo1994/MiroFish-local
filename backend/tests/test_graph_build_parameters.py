@@ -611,6 +611,134 @@ def test_graph_builder_graphiti_caps_ingest_concurrency(monkeypatch):
     assert episode_uuids == ["chunk-0", "chunk-1", "chunk-2", "chunk-3"]
 
 
+def test_graph_builder_routes_parallel_batches_by_llm_endpoint_pool(monkeypatch):
+    monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_USE_BULK_INGEST", False)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_EPISODE_BATCH_SIZE", 1)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_INGEST_CONCURRENCY", 6)
+
+    class Endpoint:
+        def __init__(self, route_name, model, is_boost=False):
+            self.route_name = route_name
+            self.model = model
+            self.is_boost = is_boost
+
+    base_endpoint = Endpoint("base", "base-model")
+    boost_endpoint = Endpoint("boost", "boost-model", is_boost=True)
+
+    class WeightedPool:
+        routes = [
+            type("Route", (), {"route_name": "base", "endpoint": base_endpoint, "weight": 1})(),
+            type("Route", (), {"route_name": "boost", "endpoint": boost_endpoint, "weight": 2})(),
+        ]
+
+        def __init__(self):
+            self.sequence = [base_endpoint, boost_endpoint, boost_endpoint]
+
+        def select_endpoint(self, batch_index):
+            return self.sequence[batch_index % len(self.sequence)]
+
+    class MainClient:
+        def set_ontology_from_cache(self, graph_id, source_client):
+            raise AssertionError("主 client 不应作为 worker 复制本体")
+
+    created_endpoints = []
+    worker_batches = []
+
+    class WorkerClient:
+        def __init__(self, endpoint):
+            self.endpoint = endpoint
+
+        def set_ontology_from_cache(self, graph_id, source_client):
+            self.graph_id = graph_id
+
+        def add_episode_batch(self, graph_id, episodes):
+            worker_batches.append((self.endpoint.route_name, self.endpoint.model, episodes[0]["data"]))
+            return [episodes[0]["data"]]
+
+        def close(self):
+            pass
+
+    def fake_create_zep_client(**kwargs):
+        created_endpoints.append(kwargs["llm_endpoint"])
+        return WorkerClient(kwargs["llm_endpoint"])
+
+    class InlineFuture:
+        def __init__(self, result):
+            self._result = result
+
+        def result(self):
+            return self._result
+
+    class FakeExecutor:
+        def __init__(self, max_workers):
+            self.max_workers = max_workers
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, *args):
+            return InlineFuture(fn(*args))
+
+    builder = GraphBuilderService.__new__(GraphBuilderService)
+    builder.client = MainClient()
+    builder._backend = "graphiti"
+    builder._llm_endpoint_pool = WeightedPool()
+
+    monkeypatch.setattr("app.services.graph_builder.create_zep_client", fake_create_zep_client)
+    monkeypatch.setattr("app.services.graph_builder.ThreadPoolExecutor", FakeExecutor)
+    monkeypatch.setattr("app.services.graph_builder.as_completed", lambda futures: list(futures))
+
+    episode_uuids = builder.add_text_batches(
+        "graph_1",
+        [f"chunk-{index}" for index in range(6)],
+        batch_size=1,
+        concurrency=6,
+    )
+
+    assert [endpoint.route_name for endpoint in created_endpoints] == [
+        "base",
+        "boost",
+        "boost",
+        "base",
+        "boost",
+        "boost",
+    ]
+    assert [batch[0] for batch in worker_batches] == [
+        "base",
+        "boost",
+        "boost",
+        "base",
+        "boost",
+        "boost",
+    ]
+    assert episode_uuids == [f"chunk-{index}" for index in range(6)]
+
+
+def test_graph_builder_falls_back_to_single_endpoint_pool_when_route_pool_missing(monkeypatch):
+    class Endpoint:
+        model = "boost-model"
+        is_boost = True
+
+    monkeypatch.delattr(
+        "app.services.graph_builder.llm_routing.get_graph_build_llm_endpoint_pool",
+        raising=False,
+    )
+
+    pool = GraphBuilderService._build_llm_endpoint_pool(Endpoint())
+
+    assert GraphBuilderService._select_llm_endpoint_from_pool(pool, 0).model == "boost-model"
+    assert GraphBuilderService._select_llm_endpoint_from_pool(pool, 5).model == "boost-model"
+    assert GraphBuilderService._describe_llm_endpoint_pool(pool) == {
+        "dual_llm_enabled": False,
+        "llm_routes": ["boost"],
+        "llm_route_weights": {},
+    }
+
+
 def test_graph_builder_formats_quota_error_message(monkeypatch):
     monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
 
@@ -1128,7 +1256,15 @@ def test_graph_build_api_records_requested_and_effective_batch_plan(monkeypatch,
         resolve_batch_plan = staticmethod(GraphBuilderService.resolve_batch_plan)
 
         def __init__(self, api_key=None, backend=None, build_mode=False):
-            pass
+            self.llm_route_counts = {"base": 0, "boost": 0}
+
+        def get_llm_observability(self):
+            return {
+                "dual_llm_enabled": True,
+                "llm_routes": ["base", "boost"],
+                "llm_route_weights": {"base": 1, "boost": 2},
+                "llm_route_counts": dict(self.llm_route_counts),
+            }
 
         def create_graph(self, name):
             return "mirofish_test_graph"
@@ -1137,6 +1273,7 @@ def test_graph_build_api_records_requested_and_effective_batch_plan(monkeypatch,
             pass
 
         def add_text_batches(self, *args, **kwargs):
+            self.llm_route_counts = {"base": 1, "boost": 2}
             return ["episode_1"]
 
         def _wait_for_episodes(self, episode_uuids, progress_callback=None):
@@ -1179,12 +1316,85 @@ def test_graph_build_api_records_requested_and_effective_batch_plan(monkeypatch,
     assert task.result["bulk_ingest_enabled"] is False
     assert task.result["requested_batch_size"] == 3
     assert task.result["requested_concurrency"] == 4
+    assert task.result["dual_llm_enabled"] is True
+    assert task.result["llm_routes"] == ["base", "boost"]
+    assert task.result["llm_route_weights"] == {"base": 1, "boost": 2}
+    assert task.result["llm_route_counts"] == {"base": 1, "boost": 2}
     assert task.progress_detail["batch_size"] == 1
     assert task.progress_detail["concurrency"] == 1
     assert task.progress_detail["bulk_ingest_enabled"] is False
     assert task.progress_detail["graph_id"] == "mirofish_test_graph"
     assert task.progress_detail["total_chunks"] == 1
     assert task.progress_detail["total_batches"] == 1
+    assert task.progress_detail["dual_llm_enabled"] is True
+    assert task.progress_detail["llm_routes"] == ["base", "boost"]
+    assert task.progress_detail["llm_route_weights"] == {"base": 1, "boost": 2}
+    assert task.progress_detail["llm_route_counts"] == {"base": 1, "boost": 2}
+
+
+def test_graph_build_api_records_single_llm_fallback_observability(monkeypatch, tmp_path):
+    monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", str(tmp_path))
+    monkeypatch.setattr("app.api.graph.Config.ZEP_BACKEND", "cloud")
+    monkeypatch.setattr("app.api.graph.Config.ZEP_API_KEY", "test-zep-key")
+
+    class InlineBuilder:
+        resolve_batch_plan = staticmethod(GraphBuilderService.resolve_batch_plan)
+
+        def __init__(self, api_key=None, backend=None, build_mode=False):
+            pass
+
+        def create_graph(self, name):
+            return "mirofish_cloud_graph"
+
+        def set_ontology(self, graph_id, ontology):
+            pass
+
+        def add_text_batches(self, *args, **kwargs):
+            return ["episode_1"]
+
+        def _wait_for_episodes(self, episode_uuids, progress_callback=None):
+            pass
+
+        def get_graph_data(self, graph_id):
+            return {"node_count": 1, "edge_count": 1}
+
+    class InlineThread:
+        def __init__(self, target, daemon=False):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            self.target()
+
+    project = ProjectManager.create_project(name="单模型回退测试")
+    project.status = ProjectStatus.ONTOLOGY_GENERATED
+    project.ontology = {
+        "entity_types": [{"name": "Person", "description": "person", "attributes": []}],
+        "edge_types": [],
+    }
+    ProjectManager.save_project(project)
+    ProjectManager.save_extracted_text(project.project_id, "用于测试 Cloud 后端双模型观测降级的文本。")
+
+    monkeypatch.setattr("app.api.graph.GraphBuilderService", InlineBuilder)
+    monkeypatch.setattr("app.api.graph.threading.Thread", InlineThread)
+
+    app = create_app()
+    response = app.test_client().post(
+        "/api/graph/build",
+        json={"project_id": project.project_id, "batch_size": 1, "chunk_size": 200},
+    )
+
+    assert response.status_code == 200
+    task_id = response.get_json()["data"]["task_id"]
+    task = TaskManager().get_task(task_id)
+    assert task.result["dual_llm_enabled"] is False
+    assert task.result["llm_routes"] == []
+    assert task.result["llm_route_weights"] == {}
+    assert task.result["llm_route_counts"] == {}
+    assert task.progress_detail["dual_llm_enabled"] is False
+    assert task.progress_detail["llm_routes"] == []
+    assert task.progress_detail["llm_route_weights"] == {}
+    assert task.progress_detail["llm_route_counts"] == {}
 
 
 def test_graph_build_api_persists_graph_id_for_build_preview(monkeypatch, tmp_path):
