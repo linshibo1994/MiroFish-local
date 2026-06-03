@@ -1321,4 +1321,33 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
     white-space: normal;
   }
 }
+
+@media (max-width: 520px) {
+  .app-header.landing-header {
+    height: 56px;
+    padding: 0 12px;
+    gap: 8px;
+  }
+
+  .landing-header .brand {
+    max-width: 72px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 14px;
+  }
+
+  .status-pill {
+    max-width: calc(100vw - 136px);
+    gap: 6px;
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+
+  .pill-name,
+  .pill-status,
+  .pill-step {
+    white-space: nowrap;
+  }
+}
 </style>

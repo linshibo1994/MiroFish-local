@@ -178,54 +178,7 @@
           <p v-if="localError" class="error-text">{{ localError }}</p>
         </div>
 
-        <!-- 优势卡片区 -->
-        <div class="features-section">
-          <h3 class="features-title">传播推演优势</h3>
-          <div class="features-grid">
-            <div class="feature-card">
-              <span class="feature-icon">◈</span>
-              <div class="feature-content">
-                <div class="feature-name">通用全能，不限场景</div>
-                <div class="feature-desc">适配舆情发酵、事件传播、大众态度演变等各类场景，上传文件即可推演，不局限单一用途</div>
-              </div>
-            </div>
-            <div class="feature-card">
-              <span class="feature-icon">◉</span>
-              <div class="feature-content">
-                <div class="feature-name">数据省心，无需预处理</div>
-                <div class="feature-desc">支持各类非结构化资料直接导入，系统自动解析数据、搭建真实模拟场景，上手零门槛</div>
-              </div>
-            </div>
-            <div class="feature-card">
-              <span class="feature-icon">◎</span>
-              <div class="feature-content">
-                <div class="feature-name">超低成本，可高频试错</div>
-                <div class="feature-desc">单次常规推演低至5元，低成本支持多版本方案反复模拟，轻松筛选最优传播策略</div>
-              </div>
-            </div>
-            <div class="feature-card">
-              <span class="feature-icon">◆</span>
-              <div class="feature-content">
-                <div class="feature-name">超大仿真规模，更贴近真实</div>
-                <div class="feature-desc">支持百万级智能体同时模拟，高度还原海量人群的真实互动、传播联动，推演结果更精准</div>
-              </div>
-            </div>
-            <div class="feature-card">
-              <span class="feature-icon">◇</span>
-              <div class="feature-content">
-                <div class="feature-name">全程自动，一键出结果</div>
-                <div class="feature-desc">从场景搭建、模拟推演到生成专业报告全自动化，无需人工操作，零基础也能用</div>
-              </div>
-            </div>
-            <div class="feature-card">
-              <span class="feature-icon">○</span>
-              <div class="feature-content">
-                <div class="feature-name">可交互可追溯，不做盲推演</div>
-                <div class="feature-desc">可和模拟场景里的任意角色对话，也能智能解读报告、深挖细节，决策依据更扎实</div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <SimulationAdvantagesSection />
       </div>
     </div>
 
@@ -480,6 +433,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { marked } from 'marked'
+import SimulationAdvantagesSection from './SimulationAdvantagesSection.vue'
 import {
   analyzeUploadedSeed,
   searchSeedByKeyword,
@@ -1583,95 +1537,6 @@ onUnmounted(() => {
   margin: 0;
 }
 
-/* 优势卡片区 */
-.features-section {
-  width: 100%;
-  max-width: 1000px;
-  margin: 64px auto 0;
-  display: flex;
-  flex-direction: column;
-  gap: 28px;
-}
-
-.features-title {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  font-size: 24px;
-  line-height: 33px;
-  font-weight: 500;
-  color: #8792A6;
-  margin: 0;
-  text-align: center;
-  letter-spacing: 0;
-}
-
-.features-title::before,
-.features-title::after {
-  content: '';
-  flex: 0 1 160px;
-  height: 1px;
-}
-
-.features-title::before {
-  background: linear-gradient(90deg, transparent, rgba(135, 146, 166, 0.45));
-}
-
-.features-title::after {
-  background: linear-gradient(270deg, transparent, rgba(135, 146, 166, 0.45));
-}
-
-.features-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 16px;
-  width: 100%;
-}
-
-.feature-card {
-  background: #FFFFFF;
-  border-radius: 14px;
-  padding: 22px 24px;
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  min-height: 120px;
-  border: 1px solid rgba(232, 238, 251, 0.95);
-  box-shadow: 0 6px 28px rgba(15, 35, 71, 0.06);
-  transition: box-shadow 0.2s;
-}
-
-.feature-card:hover {
-  box-shadow: 0 4px 12px rgba(22, 119, 255, 0.08);
-}
-
-.feature-icon {
-  font-size: 18px;
-  color: #1677FF;
-  flex-shrink: 0;
-  line-height: 1.4;
-}
-
-.feature-content {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.feature-name {
-  font-size: 13px;
-  font-weight: 700;
-  color: #1A1A2E;
-}
-
-.feature-desc {
-  font-size: 11px;
-  color: #6B7280;
-  line-height: 1.4;
-}
-
 /* ===== 阶段2：结果 ===== */
 .phase-result {
   min-height: 100%;
@@ -2392,14 +2257,6 @@ onUnmounted(() => {
     padding: 16px;
   }
 
-  .features-grid {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .features-section {
-    margin-top: 56px;
-  }
-
   .stats-grid {
     grid-template-columns: 1fr;
   }
@@ -2430,11 +2287,6 @@ onUnmounted(() => {
 
   .title-suffix {
     margin-left: 0;
-  }
-
-  .features-title {
-    font-size: 22px;
-    line-height: 30px;
   }
 
   .recommendation-ghost {
