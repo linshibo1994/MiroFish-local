@@ -14,6 +14,7 @@ Ontology 会在应用层归一化后注入 Graphiti episode ingestion，用于�
 """
 
 import asyncio
+import inspect
 import logging
 import os
 import threading
@@ -217,7 +218,36 @@ async def _throttle_llm_request(operation: str, item_count: int) -> None:
         _last_llm_request_at = time.monotonic()
 
 
-async def _call_with_graphiti_rate_limit_retry(factory, operation: str, item_count: int):
+def _summarize_graphiti_llm_request(args: tuple, kwargs: Dict[str, Any], llm_client: Any) -> Dict[str, Any]:
+    """提取 Graphiti LLM 请求的安全诊断信息，不记录 prompt 正文。"""
+    messages = kwargs.get("messages")
+    if messages is None and args:
+        messages = args[0]
+    if messages is None:
+        messages = []
+
+    prompt_chars = 0
+    try:
+        prompt_chars = sum(len(getattr(message, "content", "") or "") for message in messages)
+    except TypeError:
+        prompt_chars = 0
+
+    return {
+        "prompt_name": kwargs.get("prompt_name") or "unknown",
+        "model_size": getattr(kwargs.get("model_size"), "value", kwargs.get("model_size") or "medium"),
+        "model": getattr(llm_client, "model", None),
+        "small_model": getattr(llm_client, "small_model", None),
+        "max_tokens": kwargs.get("max_tokens") or getattr(llm_client, "max_tokens", None),
+        "prompt_chars": prompt_chars,
+    }
+
+
+async def _call_with_graphiti_rate_limit_retry(
+    factory,
+    operation: str,
+    item_count: int,
+    request_detail: Optional[Dict[str, Any]] = None,
+):
     """统一处理 Graphiti 对 LLM/Embedding 的限流重试。"""
     max_retries = max(0, int(Config.GRAPHITI_RATE_LIMIT_MAX_RETRIES or 0))
     retry_seconds = max(0.0, float(Config.GRAPHITI_RATE_LIMIT_RETRY_SECONDS or 0))
@@ -241,12 +271,26 @@ async def _call_with_graphiti_rate_limit_retry(factory, operation: str, item_cou
                 result = await factory()
             elapsed = time.monotonic() - started_at
             if elapsed >= 10:
-                logger.info(
-                    "Graphiti %s 请求完成但耗时较长: items=%s, elapsed=%.1fs",
-                    operation,
-                    item_count,
-                    elapsed,
-                )
+                detail = request_detail or {}
+                if operation.startswith("llm."):
+                    logger.info(
+                        "Graphiti %s 请求完成但耗时较长: prompt=%s, model=%s, model_size=%s, "
+                        "prompt_chars=%s, max_tokens=%s, elapsed=%.1fs",
+                        operation,
+                        detail.get("prompt_name"),
+                        detail.get("model"),
+                        detail.get("model_size"),
+                        detail.get("prompt_chars"),
+                        detail.get("max_tokens"),
+                        elapsed,
+                    )
+                else:
+                    logger.info(
+                        "Graphiti %s 请求完成但耗时较长: items=%s, elapsed=%.1fs",
+                        operation,
+                        item_count,
+                        elapsed,
+                    )
             return result
         except asyncio.TimeoutError as exc:
             raise TimeoutError(
@@ -302,11 +346,13 @@ def _create_graphiti_llm_rate_limit_wrapper(base_llm_client: Any) -> Any:
                 return await self._llm_client._generate_response(*args, **kwargs)
 
             async def generate_response(self, *args, **kwargs) -> Dict[str, Any]:
+                request_detail = _summarize_graphiti_llm_request(args, kwargs, self._llm_client)
                 async with self._semaphore:
                     return await _call_with_graphiti_rate_limit_retry(
                         lambda: self._llm_client.generate_response(*args, **kwargs),
                         operation="llm.generate_response",
                         item_count=1,
+                        request_detail=request_detail,
                     )
 
         return _GraphitiRateLimitedLLMClient(base_llm_client)
@@ -360,6 +406,25 @@ class GraphitiEmbeddingBatchWrapper:
             )
             results.extend(chunk_results)
         return results
+
+
+GRAPHITI_INTERNAL_PROPERTY_KEYS = {
+    "uuid",
+    "name",
+    "summary",
+    "created_at",
+    "group_id",
+    "fact",
+    "valid_at",
+    "invalid_at",
+    "expired_at",
+    "episodes",
+    "name_embedding",
+    "summary_embedding",
+    "fact_embedding",
+    "embedding",
+    "embeddings",
+}
 
 
 def _create_graphiti_embedding_wrapper(base_embedder: Any, max_batch_size: int = 10) -> Any:
@@ -484,29 +549,25 @@ class GraphitiClient(ZepClientAdapter):
                 if embedder is None:
                     embedder = self._build_default_embedder()
 
-                # 创建 Graphiti 实例。并发构建时允许使用独立实例，避免单例内部状态互相抢占。
+                # 创建 Graphiti 实例。按当前 graphiti-core 版本支持的参数传入，
+                # 避免因为 use_singleton 不兼容而 fallback 丢失 max_coroutines。
                 max_coroutines = max(1, int(Config.GRAPHITI_LLM_CONCURRENCY or 1))
                 graphiti_kwargs = {
                     "llm_client": llm_client,
                     "embedder": embedder,
                     "max_coroutines": max_coroutines,
                 }
-                try:
-                    self._graphiti = Graphiti(
-                        self.neo4j_uri,
-                        self.neo4j_user,
-                        self.neo4j_password,
-                        use_singleton=self._use_singleton,
-                        **graphiti_kwargs,
-                    )
-                except TypeError:
-                    self._graphiti = Graphiti(
-                        self.neo4j_uri,
-                        self.neo4j_user,
-                        self.neo4j_password,
-                        llm_client=llm_client,
-                        embedder=embedder,
-                    )
+                supported_params = set(inspect.signature(Graphiti).parameters)
+                if "use_singleton" in supported_params:
+                    graphiti_kwargs["use_singleton"] = self._use_singleton
+                if "max_coroutines" not in supported_params:
+                    graphiti_kwargs.pop("max_coroutines", None)
+                self._graphiti = Graphiti(
+                    self.neo4j_uri,
+                    self.neo4j_user,
+                    self.neo4j_password,
+                    **graphiti_kwargs,
+                )
 
                 # 初始化索引和约束
                 _run_async(self._graphiti.build_indices_and_constraints())
@@ -545,10 +606,9 @@ class GraphitiClient(ZepClientAdapter):
             api_key = os.environ.get('OPENAI_API_KEY')
             base_url = os.environ.get('OPENAI_BASE_URL')
             model = os.environ.get('GRAPHITI_LLM_MODEL') or os.environ.get('LLM_MODEL_NAME')
-        small_model = os.environ.get('GRAPHITI_LLM_SMALL_MODEL') or None
-
-        temperature = float(os.environ.get('GRAPHITI_LLM_TEMPERATURE', '0') or '0')
-        max_tokens = int(os.environ.get('GRAPHITI_LLM_MAX_TOKENS', '8192') or '8192')
+        small_model = Config.GRAPHITI_LLM_SMALL_MODEL or None
+        temperature = float(Config.GRAPHITI_LLM_TEMPERATURE or 0)
+        max_tokens = max(1024, int(Config.GRAPHITI_LLM_MAX_TOKENS or 4096))
 
         config = LLMConfig(
             api_key=api_key,
@@ -558,7 +618,7 @@ class GraphitiClient(ZepClientAdapter):
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        return OpenAIGenericClient(config=config)
+        return OpenAIGenericClient(config=config, max_tokens=max_tokens)
 
     def _build_default_embedder(self) -> Any:
         """
@@ -756,19 +816,28 @@ class GraphitiClient(ZepClientAdapter):
         if not episodes:
             return []
 
-        # Graphiti 的 bulk ingestion 即使单条 episode 也会走更重的批量去重流程。
-        # 本地图谱构建默认把批次压到 1，因此这里直接走 add_episode 的顺序路径，
-        # 可避开尾批携带历史上下文后越来越慢的问题。
-        if len(episodes) == 1:
-            episode = episodes[0]
-            return [
-                self.add_episode(
-                    graph_id=graph_id,
-                    data=episode.get("data", ""),
-                    episode_type=episode.get("type", "text"),
-                    reference_time=_normalize_reference_time(episode.get("reference_time")),
+        # Graphiti bulk ingestion 会强制读取 previous episodes，并执行更重的批量
+        # 去重/resolve/Neo4j bulk 写入。默认拆成单条 episode，才能让
+        # GRAPHITI_USE_PREVIOUS_EPISODE_CONTEXT=false 真正生效。
+        if len(episodes) == 1 or not Config.GRAPHITI_USE_BULK_INGEST:
+            started_at = time.monotonic()
+            episode_uuids = []
+            for episode in episodes:
+                episode_uuids.append(
+                    self.add_episode(
+                        graph_id=graph_id,
+                        data=episode.get("data", ""),
+                        episode_type=episode.get("type", "text"),
+                        reference_time=_normalize_reference_time(episode.get("reference_time")),
+                    )
                 )
-            ]
+            logger.info(
+                "Graphiti episode 批次按单条路径写入完成: graph_id=%s, episodes=%s, elapsed=%.1fs, bulk_ingest=False",
+                graph_id,
+                len(episode_uuids),
+                time.monotonic() - started_at,
+            )
+            return episode_uuids
 
         from graphiti_core.nodes import EpisodeType
         from graphiti_core.utils.bulk_utils import RawEpisode
@@ -795,6 +864,7 @@ class GraphitiClient(ZepClientAdapter):
             )
 
         async def _add_bulk():
+            started_at = time.monotonic()
             result = await self._graphiti.add_episode_bulk(
                 bulk_episodes=raw_episodes,
                 group_id=graph_id,
@@ -802,6 +872,12 @@ class GraphitiClient(ZepClientAdapter):
                 excluded_entity_types=ontology.get("excluded_entity_types") or None,
                 edge_types=ontology.get("edges") or None,
                 edge_type_map=ontology.get("edge_type_map") or None,
+            )
+            logger.info(
+                "Graphiti bulk episode 写入完成: graph_id=%s, episodes=%s, elapsed=%.1fs, bulk_ingest=True",
+                graph_id,
+                len(raw_episodes),
+                time.monotonic() - started_at,
             )
             # 返回所有 episode UUID
             return [ep.uuid for ep in result.episodes] if result and result.episodes else []
@@ -840,7 +916,18 @@ class GraphitiClient(ZepClientAdapter):
                     n.name AS name,
                     labels(n) AS labels,
                     n.summary AS summary,
-                    properties(n) AS props,
+                    n {
+                        .*,
+                        uuid: null,
+                        name: null,
+                        summary: null,
+                        created_at: null,
+                        group_id: null,
+                        name_embedding: null,
+                        summary_embedding: null,
+                        embedding: null,
+                        embeddings: null
+                    } AS props,
                     n.created_at AS created_at
                 """,
                 group_id=graph_id,
@@ -860,7 +947,18 @@ class GraphitiClient(ZepClientAdapter):
                     n.name AS name,
                     labels(n) AS labels,
                     n.summary AS summary,
-                    properties(n) AS props,
+                    n {
+                        .*,
+                        uuid: null,
+                        name: null,
+                        summary: null,
+                        created_at: null,
+                        group_id: null,
+                        name_embedding: null,
+                        summary_embedding: null,
+                        embedding: null,
+                        embeddings: null
+                    } AS props,
                     n.created_at AS created_at
                 """,
                 group_id=graph_id,
@@ -886,7 +984,7 @@ class GraphitiClient(ZepClientAdapter):
             # 过滤掉已单独提取的属性
             attributes = {
                 k: v for k, v in props.items()
-                if k not in ["uuid", "name", "summary", "created_at", "group_id"]
+                if str(k).lower() not in GRAPHITI_INTERNAL_PROPERTY_KEYS
             }
             created_at = record.get("created_at")
             if hasattr(created_at, 'to_native'):
@@ -1038,7 +1136,21 @@ class GraphitiClient(ZepClientAdapter):
                     r.fact AS fact,
                     startNode(r).uuid AS source_uuid,
                     endNode(r).uuid AS target_uuid,
-                    properties(r) AS props,
+                    r {
+                        .*,
+                        uuid: null,
+                        name: null,
+                        fact: null,
+                        created_at: null,
+                        valid_at: null,
+                        invalid_at: null,
+                        expired_at: null,
+                        group_id: null,
+                        episodes: null,
+                        fact_embedding: null,
+                        embedding: null,
+                        embeddings: null
+                    } AS props,
                     r.created_at AS created_at,
                     r.valid_at AS valid_at,
                     r.invalid_at AS invalid_at,
@@ -1063,7 +1175,21 @@ class GraphitiClient(ZepClientAdapter):
                     r.fact AS fact,
                     startNode(r).uuid AS source_uuid,
                     endNode(r).uuid AS target_uuid,
-                    properties(r) AS props,
+                    r {
+                        .*,
+                        uuid: null,
+                        name: null,
+                        fact: null,
+                        created_at: null,
+                        valid_at: null,
+                        invalid_at: null,
+                        expired_at: null,
+                        group_id: null,
+                        episodes: null,
+                        fact_embedding: null,
+                        embedding: null,
+                        embeddings: null
+                    } AS props,
                     r.created_at AS created_at,
                     r.valid_at AS valid_at,
                     r.invalid_at AS invalid_at,
@@ -1260,7 +1386,7 @@ class GraphitiClient(ZepClientAdapter):
         props = record.get("props", {})
         attributes = {
             k: v for k, v in props.items()
-            if k not in ["uuid", "fact", "created_at", "valid_at", "invalid_at", "expired_at", "group_id"]
+            if str(k).lower() not in GRAPHITI_INTERNAL_PROPERTY_KEYS
         }
 
         def _format_time(t):

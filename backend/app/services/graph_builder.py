@@ -54,11 +54,13 @@ class GraphBatchPlan:
     """图谱写入批次计划。"""
     batch_size: int
     concurrency: int
+    use_bulk_ingest: bool = False
 
-    def to_dict(self) -> Dict[str, int]:
+    def to_dict(self) -> Dict[str, Any]:
         return {
             "batch_size": self.batch_size,
             "concurrency": self.concurrency,
+            "use_bulk_ingest": self.use_bulk_ingest,
         }
 
 
@@ -383,6 +385,7 @@ class GraphBuilderService:
             return []
 
         backend = getattr(self, "_backend", Config.ZEP_BACKEND)
+        plan_started_at = time.monotonic()
         batch_plan = self.resolve_batch_plan(
             batch_size=batch_size,
             concurrency=concurrency,
@@ -396,6 +399,16 @@ class GraphBuilderService:
         for start in range(0, total_chunks, batch_size):
             batch_chunks = chunks[start:start + batch_size]
             batch_specs.append((len(batch_specs), start, batch_chunks))
+
+        logger.info(
+            "图谱写入计划: graph_id=%s, backend=%s, chunks=%s, batch_size=%s, concurrency=%s, use_bulk_ingest=%s",
+            graph_id,
+            backend,
+            total_chunks,
+            batch_size,
+            concurrency,
+            batch_plan.use_bulk_ingest,
+        )
 
         # Cloud add_batch 自身是批量异步处理，保守串行提交；Graphiti 本地抽取才启用并发写入。
         use_worker_clients = (
@@ -475,6 +488,7 @@ class GraphBuilderService:
 
         def submit_batch(batch_index: int, start_index: int, batch_chunks: List[str]) -> List[str]:
             batch_num = batch_index + 1
+            batch_started_at = time.monotonic()
             report_progress(
                 f"发送第 {batch_num}/{total_batches} 批数据 ({len(batch_chunks)} 块)...",
                 min(start_index / total_chunks, completed_batches / total_batches),
@@ -495,21 +509,24 @@ class GraphBuilderService:
                     graph_id=graph_id,
                     episodes=build_episodes(batch_chunks),
                 )
+                batch_elapsed = time.monotonic() - batch_started_at
                 if failure_event.is_set():
                     logger.info(
-                        "图谱批次写入完成但任务已失败，结果丢弃: graph_id=%s, batch=%s/%s, episodes=%s",
+                        "图谱批次写入完成但任务已失败，结果丢弃: graph_id=%s, batch=%s/%s, episodes=%s, elapsed=%.1fs",
                         graph_id,
                         batch_num,
                         total_batches,
                         len(batch_uuids),
+                        batch_elapsed,
                     )
                 else:
                     logger.info(
-                        "图谱批次写入完成: graph_id=%s, batch=%s/%s, episodes=%s",
+                        "图谱批次写入完成: graph_id=%s, batch=%s/%s, episodes=%s, elapsed=%.1fs",
                         graph_id,
                         batch_num,
                         total_batches,
                         len(batch_uuids),
+                        batch_elapsed,
                     )
                 delay = max(0.0, float(Config.GRAPH_BUILD_BATCH_DELAY_SECONDS or 0))
                 if delay:
@@ -570,6 +587,14 @@ class GraphBuilderService:
         episode_uuids: List[str] = []
         for batch_index in range(total_batches):
             episode_uuids.extend(episode_uuids_by_batch.get(batch_index, []))
+        logger.info(
+            "图谱文本批次全部写入完成: graph_id=%s, chunks=%s, batches=%s, episodes=%s, elapsed=%.1fs",
+            graph_id,
+            total_chunks,
+            total_batches,
+            len(episode_uuids),
+            time.monotonic() - plan_started_at,
+        )
         return episode_uuids
 
     @staticmethod
@@ -586,17 +611,21 @@ class GraphBuilderService:
             maximum=8,
         )
 
+        use_bulk_ingest = False
         if (backend or Config.ZEP_BACKEND) == 'graphiti':
-            graphiti_batch_size = max(1, int(Config.GRAPHITI_EPISODE_BATCH_SIZE or 1))
+            use_bulk_ingest = bool(Config.GRAPHITI_USE_BULK_INGEST)
+            graphiti_batch_size = max(1, int(Config.GRAPHITI_EPISODE_BATCH_SIZE or 1)) if use_bulk_ingest else 1
             graphiti_ingest_concurrency = max(1, int(Config.GRAPHITI_INGEST_CONCURRENCY or 1))
             resolved_batch_size = min(resolved_batch_size, graphiti_batch_size)
             resolved_concurrency = min(resolved_concurrency, graphiti_ingest_concurrency)
         else:
             resolved_concurrency = 1
+            use_bulk_ingest = resolved_batch_size > 1
 
         return GraphBatchPlan(
             batch_size=resolved_batch_size,
             concurrency=resolved_concurrency,
+            use_bulk_ingest=use_bulk_ingest,
         )
 
     @classmethod
@@ -614,8 +643,15 @@ class GraphBuilderService:
             extraction_context.get("simulation_requirement"),
             300,
         )
-        seed_summary = cls._compact_context_value(extraction_context.get("seed_summary"), 1200)
-        entity_hints = cls._compact_context_list(extraction_context.get("entity_hints"), 30, 600)
+        seed_summary = cls._compact_context_value(
+            extraction_context.get("seed_summary"),
+            max(0, int(Config.GRAPH_EXTRACTION_CONTEXT_MAX_SUMMARY_CHARS or 0)),
+        )
+        entity_hints = cls._compact_context_list(
+            extraction_context.get("entity_hints"),
+            max(0, int(Config.GRAPH_EXTRACTION_CONTEXT_MAX_ENTITY_HINTS or 0)),
+            max(0, int(Config.GRAPH_EXTRACTION_CONTEXT_MAX_HINT_CHARS or 0)),
+        )
 
         context_lines = []
         if event_topic:

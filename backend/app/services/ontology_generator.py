@@ -4,9 +4,15 @@
 """
 
 import json
+import logging
+import time
 from typing import Dict, Any, List, Optional
+from ..config import Config
 from ..utils.llm_client import LLMClient
 from .location_entity_filter import strip_location_entity_types_from_ontology
+
+
+logger = logging.getLogger("mirofish.ontology_generator")
 
 
 # 本体生成的系统提示词
@@ -164,7 +170,8 @@ class OntologyGenerator:
     """
     
     def __init__(self, llm_client: Optional[LLMClient] = None):
-        self.llm_client = llm_client or LLMClient()
+        # 本体生成是 Step1 的同步长请求，优先走 boost 端点降低等待时间。
+        self.llm_client = llm_client or LLMClient(prefer_boost=True)
     
     def generate(
         self,
@@ -183,6 +190,8 @@ class OntologyGenerator:
         Returns:
             本体定义（entity_types, edge_types等）
         """
+        started_at = time.monotonic()
+
         # 构建用户消息
         user_message = self._build_user_message(
             document_texts, 
@@ -195,20 +204,40 @@ class OntologyGenerator:
             {"role": "user", "content": user_message}
         ]
         
+        prompt_chars = sum(len(message.get("content", "")) for message in messages)
+        logger.info(
+            "开始生成本体: documents=%s, source_chars=%s, prompt_chars=%s, max_text_chars=%s",
+            len(document_texts),
+            sum(len(text or "") for text in document_texts),
+            prompt_chars,
+            self.MAX_TEXT_LENGTH_FOR_LLM,
+        )
+
         # 调用LLM
+        llm_started_at = time.monotonic()
         result = self.llm_client.chat_json(
             messages=messages,
             temperature=0.3,
             max_tokens=4096
         )
+        llm_elapsed = time.monotonic() - llm_started_at
         
         # 验证和后处理
         result = self._validate_and_process(result)
+        elapsed = time.monotonic() - started_at
+
+        logger.info(
+            "本体生成完成: entity_types=%s, edge_types=%s, llm_elapsed=%.1fs, total_elapsed=%.1fs",
+            len(result.get("entity_types") or []),
+            len(result.get("edge_types") or []),
+            llm_elapsed,
+            elapsed,
+        )
         
         return result
     
-    # 传给 LLM 的文本最大长度（5万字）
-    MAX_TEXT_LENGTH_FOR_LLM = 50000
+    # 传给 LLM 的文本最大长度；只影响本体分析，不影响图谱构建原文。
+    MAX_TEXT_LENGTH_FOR_LLM = max(1000, int(Config.ONTOLOGY_MAX_TEXT_LENGTH_FOR_LLM or 30000))
     
     def _build_user_message(
         self,
@@ -222,7 +251,7 @@ class OntologyGenerator:
         combined_text = "\n\n---\n\n".join(document_texts)
         original_length = len(combined_text)
         
-        # 如果文本超过5万字，截断（仅影响传给LLM的内容，不影响图谱构建）
+        # 如果文本过长，截断（仅影响传给 LLM 的内容，不影响图谱构建）。
         if len(combined_text) > self.MAX_TEXT_LENGTH_FOR_LLM:
             combined_text = combined_text[:self.MAX_TEXT_LENGTH_FOR_LLM]
             combined_text += f"\n\n...(原文共{original_length}字，已截取前{self.MAX_TEXT_LENGTH_FOR_LLM}字用于本体分析)..."

@@ -55,6 +55,34 @@ def test_graph_builder_uses_independent_boost_client_only_in_build_mode(monkeypa
     assert created[1] == ("get", {"backend": "graphiti"})
 
 
+def test_ontology_generator_uses_boost_client_by_default(monkeypatch):
+    from app.services.ontology_generator import OntologyGenerator
+
+    created = []
+
+    class FakeLLMClient:
+        def __init__(self, prefer_boost=False):
+            created.append(prefer_boost)
+
+        def chat_json(self, messages, temperature=0.3, max_tokens=4096):
+            return {
+                "entity_types": [
+                    {"name": "Person", "description": "person", "attributes": []},
+                    {"name": "Organization", "description": "org", "attributes": []},
+                ],
+                "edge_types": [],
+                "analysis_summary": "测试",
+            }
+
+    monkeypatch.setattr("app.services.ontology_generator.LLMClient", FakeLLMClient)
+
+    result = OntologyGenerator().generate(["材料"], "推演方向")
+
+    assert created == [True]
+    assert result["entity_types"][-2]["name"] == "Person"
+    assert result["entity_types"][-1]["name"] == "Organization"
+
+
 def test_graphiti_async_loop_waits_for_ready_when_thread_is_alive(monkeypatch):
     from app.services import zep_graphiti_impl
 
@@ -157,6 +185,24 @@ def test_graphiti_embedding_endpoint_does_not_change_llm_client(monkeypatch):
     assert llm_client.config.api_key == "llm-key"
     assert llm_client.config.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert llm_client.config.model == "qwen-plus"
+
+
+def test_graphiti_llm_client_uses_tuned_generation_config(monkeypatch):
+    from app.services.zep_graphiti_impl import GraphitiClient
+
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_LLM_MAX_TOKENS", 4096)
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_LLM_SMALL_MODEL", "qwen-turbo")
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_LLM_TEMPERATURE", 0)
+    monkeypatch.setenv("OPENAI_API_KEY", "llm-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    monkeypatch.setenv("GRAPHITI_LLM_MODEL", "qwen-plus")
+
+    llm_client = GraphitiClient("bolt://unused", "neo4j", "password")._build_default_llm_client()
+
+    assert llm_client.config.max_tokens == 4096
+    assert llm_client.max_tokens == 4096
+    assert llm_client.config.small_model == "qwen-turbo"
+    assert llm_client.config.temperature == 0
 
 
 def test_graphiti_default_embedder_falls_back_to_openai_env(monkeypatch):
@@ -419,6 +465,46 @@ def test_graphiti_add_episode_batch_uses_light_single_episode_path(monkeypatch):
     ]
 
 
+def test_graphiti_add_episode_batch_disables_bulk_by_default(monkeypatch):
+    from app.services.zep_graphiti_impl import GraphitiClient
+
+    calls = []
+
+    def fake_add_episode(graph_id, data, episode_type="text", reference_time=None):
+        calls.append({
+            "graph_id": graph_id,
+            "data": data,
+            "episode_type": episode_type,
+            "reference_time": reference_time,
+        })
+        return f"episode-light-{len(calls)}"
+
+    class FakeGraphiti:
+        async def add_episode_bulk(self, **kwargs):
+            raise AssertionError("默认禁用 bulk 时不应调用 add_episode_bulk")
+
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_USE_BULK_INGEST", False)
+
+    client = GraphitiClient("bolt://unused", "neo4j", "password")
+    client._initialized = True
+    client._ensure_initialized = lambda: None
+    client._graphiti = FakeGraphiti()
+    client.add_episode = fake_add_episode
+
+    episode_uuids = client.add_episode_batch(
+        "graph_1",
+        [
+            {"data": "第一块文本", "type": "text", "reference_time": "2026-06-03T00:00:00Z"},
+            {"data": "第二块文本", "type": "text", "reference_time": "2026-06-03T00:01:00Z"},
+        ],
+    )
+
+    assert episode_uuids == ["episode-light-1", "episode-light-2"]
+    assert [call["data"] for call in calls] == ["第一块文本", "第二块文本"]
+    assert calls[0]["reference_time"].isoformat() == "2026-06-03T00:00:00+00:00"
+    assert calls[1]["reference_time"].isoformat() == "2026-06-03T00:01:00+00:00"
+
+
 def test_graph_builder_default_batch_size_uses_config(monkeypatch):
     monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
 
@@ -435,7 +521,8 @@ def test_graph_builder_default_batch_size_uses_config(monkeypatch):
 
 def test_graph_builder_graphiti_caps_batch_size_for_stable_ingest(monkeypatch):
     monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
-    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_EPISODE_BATCH_SIZE", 1)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_USE_BULK_INGEST", False)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_EPISODE_BATCH_SIZE", 3)
 
     builder = GraphBuilderService.__new__(GraphBuilderService)
     builder.client = OrderedFakeClient()
@@ -452,8 +539,30 @@ def test_graph_builder_graphiti_caps_batch_size_for_stable_ingest(monkeypatch):
     assert episode_uuids == ["chunk-0", "chunk-1", "chunk-2"]
 
 
+def test_graph_builder_graphiti_allows_bulk_when_enabled(monkeypatch):
+    monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_USE_BULK_INGEST", True)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_EPISODE_BATCH_SIZE", 3)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_INGEST_CONCURRENCY", 1)
+
+    builder = GraphBuilderService.__new__(GraphBuilderService)
+    builder.client = OrderedFakeClient()
+    builder._backend = "graphiti"
+
+    episode_uuids = builder.add_text_batches(
+        "graph_1",
+        ["chunk-0", "chunk-1", "chunk-2"],
+        batch_size=3,
+        concurrency=1,
+    )
+
+    assert [len(batch[1]) for batch in builder.client.batches] == [3]
+    assert episode_uuids == ["chunk-0"]
+
+
 def test_graph_builder_graphiti_caps_ingest_concurrency(monkeypatch):
     monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_USE_BULK_INGEST", False)
     monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_EPISODE_BATCH_SIZE", 1)
     monkeypatch.setattr("app.services.graph_builder.Config.GRAPHITI_INGEST_CONCURRENCY", 2)
     captured_workers = []
@@ -1067,8 +1176,15 @@ def test_graph_build_api_records_requested_and_effective_batch_plan(monkeypatch,
     task = TaskManager().get_task(task_id)
     assert task.result["batch_size"] == 1
     assert task.result["concurrency"] == 1
+    assert task.result["bulk_ingest_enabled"] is False
     assert task.result["requested_batch_size"] == 3
     assert task.result["requested_concurrency"] == 4
+    assert task.progress_detail["batch_size"] == 1
+    assert task.progress_detail["concurrency"] == 1
+    assert task.progress_detail["bulk_ingest_enabled"] is False
+    assert task.progress_detail["graph_id"] == "mirofish_test_graph"
+    assert task.progress_detail["total_chunks"] == 1
+    assert task.progress_detail["total_batches"] == 1
 
 
 def test_graph_build_api_persists_graph_id_for_build_preview(monkeypatch, tmp_path):

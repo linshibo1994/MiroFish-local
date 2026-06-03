@@ -721,6 +721,7 @@ const pollTaskStatus = async (taskId) => {
         }
       } else if (task.status === 'failed') {
         stopPolling()
+        stopGraphPolling()
         const message = task.error || task.message || '图谱构建失败'
         error.value = message
         currentPhase.value = 1
@@ -741,6 +742,7 @@ const pollTaskStatus = async (taskId) => {
   } catch (e) {
     if (e?.status === 404 || e?.response?.status === 404 || /任务不存在/.test(e?.message || '')) {
       stopPolling()
+      stopGraphPolling()
       buildProgress.value = {
         progress: buildProgress.value?.progress || 0,
         message: '图谱构建任务记录不存在，请刷新项目状态或重新构建。'

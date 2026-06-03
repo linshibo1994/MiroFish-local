@@ -7,6 +7,7 @@ import json
 import os
 import traceback
 import threading
+import time
 from flask import Response, request, jsonify, stream_with_context
 
 from . import graph_bp
@@ -127,6 +128,14 @@ def _save_generated_ontology(project, ontology):
     project.analysis_summary = ontology.get("analysis_summary", "")
     project.status = ProjectStatus.ONTOLOGY_GENERATED
     ProjectManager.save_project(project)
+
+
+def _merge_task_progress_detail(task_manager: TaskManager, task_id: str, **updates) -> dict:
+    """合并更新任务进度详情，避免覆盖 graph_id 等前端轮询依赖字段。"""
+    task = task_manager.get_task(task_id)
+    detail = dict((task.progress_detail if task else {}) or {})
+    detail.update({key: value for key, value in updates.items() if value is not None})
+    return detail
 
 
 @graph_bp.route('/type-translations', methods=['GET'])
@@ -838,6 +847,7 @@ def build_graph():
         )
         effective_batch_size = batch_plan.batch_size
         effective_concurrency = batch_plan.concurrency
+        bulk_ingest_enabled = batch_plan.use_bulk_ingest
         
         # 更新项目配置
         project.chunk_size = chunk_size
@@ -875,10 +885,12 @@ def build_graph():
             progress_detail={
                 "batch_size": effective_batch_size,
                 "concurrency": effective_concurrency,
+                "bulk_ingest_enabled": bulk_ingest_enabled,
                 "requested_batch_size": batch_size,
                 "requested_concurrency": graph_build_concurrency,
                 "backend": Config.ZEP_BACKEND,
                 "llm_boost_enabled": bool(Config.LLM_BOOST_API_KEY and Config.LLM_BOOST_BASE_URL and Config.LLM_BOOST_MODEL_NAME),
+                "current_stage": "queued",
             }
         )
         
@@ -890,6 +902,7 @@ def build_graph():
         # 启动后台任务
         def build_task():
             build_logger = get_logger('mirofish.build')
+            build_started_at = time.monotonic()
             try:
                 build_logger.info(f"[{task_id}] 开始构建图谱...")
                 task_manager.update_task(
@@ -906,10 +919,16 @@ def build_graph():
                 )
                 
                 # 分块
+                split_started_at = time.monotonic()
                 task_manager.update_task(
                     task_id,
                     message="文本分块中...",
-                    progress=5
+                    progress=5,
+                    progress_detail=_merge_task_progress_detail(
+                        task_manager,
+                        task_id,
+                        current_stage="split_text",
+                    )
                 )
                 chunks = TextProcessor.split_text(
                     text, 
@@ -917,27 +936,43 @@ def build_graph():
                     overlap=chunk_overlap
                 )
                 total_chunks = len(chunks)
+                total_batches = (total_chunks + effective_batch_size - 1) // effective_batch_size if effective_batch_size else 0
+                split_elapsed = time.monotonic() - split_started_at
+                build_logger.info(
+                    "[%s] 文本分块完成: text_chars=%s, chunks=%s, chunk_size=%s, overlap=%s, elapsed=%.1fs",
+                    task_id,
+                    len(text or ""),
+                    total_chunks,
+                    chunk_size,
+                    chunk_overlap,
+                    split_elapsed,
+                )
                 
                 # 创建图谱
                 task_manager.update_task(
                     task_id,
                     message="创建图谱...",
-                    progress=10
+                    progress=10,
+                    progress_detail=_merge_task_progress_detail(
+                        task_manager,
+                        task_id,
+                        current_stage="create_graph",
+                        text_length=len(text or ""),
+                        total_chunks=total_chunks,
+                        total_batches=total_batches,
+                    )
                 )
                 graph_id = builder.create_graph(name=graph_name)
 
                 task_manager.update_task(
                     task_id,
-                    progress_detail={
-                        "batch_size": effective_batch_size,
-                        "concurrency": effective_concurrency,
-                        "requested_batch_size": batch_size,
-                        "requested_concurrency": graph_build_concurrency,
-                        "backend": Config.ZEP_BACKEND,
-                        "llm_boost_enabled": bool(Config.LLM_BOOST_API_KEY and Config.LLM_BOOST_BASE_URL and Config.LLM_BOOST_MODEL_NAME),
-                        "pending_graph_id": graph_id,
-                        "graph_id": graph_id,
-                    }
+                    progress_detail=_merge_task_progress_detail(
+                        task_manager,
+                        task_id,
+                        current_stage="create_graph",
+                        pending_graph_id=graph_id,
+                        graph_id=graph_id,
+                    )
                 )
 
                 # 创建图谱后立即绑定 graph_id，前端轮询才能读取构建中的半成品图谱。
@@ -951,7 +986,14 @@ def build_graph():
                 task_manager.update_task(
                     task_id,
                     message="设置本体定义...",
-                    progress=15
+                    progress=15,
+                    progress_detail=_merge_task_progress_detail(
+                        task_manager,
+                        task_id,
+                        current_stage="set_ontology",
+                        entity_type_count=len(ontology.get("entity_types", []) if isinstance(ontology, dict) else []),
+                        edge_type_count=len(ontology.get("edge_types", []) if isinstance(ontology, dict) else []),
+                    )
                 )
                 builder.set_ontology(graph_id, ontology)
                 
@@ -964,7 +1006,12 @@ def build_graph():
                     task_manager.update_task(
                         task_id,
                         message=message,
-                        progress=progress
+                        progress=progress,
+                        progress_detail=_merge_task_progress_detail(
+                            task_manager,
+                            task_id,
+                            current_stage="ingest_episodes",
+                        )
                     )
 
                 # 添加文本（progress_callback 签名是 (msg, progress_ratio)）
@@ -975,9 +1022,17 @@ def build_graph():
                 task_manager.update_task(
                     task_id,
                     message=f"开始添加 {total_chunks} 个文本块...",
-                    progress=15
+                    progress=15,
+                    progress_detail=_merge_task_progress_detail(
+                        task_manager,
+                        task_id,
+                        current_stage="ingest_episodes",
+                        total_chunks=total_chunks,
+                        total_batches=total_batches,
+                    )
                 )
                 
+                ingest_started_at = time.monotonic()
                 episode_uuids = builder.add_text_batches(
                     graph_id, 
                     chunks,
@@ -986,12 +1041,30 @@ def build_graph():
                     extraction_context=extraction_context,
                     concurrency=effective_concurrency,
                 )
+                ingest_elapsed = time.monotonic() - ingest_started_at
+                build_logger.info(
+                    "[%s] 图谱 episode 写入完成: graph_id=%s, chunks=%s, batches=%s, episodes=%s, elapsed=%.1fs, bulk_ingest=%s",
+                    task_id,
+                    graph_id,
+                    total_chunks,
+                    total_batches,
+                    len(episode_uuids),
+                    ingest_elapsed,
+                    bulk_ingest_enabled,
+                )
                 
                 # 等待Zep处理完成（查询每个episode的processed状态）
                 task_manager.update_task(
                     task_id,
                     message="等待图谱服务处理数据...",
-                    progress=55
+                    progress=55,
+                    progress_detail=_merge_task_progress_detail(
+                        task_manager,
+                        task_id,
+                        current_stage="wait_episodes",
+                        episode_count=len(episode_uuids),
+                        ingest_elapsed_seconds=round(ingest_elapsed, 1),
+                    )
                 )
                 
                 def wait_progress_callback(msg, progress_ratio):
@@ -1004,9 +1077,16 @@ def build_graph():
                 task_manager.update_task(
                     task_id,
                     message="获取图谱数据...",
-                    progress=95
+                    progress=95,
+                    progress_detail=_merge_task_progress_detail(
+                        task_manager,
+                        task_id,
+                        current_stage="load_graph_data",
+                    )
                 )
+                graph_data_started_at = time.monotonic()
                 graph_data = builder.get_graph_data(graph_id)
+                graph_data_elapsed = time.monotonic() - graph_data_started_at
                 
                 # 更新项目状态
                 project.graph_id = graph_id
@@ -1015,7 +1095,16 @@ def build_graph():
                 
                 node_count = graph_data.get("node_count", 0)
                 edge_count = graph_data.get("edge_count", 0)
-                build_logger.info(f"[{task_id}] 图谱构建完成: graph_id={graph_id}, 节点={node_count}, 边={edge_count}")
+                total_elapsed = time.monotonic() - build_started_at
+                build_logger.info(
+                    "[%s] 图谱构建完成: graph_id=%s, 节点=%s, 边=%s, load_graph_elapsed=%.1fs, total_elapsed=%.1fs",
+                    task_id,
+                    graph_id,
+                    node_count,
+                    edge_count,
+                    graph_data_elapsed,
+                    total_elapsed,
+                )
                 
                 # 完成
                 task_manager.update_task(
@@ -1031,8 +1120,12 @@ def build_graph():
                         "chunk_count": total_chunks,
                         "batch_size": effective_batch_size,
                         "concurrency": effective_concurrency,
+                        "bulk_ingest_enabled": bulk_ingest_enabled,
                         "requested_batch_size": batch_size,
                         "requested_concurrency": graph_build_concurrency,
+                        "ingest_elapsed_seconds": round(ingest_elapsed, 1),
+                        "load_graph_elapsed_seconds": round(graph_data_elapsed, 1),
+                        "total_elapsed_seconds": round(total_elapsed, 1),
                     }
                 )
                 
