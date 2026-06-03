@@ -18,15 +18,14 @@
         <!-- 输入卡片 -->
         <div class="input-card">
           <!-- 文字输入区 -->
-          <div class="text-input-section" :class="{ disabled: files.length > 0 }">
+          <div v-if="shouldShowTextInput" class="text-input-section">
             <textarea
               v-model="searchQuery"
               class="keyword-textarea"
               placeholder="请输入你想要推演的主题"
-              :disabled="isBusy || files.length > 0"
+              :disabled="isBusy"
               @input="onTextInput"
             ></textarea>
-            <p v-if="files.length > 0" class="input-disabled-hint">已上传文件，不可输入文字</p>
           </div>
 
           <!-- 分隔线 -->
@@ -42,14 +41,13 @@
             :disabled="isBusy || searchQuery.trim().length > 0"
             @change="handleFileSelect"
           />
-          <div class="file-upload-section" :class="{ disabled: searchQuery.trim().length > 0 && !showAnalysisLog }">
+          <div v-if="shouldShowUploadSection" class="file-upload-section">
             <div
               class="upload-zone"
               :class="{
                 'drag-over': isDragOver,
                 'has-files': files.length > 0 && !showAnalysisLog,
-                streaming: showAnalysisLog,
-                disabled: searchQuery.trim().length > 0 && !showAnalysisLog
+                streaming: showAnalysisLog
               }"
               @click="!searchQuery.trim() && !showAnalysisLog && triggerFileInput()"
               @dragover.prevent="handleDragOver"
@@ -107,14 +105,10 @@
                 </div>
               </div>
               <!-- 空状态 -->
-              <div v-else-if="files.length === 0 && !searchQuery.trim()" class="upload-placeholder">
+              <div v-else-if="files.length === 0" class="upload-placeholder">
                 <div class="upload-icon">↑</div>
                 <div class="upload-title">拖拽 PDF / MD / TXT 到这里</div>
                 <div class="upload-hint">或点击选择文件</div>
-              </div>
-              <!-- 禁用状态 -->
-              <div v-else-if="searchQuery.trim().length > 0" class="upload-placeholder disabled-placeholder">
-                <div class="upload-hint">已输入文字，不可上传文件</div>
               </div>
               <!-- 文件列表 -->
               <div v-else class="file-list">
@@ -128,7 +122,6 @@
                 </div>
               </div>
             </div>
-            <p v-if="files.length > 0" class="input-disabled-hint upload-hint-text">已上传文件，文字输入已禁用</p>
           </div>
 
           <!-- 补充上下文（隐藏，仅在有内容时显示） -->
@@ -515,6 +508,10 @@ const resetToInput = () => {
 
 const isBusy = computed(() => seedAnalyzing.value || ontologyGenerating.value || props.currentPhase >= 1)
 const showAnalysisLog = computed(() => seedAnalyzing.value || executionLogs.value.length > 0)
+const hasTextInput = computed(() => searchQuery.value.trim().length > 0)
+const hasFileInput = computed(() => files.value.length > 0)
+const shouldShowTextInput = computed(() => !hasFileInput.value)
+const shouldShowUploadSection = computed(() => showAnalysisLog.value || !hasTextInput.value)
 
 const suggestions = computed(() => {
   const value = seedResult.value?.simulation_suggestions || seedResult.value?.suggestions || []
@@ -612,10 +609,11 @@ const onTextInput = () => {
 }
 
 const triggerFileInput = () => {
-  if (!isBusy.value) fileInput.value?.click()
+  if (!isBusy.value && !hasTextInput.value) fileInput.value?.click()
 }
 
 const addFiles = (newFiles) => {
+  if (hasTextInput.value || showAnalysisLog.value) return
   resetAnalysisResult()
   const validFiles = newFiles.filter(file => {
     const ext = file.name.split('.').pop().toLowerCase()
@@ -637,7 +635,7 @@ const handleFileSelect = (event) => {
 }
 
 const handleDragOver = () => {
-  if (!isBusy.value) isDragOver.value = true
+  if (!isBusy.value && !hasTextInput.value && !showAnalysisLog.value) isDragOver.value = true
 }
 
 const handleDragLeave = () => {
@@ -646,7 +644,7 @@ const handleDragLeave = () => {
 
 const handleDrop = (event) => {
   isDragOver.value = false
-  if (isBusy.value) return
+  if (isBusy.value || hasTextInput.value || showAnalysisLog.value) return
   addFiles(Array.from(event.dataTransfer.files || []))
 }
 
@@ -986,42 +984,8 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-/* 输入区域互斥样式 */
-.text-input-section.disabled .keyword-textarea {
-  background: #F3F4F6;
-  color: #9CA3AF;
-  cursor: not-allowed;
-}
-
-.file-upload-section.disabled .upload-zone {
-  border-color: #E5E7EB;
-  background: #F3F4F6;
-  cursor: not-allowed;
-}
-
-.input-disabled-hint {
-  font-size: 12px;
-  color: #9CA3AF;
-  margin: 4px 0 0;
-  font-style: italic;
-}
-
-.upload-hint-text {
-  margin-top: 6px;
-}
-
 .input-divider {
   display: none;
-}
-
-.disabled-placeholder {
-  opacity: 0.5;
-}
-
-.upload-zone.disabled {
-  border-color: #E5E7EB;
-  background: #F3F4F6;
-  cursor: not-allowed;
 }
 
 .tab-content {
