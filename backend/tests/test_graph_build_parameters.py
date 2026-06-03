@@ -298,6 +298,127 @@ def test_graphiti_quota_exhausted_error_does_not_retry(monkeypatch):
     assert calls["count"] == 1
 
 
+def test_graphiti_rate_limit_wrapper_times_out_single_llm_request(monkeypatch):
+    from app.services import zep_graphiti_impl
+
+    async def slow_request():
+        await asyncio.sleep(0.05)
+        return {"ok": True}
+
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_LLM_REQUEST_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_LLM_MIN_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_RATE_LIMIT_MAX_RETRIES", 0)
+
+    try:
+        asyncio.run(
+            zep_graphiti_impl._call_with_graphiti_rate_limit_retry(
+                slow_request,
+                operation="llm.generate_response",
+                item_count=1,
+            )
+        )
+    except TimeoutError as exc:
+        assert "单次请求超过 0.01 秒未返回" in str(exc)
+    else:
+        raise AssertionError("Graphiti LLM 单请求超时应快速抛出")
+
+
+def test_graphiti_rate_limit_wrapper_times_out_single_embedding_request(monkeypatch):
+    from app.services import zep_graphiti_impl
+
+    async def slow_request():
+        await asyncio.sleep(0.05)
+        return [[0.1]]
+
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_EMBEDDING_REQUEST_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_EMBEDDING_MIN_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_RATE_LIMIT_MAX_RETRIES", 0)
+
+    try:
+        asyncio.run(
+            zep_graphiti_impl._call_with_graphiti_rate_limit_retry(
+                slow_request,
+                operation="embedding.create_batch",
+                item_count=1,
+            )
+        )
+    except TimeoutError as exc:
+        assert "Graphiti embedding.create_batch 单次请求超过 0.01 秒未返回" in str(exc)
+    else:
+        raise AssertionError("Graphiti embedding 单请求超时应快速抛出")
+
+
+def test_graphiti_add_episode_disables_previous_context_by_default(monkeypatch):
+    from app.services import zep_graphiti_impl
+    from app.services.zep_graphiti_impl import GraphitiClient
+
+    captured = {}
+
+    class FakeEpisode:
+        uuid = "episode-light-1"
+
+    class FakeResult:
+        episode = FakeEpisode()
+
+    class FakeGraphiti:
+        async def add_episode(self, **kwargs):
+            captured.update(kwargs)
+            return FakeResult()
+
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_USE_PREVIOUS_EPISODE_CONTEXT", False)
+    monkeypatch.setattr(
+        zep_graphiti_impl,
+        "_run_async",
+        lambda coro: asyncio.run(coro),
+    )
+
+    client = GraphitiClient("bolt://unused", "neo4j", "password")
+    client._initialized = True
+    client._graphiti = FakeGraphiti()
+
+    episode_uuid = client.add_episode("graph_1", "测试文本", episode_type="text")
+
+    assert episode_uuid == "episode-light-1"
+    assert captured["previous_episode_uuids"] == []
+    assert captured["episode_body"] == "测试文本"
+
+
+def test_graphiti_add_episode_batch_uses_light_single_episode_path(monkeypatch):
+    from app.services.zep_graphiti_impl import GraphitiClient
+
+    calls = []
+
+    def fake_add_episode(graph_id, data, episode_type="text", reference_time=None):
+        calls.append({
+            "graph_id": graph_id,
+            "data": data,
+            "episode_type": episode_type,
+            "reference_time": reference_time,
+        })
+        return "episode-light-1"
+
+    client = GraphitiClient("bolt://unused", "neo4j", "password")
+    client._initialized = True
+    client._ensure_initialized = lambda: None
+    client.add_episode = fake_add_episode
+
+    episode_uuids = client.add_episode_batch(
+        "graph_1",
+        [{"data": "单块文本", "type": "text", "reference_time": "2026-06-03T00:00:00Z"}],
+    )
+
+    assert episode_uuids == ["episode-light-1"]
+    assert calls[0]["reference_time"].isoformat() == "2026-06-03T00:00:00+00:00"
+    assert calls == [
+        {
+            "graph_id": "graph_1",
+            "data": "单块文本",
+            "episode_type": "text",
+            "reference_time": calls[0]["reference_time"],
+        }
+    ]
+
+
 def test_graph_builder_default_batch_size_uses_config(monkeypatch):
     monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
 

@@ -72,6 +72,27 @@ def _is_quota_exhausted_error(exc: Exception) -> bool:
     )
 
 
+def _normalize_reference_time(reference_time: Optional[Any]) -> Optional[datetime]:
+    """兼容 API 层传入的 datetime 或 ISO 时间字符串。"""
+    if reference_time is None or isinstance(reference_time, datetime):
+        return reference_time
+    if isinstance(reference_time, str):
+        value = reference_time.strip()
+        if not value:
+            return None
+        try:
+            if value.endswith("Z"):
+                value = f"{value[:-1]}+00:00"
+            parsed = datetime.fromisoformat(value)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        except ValueError:
+            logger.warning("Graphiti reference_time 解析失败，使用当前时间: value=%s", reference_time)
+            return None
+    return None
+
+
 # ============================================================================
 # 单后台线程 + 专用事件循环（方案 A）
 # ============================================================================
@@ -200,13 +221,37 @@ async def _call_with_graphiti_rate_limit_retry(factory, operation: str, item_cou
     """统一处理 Graphiti 对 LLM/Embedding 的限流重试。"""
     max_retries = max(0, int(Config.GRAPHITI_RATE_LIMIT_MAX_RETRIES or 0))
     retry_seconds = max(0.0, float(Config.GRAPHITI_RATE_LIMIT_RETRY_SECONDS or 0))
+    if operation.startswith("embedding."):
+        request_timeout = max(0.0, float(Config.GRAPHITI_EMBEDDING_REQUEST_TIMEOUT_SECONDS or 0))
+    elif operation.startswith("llm."):
+        request_timeout = max(0.0, float(Config.GRAPHITI_LLM_REQUEST_TIMEOUT_SECONDS or 0))
+    else:
+        request_timeout = 0.0
+
     for attempt in range(max_retries + 1):
         try:
             if operation.startswith("embedding."):
                 await _throttle_embedding_request(operation, item_count)
             elif operation.startswith("llm."):
                 await _throttle_llm_request(operation, item_count)
-            return await factory()
+            started_at = time.monotonic()
+            if request_timeout > 0:
+                result = await asyncio.wait_for(factory(), timeout=request_timeout)
+            else:
+                result = await factory()
+            elapsed = time.monotonic() - started_at
+            if elapsed >= 10:
+                logger.info(
+                    "Graphiti %s 请求完成但耗时较长: items=%s, elapsed=%.1fs",
+                    operation,
+                    item_count,
+                    elapsed,
+                )
+            return result
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"Graphiti {operation} 单次请求超过 {request_timeout:g} 秒未返回"
+            ) from exc
         except Exception as exc:
             if not _is_rate_limit_error(exc) or _is_quota_exhausted_error(exc) or attempt >= max_retries:
                 raise
@@ -670,19 +715,31 @@ class GraphitiClient(ZepClientAdapter):
             source_type = EpisodeType.json
 
         ontology = self._ontology_cache.get(graph_id, {})
+        normalized_reference_time = _normalize_reference_time(reference_time)
 
         async def _add():
+            started_at = time.monotonic()
+            previous_episode_uuids = None if Config.GRAPHITI_USE_PREVIOUS_EPISODE_CONTEXT else []
             result = await self._graphiti.add_episode(
                 name=f"episode_{graph_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}",
                 episode_body=data,
                 source=source_type,
                 source_description="mirofish_simulation",
-                reference_time=reference_time or datetime.now(timezone.utc),
+                reference_time=normalized_reference_time or datetime.now(timezone.utc),
                 group_id=graph_id,
                 entity_types=ontology.get("entities") or None,
                 excluded_entity_types=ontology.get("excluded_entity_types") or None,
                 edge_types=ontology.get("edges") or None,
                 edge_type_map=ontology.get("edge_type_map") or None,
+                previous_episode_uuids=previous_episode_uuids,
+            )
+            elapsed = time.monotonic() - started_at
+            logger.info(
+                "Graphiti 单条 episode 写入完成: graph_id=%s, episode_uuid=%s, elapsed=%.1fs, previous_context=%s",
+                graph_id,
+                result.episode.uuid if result and result.episode else "",
+                elapsed,
+                bool(Config.GRAPHITI_USE_PREVIOUS_EPISODE_CONTEXT),
             )
             return result.episode.uuid if result and result.episode else ""
 
@@ -695,6 +752,23 @@ class GraphitiClient(ZepClientAdapter):
     ) -> List[str]:
         """批量添加 episode"""
         self._ensure_initialized()
+
+        if not episodes:
+            return []
+
+        # Graphiti 的 bulk ingestion 即使单条 episode 也会走更重的批量去重流程。
+        # 本地图谱构建默认把批次压到 1，因此这里直接走 add_episode 的顺序路径，
+        # 可避开尾批携带历史上下文后越来越慢的问题。
+        if len(episodes) == 1:
+            episode = episodes[0]
+            return [
+                self.add_episode(
+                    graph_id=graph_id,
+                    data=episode.get("data", ""),
+                    episode_type=episode.get("type", "text"),
+                    reference_time=_normalize_reference_time(episode.get("reference_time")),
+                )
+            ]
 
         from graphiti_core.nodes import EpisodeType
         from graphiti_core.utils.bulk_utils import RawEpisode
@@ -716,7 +790,7 @@ class GraphitiClient(ZepClientAdapter):
                     content=ep.get("data", ""),
                     source=source_type,
                     source_description="mirofish_simulation",
-                    reference_time=ep.get("reference_time") or datetime.now(timezone.utc),
+                    reference_time=_normalize_reference_time(ep.get("reference_time")) or datetime.now(timezone.utc),
                 )
             )
 

@@ -103,6 +103,9 @@ class Config:
     GRAPHITI_RATE_LIMIT_RETRY_SECONDS = float(os.environ.get('GRAPHITI_RATE_LIMIT_RETRY_SECONDS', '20'))  # Graphiti 限流退避秒数
     GRAPHITI_LLM_CONCURRENCY = int(os.environ.get('GRAPHITI_LLM_CONCURRENCY', '1'))  # Graphiti 内部 LLM 抽取并发数
     GRAPHITI_LLM_MIN_INTERVAL_SECONDS = float(os.environ.get('GRAPHITI_LLM_MIN_INTERVAL_SECONDS', '0.5'))  # Graphiti LLM 请求最小间隔
+    GRAPHITI_LLM_REQUEST_TIMEOUT_SECONDS = float(os.environ.get('GRAPHITI_LLM_REQUEST_TIMEOUT_SECONDS', '120'))  # Graphiti 单次 LLM 请求超时
+    GRAPHITI_EMBEDDING_REQUEST_TIMEOUT_SECONDS = float(os.environ.get('GRAPHITI_EMBEDDING_REQUEST_TIMEOUT_SECONDS', '60'))  # Graphiti 单次 embedding 请求超时
+    GRAPHITI_USE_PREVIOUS_EPISODE_CONTEXT = os.environ.get('GRAPHITI_USE_PREVIOUS_EPISODE_CONTEXT', 'false').lower() in {'1', 'true', 'yes', 'on'}  # 是否把历史 episode 注入后续抽取提示词
     GRAPHITI_EMBEDDING_API_KEY = os.environ.get('GRAPHITI_EMBEDDING_API_KEY')  # Graphiti embedding 独立 API Key（可选）
     GRAPHITI_EMBEDDING_BASE_URL = os.environ.get('GRAPHITI_EMBEDDING_BASE_URL')  # Graphiti embedding 独立 endpoint（可选）
     GRAPHITI_EMBEDDING_MODEL = os.environ.get('GRAPHITI_EMBEDDING_MODEL')  # Graphiti embedding 模型名

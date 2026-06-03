@@ -215,7 +215,7 @@ class GraphBuilderService:
             self.task_manager.update_task(
                 task_id,
                 progress=60,
-                message="等待Zep处理数据..."
+                message="等待图谱服务处理数据..."
             )
             
             self._wait_for_episodes(
@@ -443,7 +443,11 @@ class GraphBuilderService:
 
         def raise_batch_error(batch_num: int, exc: Exception) -> None:
             if isinstance(exc, TimeoutError) or isinstance(exc, FutureTimeoutError):
-                message = f"批次 {batch_num} 写入超过 Graphiti 超时限制"
+                timeout_text = " ".join(iter_exception_messages(exc))
+                if "单次请求超过" in timeout_text:
+                    message = timeout_text
+                else:
+                    message = f"批次 {batch_num} 写入超过 Graphiti 超时限制"
             else:
                 exception_text = " ".join(iter_exception_messages(exc)).lower()
                 if (
