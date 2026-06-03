@@ -7,7 +7,7 @@ LLM 路由工具。
 import os
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Iterator, Optional
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
 from openai import OpenAI
 
@@ -22,6 +22,33 @@ class LLMEndpoint:
     base_url: str
     model: str
     is_boost: bool = False
+    route_name: Optional[str] = None
+
+    def __post_init__(self):
+        """兼容旧调用：未显式传 route_name 时按 is_boost 推导。"""
+        if self.route_name is None:
+            object.__setattr__(self, "route_name", "boost" if self.is_boost else "base")
+
+
+@dataclass(frozen=True)
+class LLMEndpointPool:
+    """图谱构建 LLM 端点池，支持按权重确定性轮询。"""
+
+    endpoints: Tuple[LLMEndpoint, ...]
+    weights: Dict[str, int]
+    expanded_endpoints: Tuple[LLMEndpoint, ...]
+    dual_enabled: bool = False
+
+    def endpoint_for_index(self, index: int) -> LLMEndpoint:
+        """按序号返回本次应使用的端点。"""
+        if not self.expanded_endpoints:
+            raise ValueError("LLM endpoint pool 为空")
+        return self.expanded_endpoints[index % len(self.expanded_endpoints)]
+
+    @property
+    def route_names(self) -> Tuple[str, ...]:
+        """返回端点池中的路由名称。"""
+        return tuple(endpoint.route_name for endpoint in self.endpoints)
 
 
 def get_default_llm_endpoint() -> LLMEndpoint:
@@ -33,7 +60,13 @@ def get_default_llm_endpoint() -> LLMEndpoint:
         base_url=Config.LLM_BASE_URL,
         model=Config.LLM_MODEL_NAME,
         is_boost=False,
+        route_name="base",
     )
+
+
+def get_base_llm_endpoint() -> LLMEndpoint:
+    """返回图谱构建默认 LLM 端点，语义上显式标记为 base。"""
+    return get_default_llm_endpoint()
 
 
 def get_boost_llm_endpoint() -> Optional[LLMEndpoint]:
@@ -47,6 +80,7 @@ def get_boost_llm_endpoint() -> Optional[LLMEndpoint]:
         base_url=Config.LLM_BOOST_BASE_URL,
         model=Config.LLM_BOOST_MODEL_NAME,
         is_boost=True,
+        route_name="boost",
     )
 
 
@@ -57,6 +91,33 @@ def get_preferred_llm_endpoint(prefer_boost: bool = True) -> LLMEndpoint:
         if boost:
             return boost
     return get_default_llm_endpoint()
+
+
+def get_graph_build_llm_endpoint_pool(build_mode: bool = True) -> LLMEndpointPool:
+    """
+    返回 02 图谱构建使用的 LLM 端点池。
+
+    只有 Graphiti build 模式、双模型开关开启、base 可用且 boost 完整时，才返回 base+boost。
+    其他场景保持现有优先 boost 的单端点行为。
+    """
+    if (
+        build_mode
+        and str(Config.ZEP_BACKEND or "").strip().lower() == "graphiti"
+        and bool(Config.GRAPH_BUILD_DUAL_LLM_ENABLED)
+        and _has_base_llm_endpoint()
+    ):
+        base = get_base_llm_endpoint()
+        boost = get_boost_llm_endpoint()
+        if boost:
+            weights = {
+                "base": clamp_weight(Config.GRAPH_BUILD_LLM_BASE_WEIGHT),
+                "boost": clamp_weight(Config.GRAPH_BUILD_LLM_BOOST_WEIGHT),
+            }
+            return _build_endpoint_pool((base, boost), weights, dual_enabled=True)
+
+    preferred = get_preferred_llm_endpoint(prefer_boost=True)
+    weights = {preferred.route_name: 1}
+    return _build_endpoint_pool((preferred,), weights, dual_enabled=False)
 
 
 def create_openai_client(endpoint: Optional[LLMEndpoint] = None, prefer_boost: bool = True) -> OpenAI:
@@ -74,6 +135,33 @@ def clamp_concurrency(value: Optional[int], default: int, minimum: int = 1, maxi
     return max(minimum, min(maximum, parsed))
 
 
+def clamp_weight(value: Optional[int], default: int = 1, minimum: int = 1, maximum: int = 8) -> int:
+    """把 LLM 分摊权重限制在安全范围内。"""
+    try:
+        parsed = int(value if value is not None else default)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _build_endpoint_pool(
+    endpoints: Sequence[LLMEndpoint],
+    weights: Dict[str, int],
+    dual_enabled: bool,
+) -> LLMEndpointPool:
+    """根据端点和权重创建确定性轮询池。"""
+    expanded: List[LLMEndpoint] = []
+    for endpoint in endpoints:
+        weight = clamp_weight(weights.get(endpoint.route_name, 1))
+        expanded.extend([endpoint] * weight)
+    return LLMEndpointPool(
+        endpoints=tuple(endpoints),
+        weights={endpoint.route_name: clamp_weight(weights.get(endpoint.route_name, 1)) for endpoint in endpoints},
+        expanded_endpoints=tuple(expanded),
+        dual_enabled=dual_enabled and len(endpoints) > 1,
+    )
+
+
 def _is_placeholder(value: str) -> bool:
     """识别示例配置中的占位符，避免误用无效加速 Key。"""
     normalized = str(value or "").strip().lower()
@@ -83,6 +171,11 @@ def _is_placeholder(value: str) -> bool:
         "your_api_key",
         "your_api_key_here",
     }
+
+
+def _has_base_llm_endpoint() -> bool:
+    """判断默认 LLM 是否可作为 base 路由参与双模型分摊。"""
+    return bool(Config.LLM_API_KEY) and not _is_placeholder(Config.LLM_API_KEY)
 
 
 @contextmanager
