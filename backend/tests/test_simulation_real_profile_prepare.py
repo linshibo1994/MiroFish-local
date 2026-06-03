@@ -87,6 +87,124 @@ def test_prepare_fails_in_strict_mode_when_real_verification_has_zero_verified(t
     assert result.profiles_count == 0
 
 
+def test_prepare_non_strict_mode_generates_profiles_for_unverified_entities(tmp_path, monkeypatch):
+    monkeypatch.setattr(SimulationManager, "SIMULATION_DATA_DIR", str(tmp_path))
+
+    first_entity = EntityNode(
+        uuid="person-1",
+        name="张雪",
+        labels=["Entity", "Founder"],
+        summary="张雪是张雪机车创始人，与820RR召回事件高度相关。",
+        attributes={},
+    )
+    second_entity = EntityNode(
+        uuid="company-1",
+        name="张雪机车",
+        labels=["Entity", "MotorcycleCompany"],
+        summary="张雪机车是820RR曲轴箱破裂事件中的品牌主体。",
+        attributes={},
+    )
+
+    class FakeReader:
+        def __init__(self, backend=None):
+            pass
+
+        def filter_defined_entities(self, graph_id, defined_entity_types=None, enrich_with_edges=True):
+            return FilteredEntities(
+                entities=[first_entity, second_entity],
+                entity_types={"Founder", "MotorcycleCompany"},
+                total_count=2,
+                filtered_count=2,
+            )
+
+    class FakeResolver:
+        def __init__(self, min_source_count=1, allow_group_agents=True, concurrency=1):
+            pass
+
+        def resolve_entities(self, entities):
+            return [
+                ResolvedRealEntity(
+                    entity_uuid=entity.uuid,
+                    entity_name=entity.name,
+                    entity_type=entity.get_entity_type(),
+                    verification_status=UNSUPPORTED,
+                    skip_reason="测试：未找到可引用来源",
+                )
+                for entity in entities
+            ]
+
+    captured = {}
+
+    class FakeProfileGenerator:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def generate_profiles_from_entities(self, **kwargs):
+            captured["entities"] = kwargs["entities"]
+            captured["strict_real_mode"] = kwargs["strict_real_mode"]
+            captured["resolved_real_entities"] = kwargs["resolved_real_entities"]
+            return [
+                manager_module.OasisAgentProfile(
+                    user_id=idx,
+                    user_name=f"agent_{idx}",
+                    name=entity.name,
+                    bio=entity.summary,
+                    persona=entity.summary,
+                    source_entity_uuid=entity.uuid,
+                    source_entity_type=entity.get_entity_type(),
+                    verification_status=UNSUPPORTED,
+                )
+                for idx, entity in enumerate(kwargs["entities"])
+            ]
+
+        def save_profiles(self, profiles, file_path, platform="reddit"):
+            pass
+
+    class FakeConfigGenerator:
+        def generate_config(self, **kwargs):
+            captured["config_entities"] = kwargs["entities"]
+            return SimulationParameters(
+                simulation_id=kwargs["simulation_id"],
+                project_id=kwargs["project_id"],
+                graph_id=kwargs["graph_id"],
+                simulation_requirement=kwargs["simulation_requirement"],
+            )
+
+    monkeypatch.setattr(manager_module, "ZepEntityReader", FakeReader)
+    monkeypatch.setattr(manager_module, "RealEntityResolver", FakeResolver)
+    monkeypatch.setattr(manager_module, "OasisProfileGenerator", FakeProfileGenerator)
+    monkeypatch.setattr(manager_module, "SimulationConfigGenerator", FakeConfigGenerator)
+
+    manager = SimulationManager()
+    state = SimulationState(
+        simulation_id="sim_non_strict_unverified",
+        project_id="proj_1",
+        graph_id="graph_1",
+        graph_backend="graphiti",
+        status=SimulationStatus.CREATED,
+    )
+    manager._save_simulation_state(state)
+
+    result = manager.prepare_simulation(
+        simulation_id="sim_non_strict_unverified",
+        simulation_requirement="测试非严格真实画像",
+        document_text="测试文档",
+        use_real_profiles=True,
+        strict_real_mode=False,
+    )
+
+    assert result.status == SimulationStatus.READY
+    assert [entity.uuid for entity in captured["entities"]] == [first_entity.uuid, second_entity.uuid]
+    assert [entity.uuid for entity in captured["config_entities"]] == [first_entity.uuid, second_entity.uuid]
+    assert captured["strict_real_mode"] is False
+    assert captured["resolved_real_entities"][first_entity.uuid].verification_status == UNSUPPORTED
+    assert result.entities_count == 2
+    assert result.profiles_count == 2
+    assert result.verification_candidate_count == 2
+    assert result.verification_verified_count == 0
+    assert result.verification_skipped_count == 2
+
+
 def test_prepare_strict_mode_only_generates_verified_profiles(tmp_path, monkeypatch):
     monkeypatch.setattr(SimulationManager, "SIMULATION_DATA_DIR", str(tmp_path))
 

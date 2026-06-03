@@ -264,7 +264,7 @@ class SimulationManager:
         progress_callback: Optional[callable] = None,
         parallel_profile_count: int = 3,
         use_real_profiles: bool = True,
-        strict_real_mode: bool = True,
+        strict_real_mode: bool = False,
         allow_group_agents: bool = True,
         min_source_count: int = 1,
     ) -> SimulationState:
@@ -287,8 +287,8 @@ class SimulationManager:
             progress_callback: 进度回调函数 (stage, progress, message)
             parallel_profile_count: 并行生成人设的数量，默认3
             use_real_profiles: 是否启用真实资料验证画像
-            strict_real_mode: 严格真实模式。启用后只有 verified 实体会进入人设生成，
-                避免把相关机构、抽象节点或未消歧对象伪装成真实人设
+            strict_real_mode: 严格真实模式。默认关闭；启用后只有 verified 实体会进入人设生成。
+                关闭时会保留未核验实体，使用图谱上下文生成模拟画像，并保留 verification_status。
             allow_group_agents: 是否允许机构/群体实体进入Agent，默认 true
             min_source_count: verified 所需最少来源数
             
@@ -400,6 +400,14 @@ class SimulationManager:
                         )
                         self._save_simulation_state(state)
                         return state
+                else:
+                    logger.info(
+                        "严格真实模式关闭，保留全部图谱实体生成画像: simulation_id=%s, entities=%s, verified=%s, unverified=%s",
+                        simulation_id,
+                        len(entities_for_profiles),
+                        len(verified_results),
+                        len(skipped_results),
+                    )
                 self._save_simulation_state(state)
             
             # ========== 阶段2: 生成Agent Profile ==========

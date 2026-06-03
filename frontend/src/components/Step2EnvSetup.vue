@@ -856,7 +856,7 @@ const startPrepareSimulation = async () => {
       use_llm_for_profiles: true,
       parallel_profile_count: 5,
       use_real_profiles: true,
-      strict_real_mode: true,
+      strict_real_mode: false,
       allow_group_agents: true,
       min_source_count: 1
     })

@@ -510,6 +510,8 @@ def prepare_simulation():
             "entity_types": ["Student", "PublicFigure"],  // 可选，指定实体类型
             "use_llm_for_profiles": true,                 // 可选，是否用LLM生成人设
             "parallel_profile_count": 5,                  // 可选，并行生成人设数量，默认5
+            "use_real_profiles": true,                    // 可选，联网核验并增强真实资料，默认true
+            "strict_real_mode": false,                    // 可选，默认false；true时只生成verified实体
             "force_regenerate": false                     // 可选，强制重新生成，默认false
         }
     
@@ -607,7 +609,7 @@ def prepare_simulation():
         use_llm_for_profiles = data.get('use_llm_for_profiles', True)
         parallel_profile_count = data.get('parallel_profile_count', 5)
         use_real_profiles = data.get('use_real_profiles', True)
-        strict_real_mode = data.get('strict_real_mode', True)
+        strict_real_mode = data.get('strict_real_mode', False)
         allow_group_agents = data.get('allow_group_agents', True)
         min_source_count = data.get('min_source_count', 1)
         logger.info(

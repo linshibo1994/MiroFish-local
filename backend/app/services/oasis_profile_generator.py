@@ -1373,7 +1373,7 @@ class OasisProfileGenerator:
             realtime_output_path: 实时写入的文件路径（如果提供，每生成一个就写入一次）
             output_platform: 输出平台格式 ("reddit" 或 "twitter")
             resolved_real_entities: 已解析的真实实体结果，按 uuid 匹配
-            strict_real_mode: 严格真实模式，禁止异常时生成备用虚构Profile
+            strict_real_mode: 严格真实模式，禁止异常时生成备用Profile
             
         Returns:
             Agent Profile列表
@@ -1431,21 +1431,22 @@ class OasisProfileGenerator:
             """生成单个profile的工作函数"""
             entity_type = entity.get_entity_type() or "Entity"
             entity_type_display = TypeTranslationService.translate_entity_type(entity_type)
-            
+            resolved_result = resolved_by_uuid.get(entity.uuid)
+
             try:
                 profile = self.generate_profile_from_entity(
                     entity=entity,
                     user_id=idx,
                     use_llm=use_llm,
-                    resolved_real_entity=resolved_by_uuid.get(entity.uuid),
+                    resolved_real_entity=resolved_result,
                     strict_real_mode=strict_real_mode,
                 )
-                
+
                 # 实时输出生成的人设到控制台和日志
                 self._print_generated_profile(entity.name, entity_type_display, profile)
-                
+
                 return idx, profile, None
-                
+
             except Exception as e:
                 logger.error(f"生成实体 {entity.name} 的人设失败: {str(e)}")
                 if strict_real_mode:
@@ -1456,9 +1457,14 @@ class OasisProfileGenerator:
                     user_name=self._generate_username(entity.name),
                     name=entity.name,
                     bio=f"{entity_type_display}: {entity.name}",
-                    persona=entity.summary or f"A participant in social discussions.",
+                    persona=entity.summary or "A participant in social discussions.",
                     source_entity_uuid=entity.uuid,
                     source_entity_type=entity_type,
+                    verification_status=resolved_result.verification_status if resolved_result else "unverified",
+                    info_confidence=resolved_result.info_confidence if resolved_result else 0.0,
+                    info_sources=resolved_result.info_sources if resolved_result else [],
+                    source_citations=resolved_result.source_citations if resolved_result else [],
+                    real_identity_summary=resolved_result.real_identity_summary if resolved_result else "",
                 )
                 return idx, fallback_profile, str(e)
         
@@ -1527,6 +1533,11 @@ class OasisProfileGenerator:
                         persona=entity.summary or "A participant in social discussions.",
                         source_entity_uuid=entity.uuid,
                         source_entity_type=entity_type,
+                        verification_status=resolved_by_uuid[entity.uuid].verification_status if entity.uuid in resolved_by_uuid else "unverified",
+                        info_confidence=resolved_by_uuid[entity.uuid].info_confidence if entity.uuid in resolved_by_uuid else 0.0,
+                        info_sources=resolved_by_uuid[entity.uuid].info_sources if entity.uuid in resolved_by_uuid else [],
+                        source_citations=resolved_by_uuid[entity.uuid].source_citations if entity.uuid in resolved_by_uuid else [],
+                        real_identity_summary=resolved_by_uuid[entity.uuid].real_identity_summary if entity.uuid in resolved_by_uuid else "",
                     )
                     # 实时写入文件（即使是备用人设）
                     save_profiles_realtime()
