@@ -1071,7 +1071,7 @@ def test_graph_build_api_records_requested_and_effective_batch_plan(monkeypatch,
     assert task.result["requested_concurrency"] == 4
 
 
-def test_graph_build_api_does_not_persist_graph_id_until_success(monkeypatch, tmp_path):
+def test_graph_build_api_persists_graph_id_for_build_preview(monkeypatch, tmp_path):
     monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", str(tmp_path))
     monkeypatch.setattr("app.api.graph.Config.ZEP_BACKEND", "graphiti")
 
@@ -1119,5 +1119,9 @@ def test_graph_build_api_does_not_persist_graph_id_until_success(monkeypatch, tm
     assert response.status_code == 200
     saved_project = ProjectManager.get_project(project.project_id)
     assert saved_project.status == ProjectStatus.FAILED
-    assert saved_project.graph_id is None
+    assert saved_project.graph_id == "mirofish_partial_graph"
+    assert saved_project.graph_backend == "graphiti"
     assert "Rate limit exceeded" in saved_project.error
+    task_id = response.get_json()["data"]["task_id"]
+    task = TaskManager().get_task(task_id)
+    assert task.progress_detail["graph_id"] == "mirofish_partial_graph"

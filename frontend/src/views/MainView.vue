@@ -184,6 +184,7 @@ import { createSimulation, listSimulations } from '../api/simulation'
 import { checkReportStatus } from '../api/report'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
 import { getSessions, addSession } from '../store/sessionHistory'
+import { loadGraphTypeTranslations } from '../store/graphTypeTranslations'
 import { getProjectDisplayTitle } from '../utils/projectTitle.js'
 
 const route = useRoute()
@@ -279,6 +280,7 @@ const startNewSession = () => {
     buildProgress.value = null
     systemLogs.value = []
     error.value = ''
+    buildPreviewGraphId = ''
     stopPolling()
     stopGraphPolling()
     handleNewProject()
@@ -289,6 +291,8 @@ const startNewSession = () => {
 
 let pollTimer = null
 let graphPollTimer = null
+let activeGraphBuildTaskId = ''
+let buildPreviewGraphId = ''
 const GRAPH_BUILD_POLL_INTERVAL_MS = 5000
 
 const leftPanelStyle = computed(() => {
@@ -413,6 +417,7 @@ const handleNewProject = async () => {
   buildProgress.value = null
   projectData.value = null
   graphData.value = null
+  buildPreviewGraphId = ''
   currentSimulationId.value = ''
   currentReportId.value = ''
   simulationHistory.value = []
@@ -443,6 +448,7 @@ const handleOntologyGenerated = async (data) => {
   refreshSessions()
 
   addLog(`Ontology generated successfully for project ${data.project_id}`)
+  loadGraphTypeTranslations({ force: true }).catch(() => {})
   await startBuildGraph()
   router.replace({ name: 'Process', params: { projectId: data.project_id } })
 }
@@ -568,6 +574,9 @@ const ensureProjectReadyForSimulation = async () => {
   }
   if (!projectData.value?.project_id) throw new Error('缺少 project_id，无法创建模拟实例')
   if (!projectData.value?.graph_id) throw new Error('项目尚未完成图谱构建，无法进入环境搭建')
+  if (projectData.value?.status && projectData.value.status !== 'graph_completed') {
+    throw new Error('图谱仍在构建中，请等待构建完成后再进入环境搭建')
+  }
 }
 
 const enterEnvironmentSetup = async () => {
@@ -625,11 +634,12 @@ const startBuildGraph = async () => {
   try {
     currentPhase.value = 1
     buildProgress.value = { progress: 0, message: 'Starting build...' }
+    buildPreviewGraphId = ''
     addLog('Initiating graph build...')
     const res = await buildGraph({ project_id: currentProjectId.value })
     if (res.success) {
       addLog(`Graph build task started. Task ID: ${res.data.task_id}`)
-      startGraphPolling()
+      startGraphPolling(res.data.task_id)
       startPollingTask(res.data.task_id)
     } else {
       error.value = res.error
@@ -641,8 +651,9 @@ const startBuildGraph = async () => {
   }
 }
 
-const startGraphPolling = () => {
+const startGraphPolling = (taskId = activeGraphBuildTaskId) => {
   if (graphPollTimer) return
+  activeGraphBuildTaskId = taskId || activeGraphBuildTaskId
   fetchGraphData({ quiet: true })
   graphPollTimer = setInterval(async () => {
     await fetchGraphData({ quiet: true })
@@ -652,11 +663,24 @@ const startGraphPolling = () => {
 const fetchGraphData = async (options = {}) => {
   try {
     const projRes = await getProject(currentProjectId.value)
-    if (projRes.success && projRes.data.graph_id) {
+    if (projRes.success && projRes.data) {
       projectData.value = projRes.data
-      const gRes = await getGraphData(projRes.data.graph_id)
+    }
+
+    let graphId = projRes.success ? projRes.data?.graph_id : ''
+
+    if (!graphId && activeGraphBuildTaskId) {
+      const taskRes = await getTaskStatus(activeGraphBuildTaskId)
+      const detail = taskRes.success ? (taskRes.data?.progress_detail || {}) : {}
+      graphId = detail.graph_id || detail.pending_graph_id || buildPreviewGraphId
+      if (graphId) buildPreviewGraphId = graphId
+    }
+
+    if (graphId) {
+      const gRes = await getGraphData(graphId)
       if (gRes.success) {
         graphData.value = gRes.data
+        buildPreviewGraphId = graphId
         if (!options.quiet) {
           const nc = gRes.data.node_count || gRes.data.nodes?.length || 0
           const ec = gRes.data.edge_count || gRes.data.edges?.length || 0
@@ -671,6 +695,7 @@ const fetchGraphData = async (options = {}) => {
 
 
 const startPollingTask = (taskId) => {
+  activeGraphBuildTaskId = taskId || activeGraphBuildTaskId
   pollTimer = setInterval(() => pollTaskStatus(taskId), 2000)
   pollTaskStatus(taskId)
 }
@@ -681,6 +706,8 @@ const pollTaskStatus = async (taskId) => {
     if (res.success) {
       const task = res.data
       if (task.message && task.message !== buildProgress.value?.message) addLog(task.message)
+      const detail = task.progress_detail || {}
+      buildPreviewGraphId = detail.graph_id || detail.pending_graph_id || buildPreviewGraphId
       buildProgress.value = { progress: task.progress || 0, message: task.message }
       if (task.status === 'completed') {
         addLog('Graph build task completed.')
@@ -737,11 +764,16 @@ const loadGraph = async (graphId) => {
 }
 
 const refreshGraph = () => {
-  if (projectData.value?.graph_id) { addLog('Manual graph refresh.'); loadGraph(projectData.value.graph_id) }
+  const graphId = projectData.value?.graph_id || buildPreviewGraphId
+  if (graphId) { addLog('Manual graph refresh.'); loadGraph(graphId) }
+  else fetchGraphData()
 }
 
 const stopPolling = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null } }
-const stopGraphPolling = () => { if (graphPollTimer) { clearInterval(graphPollTimer); graphPollTimer = null } }
+const stopGraphPolling = () => {
+  if (graphPollTimer) { clearInterval(graphPollTimer); graphPollTimer = null }
+  activeGraphBuildTaskId = ''
+}
 
 onMounted(() => { initProject() })
 
@@ -759,6 +791,7 @@ watch(() => route.params.projectId, (newId, oldId) => {
     buildProgress.value = null
     systemLogs.value = []
     error.value = ''
+    buildPreviewGraphId = ''
     stopPolling()
     stopGraphPolling()
     initProject()

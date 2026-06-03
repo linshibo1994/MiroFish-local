@@ -936,10 +936,12 @@ def build_graph():
                         "backend": Config.ZEP_BACKEND,
                         "llm_boost_enabled": bool(Config.LLM_BOOST_API_KEY and Config.LLM_BOOST_BASE_URL and Config.LLM_BOOST_MODEL_NAME),
                         "pending_graph_id": graph_id,
+                        "graph_id": graph_id,
                     }
                 )
 
-                # graph_id 只在构建成功后写入项目，避免失败时前端读取到半成品图谱。
+                # 创建图谱后立即绑定 graph_id，前端轮询才能读取构建中的半成品图谱。
+                project.graph_id = graph_id
                 project.graph_backend = Config.ZEP_BACKEND
                 project.graph_provider = "graphiti" if Config.ZEP_BACKEND == "graphiti" else "zep"
                 project.graph_schema_version = "v1"
@@ -1043,12 +1045,20 @@ def build_graph():
                 project.status = ProjectStatus.FAILED
                 project.error = error_message
                 ProjectManager.save_project(project)
+
+                task = task_manager.get_task(task_id)
+                failure_detail = {
+                    **((task.progress_detail if task else {}) or {}),
+                    "graph_id": project.graph_id,
+                    "backend": project.graph_backend or Config.ZEP_BACKEND,
+                }
                 
                 task_manager.update_task(
                     task_id,
                     status=TaskStatus.FAILED,
                     message=f"构建失败: {error_message}",
-                    error=traceback.format_exc()
+                    error=traceback.format_exc(),
+                    progress_detail=failure_detail
                 )
         
         # 启动后台线程

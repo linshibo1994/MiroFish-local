@@ -330,7 +330,7 @@
                     :key="entity.name"
                     class="entity-tag clickable"
                     @click="selectOntologyItem(entity, 'entity')"
-                  >{{ translateEntityType(entity.name) }}</span>
+                  >{{ ontologyEntityLabel(entity) }}</span>
                 </div>
               </div>
               <div class="tags-container" :class="{ dimmed: selectedOntologyItem }">
@@ -341,7 +341,7 @@
                     :key="rel.name"
                     class="entity-tag clickable"
                     @click="selectOntologyItem(rel, 'relation')"
-                  >{{ translateRelationType(rel.name) }}</span>
+                  >{{ ontologyRelationLabel(rel) }}</span>
                 </div>
               </div>
             </div>
@@ -350,7 +350,7 @@
               <div class="detail-header">
                 <div class="detail-title-group">
                   <span class="detail-type-badge">{{ selectedOntologyItem.itemType === 'entity' ? '实体' : '关系' }}</span>
-                  <span class="detail-name">{{ selectedOntologyItem.itemType === 'entity' ? translateEntityType(selectedOntologyItem.name) : translateRelationType(selectedOntologyItem.name) }}</span>
+                  <span class="detail-name">{{ selectedOntologyItem.itemType === 'entity' ? ontologyEntityLabel(selectedOntologyItem) : ontologyRelationLabel(selectedOntologyItem) }}</span>
                 </div>
                 <button class="close-btn" @click="selectedOntologyItem = null">×</button>
               </div>
@@ -376,9 +376,9 @@
                   <span class="section-label">连接关系</span>
                   <div class="conn-list">
                     <div v-for="(conn, idx) in selectedOntologyItem.source_targets" :key="idx" class="conn-item">
-                      <span class="conn-node">{{ translateEntityType(conn.source) }}</span>
+                      <span class="conn-node">{{ ontologyConnectionLabel(conn, 'source') }}</span>
                       <span class="conn-arrow">→</span>
-                      <span class="conn-node">{{ translateEntityType(conn.target) }}</span>
+                      <span class="conn-node">{{ ontologyConnectionLabel(conn, 'target') }}</span>
                     </div>
                   </div>
                 </div>
@@ -539,6 +539,19 @@ const renderedSummary = computed(() => {
 
 const formatSuggestion = (text) => {
   return formatSimulationRequirement(text)
+}
+
+const ontologyEntityLabel = (entity = {}) => {
+  return entity.display_name || translateEntityType(entity.name)
+}
+
+const ontologyRelationLabel = (relation = {}) => {
+  return relation.display_name || translateRelationType(relation.name)
+}
+
+const ontologyConnectionLabel = (connection = {}, side) => {
+  const displayKey = `${side}_display_name`
+  return connection[displayKey] || translateEntityType(connection[side])
 }
 
 const currentProjectId = computed(() => seedResult.value?.project_id || props.projectData?.project_id || '')
