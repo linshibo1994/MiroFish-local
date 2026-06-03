@@ -27,6 +27,7 @@ from .location_entity_filter import (
     filter_location_entities,
     strip_location_entity_types_from_ontology,
 )
+from ..utils import llm_routing
 from ..utils.llm_routing import clamp_concurrency, get_preferred_llm_endpoint
 
 logger = logging.getLogger("mirofish.graph_builder")
@@ -64,6 +65,16 @@ class GraphBatchPlan:
         }
 
 
+@dataclass(frozen=True)
+class _SingleLLMEndpointPool:
+    """路由工具尚未提供 pool 时使用的单模型兼容池。"""
+
+    endpoint: Any
+
+    def select_endpoint(self, batch_index: int) -> Any:
+        return self.endpoint
+
+
 class GraphBuilderService:
     """
     图谱构建服务
@@ -96,6 +107,7 @@ class GraphBuilderService:
         self._backend = backend or Config.ZEP_BACKEND
         if self._backend == 'graphiti' and build_mode:
             self._llm_endpoint = get_preferred_llm_endpoint(prefer_boost=True)
+            self._llm_endpoint_pool = self._build_llm_endpoint_pool(self._llm_endpoint)
             self.client: ZepClientAdapter = create_zep_client(
                 backend=self._backend,
                 use_singleton=False,
@@ -103,8 +115,98 @@ class GraphBuilderService:
             )
         else:
             self._llm_endpoint = None
+            self._llm_endpoint_pool = None
             self.client: ZepClientAdapter = get_zep_client(backend=self._backend)
+        self._llm_route_counts: Dict[str, int] = {}
         self.task_manager = TaskManager()
+
+    @staticmethod
+    def _build_llm_endpoint_pool(preferred_endpoint: Any = None) -> Optional[Any]:
+        """获取图谱构建 LLM endpoint pool；路由层未就绪时退回单端点。"""
+        pool_factory = getattr(llm_routing, "get_graph_build_llm_endpoint_pool", None)
+        if callable(pool_factory):
+            try:
+                pool = pool_factory()
+                if pool:
+                    return pool
+            except Exception:
+                logger.exception("图谱构建 LLM endpoint pool 初始化失败，回退到 preferred endpoint")
+
+        if preferred_endpoint is not None:
+            return _SingleLLMEndpointPool(preferred_endpoint)
+        return None
+
+    @staticmethod
+    def _select_llm_endpoint_from_pool(endpoint_pool: Any, batch_index: int) -> Any:
+        """兼容不同 endpoint pool 接口，按批次选择端点。"""
+        if endpoint_pool is None:
+            return None
+        for method_name in ("select_endpoint", "get_endpoint", "endpoint_for_batch", "select"):
+            selector = getattr(endpoint_pool, method_name, None)
+            if callable(selector):
+                return selector(batch_index)
+        if isinstance(endpoint_pool, (list, tuple)) and endpoint_pool:
+            return endpoint_pool[batch_index % len(endpoint_pool)]
+        return getattr(endpoint_pool, "endpoint", endpoint_pool)
+
+    @staticmethod
+    def _llm_route_name(endpoint: Any) -> str:
+        route_name = getattr(endpoint, "route_name", None)
+        if route_name:
+            return str(route_name)
+        if getattr(endpoint, "is_boost", False):
+            return "boost"
+        if endpoint is not None:
+            return "base"
+        return "default"
+
+    @staticmethod
+    def _llm_model_name(endpoint: Any) -> Optional[str]:
+        return getattr(endpoint, "model", None) if endpoint is not None else None
+
+    def get_llm_observability(self) -> Dict[str, Any]:
+        """返回图谱构建 LLM 路由观测信息。"""
+        pool_info = self._describe_llm_endpoint_pool(getattr(self, "_llm_endpoint_pool", None))
+        pool_info["llm_route_counts"] = dict(getattr(self, "_llm_route_counts", {}))
+        return pool_info
+
+    @classmethod
+    def _describe_llm_endpoint_pool(cls, endpoint_pool: Any) -> Dict[str, Any]:
+        """输出 endpoint pool 摘要，供日志和任务元数据观测。"""
+        if endpoint_pool is None:
+            return {
+                "dual_llm_enabled": False,
+                "llm_routes": [],
+                "llm_route_weights": {},
+            }
+
+        routes = getattr(endpoint_pool, "routes", None) or getattr(endpoint_pool, "endpoints", None)
+        route_names: List[str] = []
+        route_weights: Dict[str, int] = {}
+        if routes:
+            for item in routes:
+                endpoint = getattr(item, "endpoint", item)
+                route = getattr(item, "route_name", None) or cls._llm_route_name(endpoint)
+                route_names.append(route)
+                weight = getattr(item, "weight", None)
+                if weight is None:
+                    weights = getattr(endpoint_pool, "weights", None)
+                    if isinstance(weights, dict):
+                        weight = weights.get(route)
+                if weight is not None:
+                    route_weights[route] = int(weight)
+
+        if not route_names:
+            endpoint = getattr(endpoint_pool, "endpoint", None)
+            if endpoint is not None:
+                route_names = [cls._llm_route_name(endpoint)]
+
+        route_names = list(dict.fromkeys(route_names))
+        return {
+            "dual_llm_enabled": len(route_names) > 1,
+            "llm_routes": route_names,
+            "llm_route_weights": route_weights,
+        }
     
     def build_graph_async(
         self,
@@ -131,6 +233,7 @@ class GraphBuilderService:
         Returns:
             任务ID
         """
+        llm_pool_info = self._describe_llm_endpoint_pool(getattr(self, "_llm_endpoint_pool", None))
         # 创建任务
         task_id = self.task_manager.create_task(
             task_type="graph_build",
@@ -142,6 +245,7 @@ class GraphBuilderService:
                 "concurrency": concurrency,
                 "llm_model": self._llm_endpoint.model if self._llm_endpoint else None,
                 "llm_boost_enabled": bool(self._llm_endpoint and self._llm_endpoint.is_boost),
+                **llm_pool_info,
             }
         )
         
@@ -400,14 +504,17 @@ class GraphBuilderService:
             batch_chunks = chunks[start:start + batch_size]
             batch_specs.append((len(batch_specs), start, batch_chunks))
 
+        llm_pool_info = self._describe_llm_endpoint_pool(getattr(self, "_llm_endpoint_pool", None))
         logger.info(
-            "图谱写入计划: graph_id=%s, backend=%s, chunks=%s, batch_size=%s, concurrency=%s, use_bulk_ingest=%s",
+            "图谱写入计划: graph_id=%s, backend=%s, chunks=%s, batch_size=%s, concurrency=%s, use_bulk_ingest=%s, llm_routes=%s, llm_route_weights=%s",
             graph_id,
             backend,
             total_chunks,
             batch_size,
             concurrency,
             batch_plan.use_bulk_ingest,
+            llm_pool_info["llm_routes"],
+            llm_pool_info["llm_route_weights"],
         )
 
         # Cloud add_batch 自身是批量异步处理，保守串行提交；Graphiti 本地抽取才启用并发写入。
@@ -419,6 +526,8 @@ class GraphBuilderService:
 
         completed_batches = 0
         episode_uuids_by_batch: Dict[int, List[str]] = {}
+        llm_route_counts: Dict[str, int] = {}
+        self._llm_route_counts = {}
         progress_lock = threading.Lock()
         failure_event = threading.Event()
         max_reported_ratio = 0.0
@@ -476,11 +585,11 @@ class GraphBuilderService:
             report_progress(f"批次 {batch_num} 发送失败: {message}", 0)
             raise RuntimeError(f"批次 {batch_num} 图谱写入失败: {message}") from exc
 
-        def create_worker_client() -> ZepClientAdapter:
+        def create_worker_client(endpoint: Any = None) -> ZepClientAdapter:
             worker_client = create_zep_client(
                 backend=backend,
                 use_singleton=False,
-                llm_endpoint=getattr(self, "_llm_endpoint", None),
+                llm_endpoint=endpoint,
             )
             if hasattr(worker_client, "set_ontology_from_cache"):
                 worker_client.set_ontology_from_cache(graph_id, self.client)
@@ -489,43 +598,63 @@ class GraphBuilderService:
         def submit_batch(batch_index: int, start_index: int, batch_chunks: List[str]) -> List[str]:
             batch_num = batch_index + 1
             batch_started_at = time.monotonic()
+            if use_worker_clients:
+                endpoint = self._select_llm_endpoint_from_pool(
+                    getattr(self, "_llm_endpoint_pool", None),
+                    batch_index,
+                )
+                if endpoint is None:
+                    endpoint = getattr(self, "_llm_endpoint", None)
+            else:
+                endpoint = getattr(self, "_llm_endpoint", None)
+            route_name = self._llm_route_name(endpoint)
+            model_name = self._llm_model_name(endpoint)
             report_progress(
                 f"发送第 {batch_num}/{total_batches} 批数据 ({len(batch_chunks)} 块)...",
                 min(start_index / total_chunks, completed_batches / total_batches),
             )
 
-            worker_client = create_worker_client() if use_worker_clients else self.client
+            worker_client = create_worker_client(endpoint) if use_worker_clients else self.client
             try:
                 logger.info(
-                    "图谱批次写入开始: graph_id=%s, batch=%s/%s, chunks=%s, concurrency=%s, worker_client=%s",
+                    "图谱批次写入开始: graph_id=%s, batch=%s/%s, chunks=%s, concurrency=%s, worker_client=%s, llm_route=%s, llm_model=%s",
                     graph_id,
                     batch_num,
                     total_batches,
                     len(batch_chunks),
                     concurrency,
                     worker_client is not self.client,
+                    route_name,
+                    model_name,
                 )
                 batch_uuids = worker_client.add_episode_batch(
                     graph_id=graph_id,
                     episodes=build_episodes(batch_chunks),
                 )
+                with progress_lock:
+                    llm_route_counts[route_name] = llm_route_counts.get(route_name, 0) + 1
+                    self._llm_route_counts = dict(llm_route_counts)
                 batch_elapsed = time.monotonic() - batch_started_at
                 if failure_event.is_set():
                     logger.info(
-                        "图谱批次写入完成但任务已失败，结果丢弃: graph_id=%s, batch=%s/%s, episodes=%s, elapsed=%.1fs",
+                        "图谱批次写入完成但任务已失败，结果丢弃: graph_id=%s, batch=%s/%s, episodes=%s, llm_route=%s, llm_model=%s, elapsed=%.1fs",
                         graph_id,
                         batch_num,
                         total_batches,
                         len(batch_uuids),
+                        route_name,
+                        model_name,
                         batch_elapsed,
                     )
                 else:
                     logger.info(
-                        "图谱批次写入完成: graph_id=%s, batch=%s/%s, episodes=%s, elapsed=%.1fs",
+                        "图谱批次写入完成: graph_id=%s, batch=%s/%s, episodes=%s, llm_route=%s, llm_model=%s, elapsed=%.1fs",
                         graph_id,
                         batch_num,
                         total_batches,
                         len(batch_uuids),
+                        route_name,
+                        model_name,
                         batch_elapsed,
                     )
                 delay = max(0.0, float(Config.GRAPH_BUILD_BATCH_DELAY_SECONDS or 0))
@@ -535,10 +664,12 @@ class GraphBuilderService:
             except Exception:
                 failure_event.set()
                 logger.exception(
-                    "图谱批次写入异常: graph_id=%s, batch=%s/%s",
+                    "图谱批次写入异常: graph_id=%s, batch=%s/%s, llm_route=%s, llm_model=%s",
                     graph_id,
                     batch_num,
                     total_batches,
+                    route_name,
+                    model_name,
                 )
                 raise
             finally:
@@ -588,11 +719,12 @@ class GraphBuilderService:
         for batch_index in range(total_batches):
             episode_uuids.extend(episode_uuids_by_batch.get(batch_index, []))
         logger.info(
-            "图谱文本批次全部写入完成: graph_id=%s, chunks=%s, batches=%s, episodes=%s, elapsed=%.1fs",
+            "图谱文本批次全部写入完成: graph_id=%s, chunks=%s, batches=%s, episodes=%s, llm_route_counts=%s, elapsed=%.1fs",
             graph_id,
             total_chunks,
             total_batches,
             len(episode_uuids),
+            dict(sorted(llm_route_counts.items())),
             time.monotonic() - plan_started_at,
         )
         return episode_uuids
