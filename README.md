@@ -152,7 +152,9 @@ ZEP_API_KEY=your_zep_api_key
 
 ```env
 NEO4J_URI=bolt://localhost:7687
+# 使用仓库内置 docker-compose 的 Neo4j 服务时，用户名固定为 neo4j，不要改成自定义用户。
 NEO4J_USER=neo4j
+# Neo4j 初始密码至少 8 位；建议只使用字母、数字、下划线、连字符和点，避免 Compose 解析特殊字符。
 NEO4J_PASSWORD=password
 
 # Graphiti 使用的 LLM 模型（推荐显式配置）
@@ -217,6 +219,8 @@ docker-compose -f docker-compose.local.yml ps
 
 # Neo4j Browser 可通过 http://localhost:7474 访问（用户名: neo4j, 密码: password）
 ```
+
+> 使用仓库内置 `docker-compose.yml` / `docker-compose.local.yml` 时，Neo4j 用户名固定为 `neo4j`。如果改过 `.env` 的 `NEO4J_PASSWORD`，需要在首次初始化前清理旧的 `neo4j_data` 卷；密码过短或包含 `/`、`$`、空格、`#` 等容易被 Compose 或 Neo4j 初始化解析出错的字符时，Neo4j 容器可能会直接重启。
 
 ### 3. 安装依赖
 
@@ -309,8 +313,9 @@ Cloud 模式使用 Zep Cloud 云服务存储记忆和知识图谱，配置简单
 
 1. 确认 Docker 已安装并运行：`docker --version`
 2. 检查端口 7474/7687 是否被占用：`lsof -i :7474`
-3. 查看容器日志：`docker-compose -f docker-compose.local.yml logs neo4j`
-4. 尝试清理重启：`docker-compose -f docker-compose.local.yml down -v && docker-compose -f docker-compose.local.yml up -d`
+3. 查看容器日志：`docker-compose logs --tail=120 neo4j`
+4. 确认 `.env` 中 `NEO4J_USER=neo4j`，且 `NEO4J_PASSWORD` 至少 8 位并避免 `/`、`$`、空格、`#` 等特殊字符
+5. 如果允许清空本地图谱数据，再执行：`docker-compose down -v && docker-compose up -d`
 </details>
 
 <details>
