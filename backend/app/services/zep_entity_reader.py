@@ -16,7 +16,11 @@ from ..utils.logger import get_logger
 from .zep_factory import get_zep_client
 from .zep_adapter import ZepClientAdapter
 from .graph_builder import GraphBuilderService
-from .location_entity_filter import filter_location_entities, is_location_entity_node
+from .location_entity_filter import (
+    filter_location_entities,
+    is_known_media_platform_name,
+    is_location_entity_node,
+)
 
 logger = get_logger('mirofish.zep_entity_reader')
 
@@ -50,6 +54,8 @@ class EntityNode:
     
     def get_entity_type(self) -> Optional[str]:
         """获取实体类型（排除默认的Entity标签）"""
+        if is_known_media_platform_name(self.name):
+            return "SocialMediaPlatform"
         for label in self.labels:
             if label not in ["Entity", "Node"]:
                 return label
@@ -272,30 +278,45 @@ class ZepEntityReader:
             labels = node.get("labels", [])
             if is_location_entity_node(node):
                 continue
+            is_media_platform = is_known_media_platform_name(node.get("name"))
             
             # 筛选逻辑：Labels必须包含除"Entity"和"Node"之外的标签
             custom_labels = [l for l in labels if l not in ["Entity", "Node"]]
+            if is_media_platform:
+                custom_labels = ["SocialMediaPlatform"]
             
             if not custom_labels:
                 # 只有默认标签，跳过
-                continue
+                if is_media_platform:
+                    custom_labels = ["SocialMediaPlatform"]
+                else:
+                    continue
             
             # 如果指定了预定义类型，检查是否匹配
             if defined_entity_types:
                 matching_labels = [l for l in custom_labels if l in defined_entity_types]
+                if is_media_platform and "SocialMediaPlatform" in defined_entity_types:
+                    matching_labels = ["SocialMediaPlatform"]
                 if not matching_labels:
                     continue
                 entity_type = matching_labels[0]
             else:
-                entity_type = custom_labels[0]
+                entity_type = "SocialMediaPlatform" if is_media_platform else custom_labels[0]
             
             entity_types_found.add(entity_type)
             
             # 创建实体节点对象
+            normalized_labels = list(labels or [])
+            if is_media_platform and "SocialMediaPlatform" not in normalized_labels:
+                normalized_labels = [
+                    label for label in normalized_labels
+                    if label not in {"Person", "个人", "个人实体"}
+                ]
+                normalized_labels.append("SocialMediaPlatform")
             entity = EntityNode(
                 uuid=node["uuid"],
                 name=node["name"],
-                labels=labels,
+                labels=normalized_labels,
                 summary=node["summary"],
                 attributes=node["attributes"],
             )
@@ -351,10 +372,14 @@ class ZepEntityReader:
             for node in all_nodes:
                 if is_location_entity_node(node):
                     continue
+                fallback_labels = node.get("labels", ["Entity"])
+                if is_known_media_platform_name(node.get("name")) and "SocialMediaPlatform" not in fallback_labels:
+                    fallback_labels = list(fallback_labels or ["Entity"])
+                    fallback_labels.append("SocialMediaPlatform")
                 entity = EntityNode(
                     uuid=node["uuid"],
                     name=node["name"],
-                    labels=node.get("labels", ["Entity"]),
+                    labels=fallback_labels,
                     summary=node["summary"],
                     attributes=node["attributes"],
                 )

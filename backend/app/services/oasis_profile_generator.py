@@ -30,6 +30,7 @@ from .zep_factory import get_zep_client
 from .zep_adapter import ZepClientAdapter
 from .real_entity_resolver import ResolvedRealEntity, VERIFIED
 from .type_translation_service import TypeTranslationService
+from .location_entity_filter import is_known_media_platform_name, is_location_entity_node
 
 logger = get_logger('mirofish.oasis_profile')
 
@@ -231,7 +232,10 @@ class OasisProfileGenerator:
         "mediaoutlet", "company", "institution", "group", "community",
         "socialmediaplatform", "distributionplatform", "regulatoryagency",
         "governmentofficial", "government", "agency", "platform",
-        "组织", "机构", "媒体机构", "政府机构", "公司", "企业"
+        "mediaplatform", "newsmedia", "media", "organizationassociation",
+        "brand", "enterprise", "public", "onlinecommunity",
+        "组织", "机构", "媒体机构", "媒体", "媒体平台", "社交媒体平台",
+        "政府机构", "公司", "企业", "企业/品牌", "公众", "社区"
     ]
     PERSON_NAME_ORG_KEYWORDS = [
         "公安",
@@ -341,6 +345,10 @@ class OasisProfileGenerator:
             OasisAgentProfile
         """
         entity_type = entity.get_entity_type() or "Entity"
+        if is_location_entity_node(entity):
+            raise ValueError(f"地点/场所实体不允许生成人设Agent: {entity.name}")
+        if is_known_media_platform_name(entity.name):
+            entity_type = "SocialMediaPlatform"
         entity_type_display = TypeTranslationService.translate_entity_type(entity_type)
 
         verified_real_entity = (
@@ -619,6 +627,8 @@ class OasisProfileGenerator:
         }
 
     def _is_person_subject(self, entity_name: str, entity_type: str) -> bool:
+        if is_known_media_platform_name(entity_name):
+            return False
         type_lower = (entity_type or "").lower()
         if type_lower in self.INDIVIDUAL_ENTITY_TYPES:
             return True
@@ -628,6 +638,8 @@ class OasisProfileGenerator:
 
     def _looks_like_chinese_person_name(self, name: str) -> bool:
         value = (name or "").strip()
+        if is_known_media_platform_name(value):
+            return False
         if not re.fullmatch(r"[\u4e00-\u9fff]{2,4}", value):
             return False
         if any(keyword in value for keyword in self.PERSON_NAME_ORG_KEYWORDS):
@@ -1006,6 +1018,9 @@ class OasisProfileGenerator:
         """
         
         is_individual = self._is_individual_entity(entity_type)
+        if is_known_media_platform_name(entity_name):
+            is_individual = False
+            entity_type = "社交媒体平台"
         
         if is_individual:
             prompt = self._build_individual_persona_prompt(
@@ -1277,6 +1292,8 @@ class OasisProfileGenerator:
         
         # 根据实体类型生成不同的人设
         entity_type_lower = entity_type.lower()
+        if is_known_media_platform_name(entity_name):
+            entity_type_lower = "socialmediaplatform"
         
         if entity_type_lower in ["student", "alumni"]:
             return {
@@ -1302,19 +1319,21 @@ class OasisProfileGenerator:
                 "interested_topics": ["Politics", "Economics", "Culture & Society"],
             }
         
-        elif entity_type_lower in ["mediaoutlet", "socialmediaplatform"]:
+        elif entity_type_lower in ["mediaoutlet", "socialmediaplatform", "mediaplatform", "newsmedia", "media", "媒体", "媒体平台", "社交媒体平台"]:
+            platform_persona = (
+                f"{entity_name}是一个媒体/社交平台主体，围绕当前事件承载内容传播、公共讨论、信息核验和平台治理。"
+            )
+            if entity_summary:
+                platform_persona = f"媒体/社交平台主体：{entity_summary}"
             return {
                 "bio": self._clean_profile_text(entity_summary, max_chars=240, strip_sources=True) if entity_summary else f"{entity_name}的官方媒体账号。",
-                "persona": (
-                    entity_summary
-                    or f"{entity_name}是一个媒体机构，围绕当前事件进行报道、信息核验和公共议题传播。"
-                ),
+                "persona": platform_persona,
                 "age": 30,  # 机构虚拟年龄
                 "gender": "other",  # 机构使用other
                 "mbti": "ISTJ",  # 机构风格：严谨保守
                 "country": "中国",
-                "profession": "Media",
-                "interested_topics": ["General News", "Current Events", "Public Affairs"],
+                "profession": "媒体平台",
+                "interested_topics": ["平台治理", "公共讨论", "舆情传播"],
             }
         
         elif entity_type_lower in ["university", "governmentagency", "ngo", "organization"]:
@@ -1391,6 +1410,12 @@ class OasisProfileGenerator:
         elif isinstance(resolved_real_entities, list):
             resolved_by_uuid = {item.entity_uuid: item for item in resolved_real_entities}
         
+        original_total = len(entities)
+        entities = [entity for entity in entities if not is_location_entity_node(entity)]
+        skipped_location_count = original_total - len(entities)
+        if skipped_location_count:
+            logger.warning("已跳过 %s 个地点/场所实体，不生成Agent人设", skipped_location_count)
+
         total = len(entities)
         profiles = [None] * total  # 预分配列表保持顺序
         completed_count = [0]  # 使用列表以便在闭包中修改
@@ -1473,7 +1498,7 @@ class OasisProfileGenerator:
             "开始并行生成 %s 个Agent人设（并行数: %s, model=%s, boost=%s）...",
             total,
             parallel_count,
-            self.model_name,
+            getattr(self, "model_name", "rule-based"),
             getattr(self, "_llm_boost_enabled", False),
         )
         print(f"\n{'='*60}")

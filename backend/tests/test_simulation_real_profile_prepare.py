@@ -327,3 +327,112 @@ def test_prepare_strict_mode_only_generates_verified_profiles(tmp_path, monkeypa
     assert result.verification_candidate_count == 2
     assert result.verification_verified_count == 1
     assert result.verification_skipped_count == 1
+
+
+def test_prepare_filters_location_entities_before_profiles_and_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(SimulationManager, "SIMULATION_DATA_DIR", str(tmp_path))
+
+    place_entity = EntityNode(
+        uuid="place-1",
+        name="三堡北苑",
+        labels=["Entity", "Person"],
+        summary="三堡北苑是杭州市江干区的住宅小区，是案件相关地点。",
+        attributes={},
+    )
+    mall_entity = EntityNode(
+        uuid="mall-1",
+        name="庆春银泰",
+        labels=["Entity", "Organization"],
+        summary="银泰百货庆春店位于杭州市庆春路与延安路交叉口，是杭州核心商圈重要商业体。",
+        attributes={"org_type": "企业/品牌"},
+    )
+    platform_entity = EntityNode(
+        uuid="platform-1",
+        name="小红书",
+        labels=["Entity", "Person"],
+        summary="小红书平台出现相关公共讨论。",
+        attributes={},
+    )
+    person_entity = EntityNode(
+        uuid="person-1",
+        name="来惠利",
+        labels=["Entity", "Person"],
+        summary="来惠利是案件当事人。",
+        attributes={},
+    )
+
+    class FakeReader:
+        def __init__(self, backend=None):
+            pass
+
+        def filter_defined_entities(self, graph_id, defined_entity_types=None, enrich_with_edges=True):
+            return FilteredEntities(
+                entities=[place_entity, mall_entity, platform_entity, person_entity],
+                entity_types={"Person", "Organization"},
+                total_count=4,
+                filtered_count=4,
+            )
+
+    captured = {}
+
+    class FakeProfileGenerator:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def generate_profiles_from_entities(self, **kwargs):
+            captured["entities"] = kwargs["entities"]
+            return [
+                manager_module.OasisAgentProfile(
+                    user_id=idx,
+                    user_name=f"agent_{idx}",
+                    name=entity.name,
+                    bio=entity.summary,
+                    persona=entity.summary,
+                    source_entity_uuid=entity.uuid,
+                    source_entity_type=entity.get_entity_type(),
+                    verification_status=UNSUPPORTED,
+                )
+                for idx, entity in enumerate(kwargs["entities"])
+            ]
+
+        def save_profiles(self, profiles, file_path, platform="reddit"):
+            pass
+
+    class FakeConfigGenerator:
+        def generate_config(self, **kwargs):
+            captured["config_entities"] = kwargs["entities"]
+            return SimulationParameters(
+                simulation_id=kwargs["simulation_id"],
+                project_id=kwargs["project_id"],
+                graph_id=kwargs["graph_id"],
+                simulation_requirement=kwargs["simulation_requirement"],
+            )
+
+    monkeypatch.setattr(manager_module, "ZepEntityReader", FakeReader)
+    monkeypatch.setattr(manager_module, "OasisProfileGenerator", FakeProfileGenerator)
+    monkeypatch.setattr(manager_module, "SimulationConfigGenerator", FakeConfigGenerator)
+
+    manager = SimulationManager()
+    state = SimulationState(
+        simulation_id="sim_filter_locations",
+        project_id="proj_1",
+        graph_id="graph_1",
+        graph_backend="graphiti",
+        status=SimulationStatus.CREATED,
+    )
+    manager._save_simulation_state(state)
+
+    result = manager.prepare_simulation(
+        simulation_id="sim_filter_locations",
+        simulation_requirement="测试地点过滤",
+        document_text="测试文档",
+        use_real_profiles=False,
+    )
+
+    assert result.status == SimulationStatus.READY
+    assert [entity.name for entity in captured["entities"]] == ["小红书", "来惠利"]
+    assert [entity.name for entity in captured["config_entities"]] == ["小红书", "来惠利"]
+    assert captured["entities"][0].get_entity_type() == "SocialMediaPlatform"
+    assert result.entities_count == 2
+    assert result.profiles_count == 2
+    assert result.entity_types == ["Person", "SocialMediaPlatform"]

@@ -1432,6 +1432,45 @@ def test_ontology_processing_strips_location_entity_types_and_source_targets():
     assert edge_names == ["REGULATES"]
 
 
+def test_ontology_processing_does_not_truncate_entity_types_to_ten():
+    from app.services.ontology_generator import OntologyGenerator
+
+    generator = OntologyGenerator.__new__(OntologyGenerator)
+    entities = [
+        {"name": name, "description": name, "attributes": [], "examples": []}
+        for name in [
+            "GovernmentAgency",
+            "RegulatoryAgency",
+            "Company",
+            "Brand",
+            "MediaOutlet",
+            "SocialMediaPlatform",
+            "Association",
+            "Influencer",
+            "OnlineCommunity",
+            "PublicGroup",
+            "Victim",
+            "Suspect",
+            "Netizen",
+            "Person",
+            "Organization",
+        ]
+    ]
+
+    ontology = generator._validate_and_process({
+        "entity_types": entities,
+        "edge_types": [],
+        "analysis_summary": "测试",
+    })
+
+    entity_names = [entity["name"] for entity in ontology["entity_types"]]
+
+    assert len(entity_names) == 15
+    assert "Netizen" in entity_names
+    assert "Person" in entity_names
+    assert "Organization" in entity_names
+
+
 def test_location_filter_keeps_speaking_actor_types_with_location_words():
     from app.services.location_entity_filter import is_location_entity_type, is_location_entity_node
     from app.services.zep_adapter import GraphNode
@@ -1440,6 +1479,72 @@ def test_location_filter_keeps_speaking_actor_types_with_location_words():
     assert is_location_entity_node(GraphNode("group-1", "杭州市民", ["Entity", "CityResident"], "", {})) is False
     assert is_location_entity_node(GraphNode("agency-1", "杭州市公安局", ["Entity", "GovernmentAgency"], "", {})) is False
     assert is_location_entity_node(GraphNode("city-1", "杭州市", ["Entity", "City"], "", {})) is True
+
+
+def test_location_filter_blocks_place_names_even_when_mislabeled_as_person_or_org():
+    from app.services.location_entity_filter import is_location_entity_node
+    from app.services.zep_adapter import GraphNode
+
+    assert is_location_entity_node(
+        GraphNode(
+            "community-1",
+            "三堡北苑",
+            ["Entity", "Person"],
+            "三堡北苑是杭州市江干区的住宅小区，是案件相关地点。",
+            {},
+        )
+    ) is True
+    assert is_location_entity_node(
+        GraphNode(
+            "mall-1",
+            "庆春银泰",
+            ["Entity", "Organization"],
+            "银泰百货庆春店位于杭州市庆春路与延安路交叉口，是杭州核心商圈重要商业体。",
+            {"org_type": "企业/品牌"},
+        )
+    ) is True
+    assert is_location_entity_node(
+        GraphNode(
+            "media-1",
+            "浙江日报",
+            ["Entity", "MediaOutlet"],
+            "浙江日报是地方权威媒体，报道杭州公共事件。",
+            {},
+        )
+    ) is False
+
+
+def test_entity_reader_retypes_media_platforms_and_filters_place_agents():
+    from app.services.zep_adapter import GraphEdge, GraphNode
+    from app.services.zep_entity_reader import ZepEntityReader
+
+    class MixedEntityClient:
+        def get_all_nodes(self, graph_id):
+            return [
+                GraphNode("platform-1", "小红书", ["Entity", "Person"], "小红书平台出现相关讨论。", {}),
+                GraphNode("platform-2", "抖音", ["Entity"], "抖音短视频平台传播相关内容。", {}),
+                GraphNode("community-1", "三堡北苑", ["Entity", "Person"], "三堡北苑是案件相关小区。", {}),
+                GraphNode("person-1", "来惠利", ["Entity", "Person"], "来惠利是案件当事人。", {}),
+            ]
+
+        def get_all_edges(self, graph_id):
+            return [
+                GraphEdge("edge-1", "传播", "小红书传播相关讨论", "platform-1", "person-1", {}),
+                GraphEdge("edge-2", "位于", "来惠利居住在三堡北苑", "person-1", "community-1", {}),
+            ]
+
+    reader = ZepEntityReader.__new__(ZepEntityReader)
+    reader.client = MixedEntityClient()
+
+    result = reader.filter_defined_entities("graph-1")
+
+    assert [entity.name for entity in result.entities] == ["小红书", "抖音", "来惠利"]
+    assert result.entity_types == {"SocialMediaPlatform", "Person"}
+    assert result.entities[0].get_entity_type() == "SocialMediaPlatform"
+    assert result.entities[1].get_entity_type() == "SocialMediaPlatform"
+
+    person_only = reader.filter_defined_entities("graph-1", defined_entity_types=["Person"])
+    assert [entity.name for entity in person_only.entities] == ["来惠利"]
 
 
 def test_graph_build_api_passes_project_event_context_to_episodes(monkeypatch, tmp_path):

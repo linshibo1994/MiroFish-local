@@ -19,6 +19,7 @@ from .zep_entity_reader import ZepEntityReader, FilteredEntities
 from .oasis_profile_generator import OasisProfileGenerator, OasisAgentProfile
 from .simulation_config_generator import SimulationConfigGenerator, SimulationParameters
 from .real_entity_resolver import RealEntityResolver, VERIFIED
+from .location_entity_filter import is_location_entity_node
 
 logger = get_logger('mirofish.simulation')
 
@@ -319,25 +320,40 @@ class SimulationManager:
                 defined_entity_types=defined_entity_types,
                 enrich_with_edges=True
             )
+
+            agent_candidate_entities = [
+                entity for entity in filtered.entities
+                if not is_location_entity_node(entity)
+            ]
+            skipped_location_count = filtered.filtered_count - len(agent_candidate_entities)
+            if skipped_location_count > 0:
+                logger.warning(
+                    "准备模拟时跳过 %s 个地点/场所实体，不进入Agent生成: simulation_id=%s",
+                    skipped_location_count,
+                    simulation_id,
+                )
             
-            state.entities_count = filtered.filtered_count
-            state.entity_types = list(filtered.entity_types)
+            state.entities_count = len(agent_candidate_entities)
+            state.entity_types = sorted({
+                entity.get_entity_type() or "Entity"
+                for entity in agent_candidate_entities
+            })
             
             if progress_callback:
                 progress_callback(
                     "reading", 100, 
-                    f"完成，共 {filtered.filtered_count} 个实体",
-                    current=filtered.filtered_count,
-                    total=filtered.filtered_count
+                    f"完成，共 {len(agent_candidate_entities)} 个可生成Agent的实体",
+                    current=len(agent_candidate_entities),
+                    total=len(agent_candidate_entities)
                 )
             
-            if filtered.filtered_count == 0:
+            if not agent_candidate_entities:
                 state.status = SimulationStatus.FAILED
                 state.error = "没有找到符合条件的实体，请检查图谱是否正确构建"
                 self._save_simulation_state(state)
                 return state
 
-            entities_for_profiles = filtered.entities
+            entities_for_profiles = agent_candidate_entities
             resolved_results = []
             resolved_by_uuid = {}
 
@@ -347,7 +363,7 @@ class SimulationManager:
                         "verifying_entities", 0,
                         "开始验证真实实体...",
                         current=0,
-                        total=len(filtered.entities)
+                        total=len(entities_for_profiles)
                     )
 
                 resolver = RealEntityResolver(
@@ -355,7 +371,7 @@ class SimulationManager:
                     allow_group_agents=allow_group_agents,
                     concurrency=Config.REAL_ENTITY_RESOLVE_CONCURRENCY,
                 )
-                resolved_results = resolver.resolve_entities(filtered.entities)
+                resolved_results = resolver.resolve_entities(entities_for_profiles)
                 verified_results = [item for item in resolved_results if item.verification_status == VERIFIED]
                 skipped_results = [item for item in resolved_results if item.verification_status != VERIFIED]
                 state.verification_candidate_count = len(resolved_results)
@@ -387,10 +403,14 @@ class SimulationManager:
                 if strict_real_mode:
                     verified_uuids = {item.entity_uuid for item in verified_results}
                     entities_for_profiles = [
-                        entity for entity in filtered.entities
+                        entity for entity in agent_candidate_entities
                         if entity.uuid in verified_uuids
                     ]
                     state.entities_count = len(entities_for_profiles)
+                    state.entity_types = sorted({
+                        entity.get_entity_type() or "Entity"
+                        for entity in entities_for_profiles
+                    })
 
                     if not entities_for_profiles:
                         state.status = SimulationStatus.FAILED

@@ -123,6 +123,125 @@ LOCATION_NAME_SUFFIXES = (
     "岛",
 )
 
+LOCATION_NAME_KEYWORDS = {
+    "办公楼",
+    "办事处",
+    "北苑",
+    "北园",
+    "菜场",
+    "车站",
+    "大厦",
+    "东苑",
+    "东园",
+    "服务区",
+    "公寓",
+    "公园",
+    "广场",
+    "机场",
+    "街道",
+    "酒店",
+    "路口",
+    "门店",
+    "南苑",
+    "南园",
+    "商场",
+    "商圈",
+    "市场",
+    "西苑",
+    "西园",
+    "小区",
+    "写字楼",
+    "园区",
+    "苑",
+}
+
+CHINESE_ADMIN_LOCATION_NAMES = {
+    "中国",
+    "北京",
+    "天津",
+    "上海",
+    "重庆",
+    "河北",
+    "山西",
+    "辽宁",
+    "吉林",
+    "黑龙江",
+    "江苏",
+    "浙江",
+    "安徽",
+    "福建",
+    "江西",
+    "山东",
+    "河南",
+    "湖北",
+    "湖南",
+    "广东",
+    "广西",
+    "海南",
+    "四川",
+    "贵州",
+    "云南",
+    "西藏",
+    "陕西",
+    "甘肃",
+    "青海",
+    "宁夏",
+    "新疆",
+    "内蒙古",
+    "香港",
+    "澳门",
+    "台湾",
+    "杭州",
+    "宁波",
+    "温州",
+    "绍兴",
+    "嘉兴",
+    "湖州",
+    "金华",
+    "衢州",
+    "台州",
+    "丽水",
+    "舟山",
+    "江干",
+    "上城",
+    "拱墅",
+    "西湖",
+    "滨江",
+    "萧山",
+    "余杭",
+    "临平",
+    "钱塘",
+    "富阳",
+    "临安",
+    "三堡",
+}
+
+KNOWN_MEDIA_PLATFORM_NAMES = {
+    "bilibili",
+    "facebook",
+    "instagram",
+    "kuaishou",
+    "reddit",
+    "tiktok",
+    "twitter",
+    "weibo",
+    "wechat",
+    "youtube",
+    "小红书",
+    "快手",
+    "抖音",
+    "微博",
+    "微信",
+    "知乎",
+    "豆瓣",
+    "哔哩哔哩",
+    "b站",
+}
+NORMALIZED_MEDIA_PLATFORM_NAMES = {
+    item.casefold().replace(" ", "").replace("_", "").replace("-", "")
+    for item in KNOWN_MEDIA_PLATFORM_NAMES
+}
+
 SPEAKING_ACTOR_TYPE_NAMES = {
     "Agency",
     "Association",
@@ -219,7 +338,142 @@ SPEAKING_ACTOR_KEYWORDS = {
     "集团",
 }
 
+STRONG_SPEAKING_ACTOR_KEYWORDS = {
+    "公安",
+    "公安局",
+    "分局",
+    "派出所",
+    "法院",
+    "检察院",
+    "政府",
+    "委员会",
+    "大学",
+    "学院",
+    "学校",
+    "公司",
+    "集团",
+    "机构",
+    "协会",
+    "媒体",
+    "日报",
+    "新闻网",
+    "新闻",
+    "电视台",
+    "平台",
+    "医院",
+    "银行",
+    "品牌",
+    "部门",
+    "疾控中心",
+    "法律援助中心",
+    "政务中心",
+    "指挥中心",
+    "新闻中心",
+    "官方",
+}
+
+STRONG_SPEAKING_ACTOR_TYPE_NAMES = {
+    "Agency",
+    "Association",
+    "Brand",
+    "Bureau",
+    "Committee",
+    "Company",
+    "Corporation",
+    "Council",
+    "Court",
+    "Department",
+    "Enterprise",
+    "Government",
+    "GovernmentAgency",
+    "Hospital",
+    "Institution",
+    "Media",
+    "MediaOutlet",
+    "Ministry",
+    "NGO",
+    "NewsMedia",
+    "OrganizationAssociation",
+    "Platform",
+    "Police",
+    "RegulatoryAgency",
+    "School",
+    "SocialMediaPlatform",
+    "University",
+    "单位",
+    "企业",
+    "企业/品牌",
+    "公司",
+    "协会",
+    "医院",
+    "媒体",
+    "媒体平台",
+    "媒体机构",
+    "学校",
+    "平台",
+    "政府",
+    "政府机构",
+    "机构",
+    "监管机构",
+    "组织/协会",
+}
+
+GENERIC_SPEAKING_ACTOR_TYPES = {
+    "Entity",
+    "Group",
+    "Node",
+    "Organization",
+    "Person",
+    "个人",
+    "个人实体",
+    "人",
+    "人物",
+    "实体",
+    "组织",
+}
+
+PLACE_CONTEXT_KEYWORDS = {
+    "案发地",
+    "案发地点",
+    "发生地",
+    "居住地",
+    "住址",
+    "地址",
+    "地点",
+    "位于",
+    "坐落于",
+    "所在",
+    "小区",
+    "商场",
+    "商圈",
+    "商业体",
+    "百货",
+    "门店",
+    "店铺",
+    "市场",
+    "广场",
+    "路口",
+    "街道",
+    "化粪池",
+}
+
 GRAPHITI_EXCLUDED_LOCATION_ENTITY_TYPES = tuple(sorted(LOCATION_ENTITY_TYPE_NAMES))
+NORMALIZED_LOCATION_ENTITY_TYPE_NAMES = {
+    re.sub(r"[\s_\-:：/\\]+", "", str(name or "")).casefold()
+    for name in LOCATION_ENTITY_TYPE_NAMES
+}
+NORMALIZED_SPEAKING_ACTOR_TYPE_NAMES = {
+    re.sub(r"[\s_\-:：/\\]+", "", str(name or "")).casefold()
+    for name in SPEAKING_ACTOR_TYPE_NAMES
+}
+NORMALIZED_STRONG_SPEAKING_ACTOR_TYPE_NAMES = {
+    re.sub(r"[\s_\-:：/\\]+", "", str(name or "")).casefold()
+    for name in STRONG_SPEAKING_ACTOR_TYPE_NAMES
+}
+NORMALIZED_GENERIC_SPEAKING_ACTOR_TYPES = {
+    re.sub(r"[\s_\-:：/\\]+", "", str(name or "")).casefold()
+    for name in GENERIC_SPEAKING_ACTOR_TYPES
+}
 
 
 def is_speaking_actor_type(type_name: Any) -> bool:
@@ -229,7 +483,7 @@ def is_speaking_actor_type(type_name: Any) -> bool:
         return False
 
     normalized = _normalize_type_name(text)
-    if normalized in {_normalize_type_name(name) for name in SPEAKING_ACTOR_TYPE_NAMES}:
+    if normalized in NORMALIZED_SPEAKING_ACTOR_TYPE_NAMES:
         return True
 
     tokens = _identifier_tokens(text)
@@ -246,7 +500,7 @@ def is_location_entity_type(type_name: Any) -> bool:
         return False
 
     normalized = _normalize_type_name(text)
-    if normalized in {_normalize_type_name(name) for name in LOCATION_ENTITY_TYPE_NAMES}:
+    if normalized in NORMALIZED_LOCATION_ENTITY_TYPE_NAMES:
         return True
 
     tokens = _identifier_tokens(text)
@@ -259,6 +513,7 @@ def is_location_entity_type(type_name: Any) -> bool:
 
 def is_location_entity_node(node: Any) -> bool:
     """判断图谱节点是否应作为地点实体过滤掉。"""
+    name = str(_get_value(node, "name", "") or "").strip()
     labels = _as_list(_get_value(node, "labels", []))
     custom_labels = [
         str(label).strip()
@@ -266,22 +521,31 @@ def is_location_entity_node(node: Any) -> bool:
         if str(label).strip() and str(label).strip() not in GENERIC_NODE_LABELS
     ]
 
+    if is_known_media_platform_name(name):
+        return False
+
+    if _looks_like_physical_place_node(name, node) and not _has_strong_named_actor_evidence(name):
+        return True
+
+    if _is_name_like_location(name) and not _has_strong_speaking_actor_evidence(name, node):
+        return True
+
+    attributes = _get_value(node, "attributes", {}) or {}
+    attribute_type_values = _iter_attribute_type_values(attributes)
+
     if any(is_speaking_actor_type(label) for label in custom_labels):
         return False
     if any(is_location_entity_type(label) for label in custom_labels):
         return True
 
-    attributes = _get_value(node, "attributes", {}) or {}
-    attribute_type_values = _iter_attribute_type_values(attributes)
-    if any(is_speaking_actor_type(value) for value in attribute_type_values):
-        return False
     if any(is_location_entity_type(value) for value in attribute_type_values):
         return True
+    if any(is_speaking_actor_type(value) for value in attribute_type_values):
+        return False
 
     if custom_labels:
         return False
 
-    name = str(_get_value(node, "name", "") or "").strip()
     return _is_name_like_location(name)
 
 
@@ -403,11 +667,99 @@ def _normalize_type_name(value: str) -> str:
 
 
 def _is_name_like_location(name: str) -> bool:
-    if not name or any(keyword in name for keyword in SPEAKING_ACTOR_KEYWORDS):
+    if not name or is_known_media_platform_name(name):
+        return False
+    if name in CHINESE_ADMIN_LOCATION_NAMES:
+        return True
+    if any(keyword in name for keyword in STRONG_SPEAKING_ACTOR_KEYWORDS):
         return False
     if any(keyword in name for keyword in LOCATION_ENTITY_TYPE_KEYWORDS):
+        return True
+    if any(keyword in name for keyword in LOCATION_NAME_KEYWORDS):
         return True
     return any(
         name.endswith(suffix) and len(name) >= max(3, len(suffix) + 1)
         for suffix in LOCATION_NAME_SUFFIXES
+    )
+
+
+def is_known_media_platform_name(name: Any) -> bool:
+    """判断名称是否是常见社交/内容平台。"""
+    value = str(name or "").strip()
+    if not value:
+        return False
+    normalized = value.casefold().replace(" ", "").replace("_", "").replace("-", "")
+    return normalized in NORMALIZED_MEDIA_PLATFORM_NAMES
+
+
+def _has_strong_speaking_actor_evidence(name: str, node: Any) -> bool:
+    """判断地点性名称是否也有明确可发声主体证据。"""
+    if _has_strong_named_actor_evidence(name):
+        return True
+
+    labels = [
+        str(label).strip()
+        for label in _as_list(_get_value(node, "labels", []))
+        if str(label).strip() and str(label).strip() not in GENERIC_NODE_LABELS
+    ]
+    if any(is_location_entity_type(label) for label in labels):
+        return False
+    if any(_is_strong_speaking_actor_type(label) for label in labels):
+        return True
+
+    attributes = _get_value(node, "attributes", {}) or {}
+    type_values = _iter_attribute_type_values(attributes)
+    if any(is_location_entity_type(value) for value in type_values):
+        return False
+    if any(_is_strong_speaking_actor_type(value) for value in type_values):
+        return True
+
+    text_parts = [name]
+    for value in type_values:
+        text_parts.append(str(value))
+    summary = str(_get_value(node, "summary", "") or "")
+    if summary:
+        text_parts.append(summary[:240])
+
+    combined = " ".join(text_parts)
+    return any(keyword in combined for keyword in STRONG_SPEAKING_ACTOR_KEYWORDS)
+
+
+def _has_strong_named_actor_evidence(name: str) -> bool:
+    return any(keyword in name for keyword in STRONG_SPEAKING_ACTOR_KEYWORDS)
+
+
+def _is_strong_speaking_actor_type(type_name: Any) -> bool:
+    text = str(type_name or "").strip()
+    if not text:
+        return False
+    normalized = _normalize_type_name(text)
+    if normalized in NORMALIZED_GENERIC_SPEAKING_ACTOR_TYPES:
+        return False
+    if normalized in NORMALIZED_STRONG_SPEAKING_ACTOR_TYPE_NAMES:
+        return True
+    return is_speaking_actor_type(text) and not is_location_entity_type(text)
+
+
+def _looks_like_physical_place_node(name: str, node: Any) -> bool:
+    """结合摘要/属性判断实体是否是物理地点或场所。"""
+    if not name or is_known_media_platform_name(name):
+        return False
+    if _is_name_like_location(name):
+        return True
+
+    attributes = _get_value(node, "attributes", {}) or {}
+    summary = str(_get_value(node, "summary", "") or "")
+    attr_text = " ".join(
+        str(value)
+        for value in attributes.values()
+        if value is not None and str(value).strip()
+    )
+    combined = f"{name} {attr_text} {summary[:360]}"
+    if not any(keyword in combined for keyword in PLACE_CONTEXT_KEYWORDS):
+        return False
+
+    return bool(
+        re.search(r"(地址|地点|案发地|案发地点|发生地|居住地|住址).{0,40}(省|市|区|县|路|街|小区|商场|商圈|广场|市场|百货|商业体)", combined)
+        or re.search(r"(小区|商场|商圈|商业体|百货|门店|店铺|市场|广场|路口|街道|化粪池)", combined)
     )

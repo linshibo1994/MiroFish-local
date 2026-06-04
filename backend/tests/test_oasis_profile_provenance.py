@@ -151,3 +151,53 @@ def test_person_profile_subject_mismatch_is_rebuilt():
     assert "许国利" in rebuilt["persona"]
     assert "不代表公安机关" in rebuilt["persona"]
     assert "机构正式名称" not in rebuilt["persona"]
+
+
+def test_media_platform_mislabeled_as_person_generates_platform_profile():
+    generator = OasisProfileGenerator.__new__(OasisProfileGenerator)
+    entity = EntityNode(
+        uuid="platform-xhs",
+        name="小红书",
+        labels=["Entity", "Person"],
+        summary="小红书平台出现大量围绕事件的生活经验分享和公共讨论。",
+        attributes={},
+    )
+
+    profile = generator.generate_profile_from_entity(
+        entity=entity,
+        user_id=0,
+        use_llm=False,
+    )
+
+    assert profile.source_entity_type == "SocialMediaPlatform"
+    assert profile.profession == "媒体平台"
+    assert profile.gender == "other"
+    assert "媒体/社交平台主体" in profile.persona
+
+
+def test_profile_batch_skips_location_entities_before_agent_generation():
+    generator = OasisProfileGenerator.__new__(OasisProfileGenerator)
+    entities = [
+        EntityNode(
+            uuid="place-1",
+            name="三堡北苑",
+            labels=["Entity", "Person"],
+            summary="三堡北苑是杭州市江干区的住宅小区，是案件相关地点。",
+            attributes={},
+        ),
+        EntityNode(
+            uuid="person-1",
+            name="来惠利",
+            labels=["Entity", "Person"],
+            summary="来惠利是案件当事人。",
+            attributes={},
+        ),
+    ]
+
+    profiles = generator.generate_profiles_from_entities(
+        entities=entities,
+        use_llm=False,
+        parallel_count=1,
+    )
+
+    assert [profile.name for profile in profiles] == ["来惠利"]

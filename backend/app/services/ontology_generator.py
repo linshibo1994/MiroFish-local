@@ -82,17 +82,27 @@ ONTOLOGY_SYSTEM_PROMPT = """你是一个专业的知识图谱本体设计专家�
 
 ### 1. 实体类型设计 - 必须严格遵守
 
-**数量要求：必须正好10个实体类型**
+**数量要求：不要为了凑数或压缩而固定为10个类型。按文本真实主体需要输出，宁可多覆盖关键可发声主体类型，也不要把不同主体强行合并。**
+
+**覆盖要求（包含但不限于）**：
+- 政府/监管部门
+- 单位、机构
+- 企业/品牌
+- 媒体、新闻机构、自媒体平台
+- 组织/协会
+- 意见领袖/网红/KOL
+- 社区/社群
+- 公众/群体
+- 主配角、当事人、关键个人
+- 网民/个人
 
 **层次结构要求（必须同时包含具体类型和兜底类型）**：
-
-你的10个实体类型必须包含以下层次：
 
 A. **兜底类型（必须包含，放在列表最后2个）**：
    - `Person`: 任何自然人个体的兜底类型。当一个人不属于其他更具体的人物类型时，归入此类。
    - `Organization`: 任何组织机构的兜底类型。当一个组织不属于其他更具体的组织类型时，归入此类。
 
-B. **具体类型（8个，根据文本内容设计）**：
+B. **具体类型（根据文本内容设计）**：
    - 针对文本中出现的主要角色，设计更具体的类型
    - 例如：如果文本涉及学术事件，可以有 `Student`, `Professor`, `University`
    - 例如：如果文本涉及商业事件，可以有 `Company`, `CEO`, `Employee`
@@ -276,12 +286,13 @@ class OntologyGenerator:
 请根据以上内容，设计适合社会舆论模拟的实体类型和关系类型。
 
 **必须遵守的规则**：
-1. 必须正好输出10个实体类型
+1. 不要固定为10个实体类型；请按文本真实主体需要输出，完整覆盖关键可发声主体类型
 2. 最后2个必须是兜底类型：Person（个人兜底）和 Organization（组织兜底）
-3. 前8个是根据文本内容设计的具体类型
+3. 具体类型包含但不限于：政府/监管、单位、机构、企业/品牌、媒体、组织/协会、意见领袖/网红、社区、公众、主配角、网民/个人等
 4. 所有实体类型必须是现实中可以发声的主体，不能是抽象概念
 5. 不要设计纯地点/位置/地址/城市/地区/场所类实体类型；地点只可作为主体属性或事件背景，不要作为节点类型
-6. 属性名不能使用 name、uuid、group_id 等保留字，用 full_name、org_name 等替代
+6. 小红书、微博、抖音、豆瓣、知乎等属于媒体/社交平台类型，不要归为 Person
+7. 属性名不能使用 name、uuid、group_id 等保留字，用 full_name、org_name 等替代
 """
         
         return message
@@ -318,10 +329,6 @@ class OntologyGenerator:
 
         result = strip_location_entity_types_from_ontology(result)
         
-        # Zep API 限制：最多 10 个自定义实体类型，最多 10 个自定义边类型
-        MAX_ENTITY_TYPES = 10
-        MAX_EDGE_TYPES = 10
-        
         # 兜底类型定义
         person_fallback = {
             "name": "Person",
@@ -356,25 +363,8 @@ class OntologyGenerator:
             fallbacks_to_add.append(organization_fallback)
         
         if fallbacks_to_add:
-            current_count = len(result["entity_types"])
-            needed_slots = len(fallbacks_to_add)
-            
-            # 如果添加后会超过 10 个，需要移除一些现有类型
-            if current_count + needed_slots > MAX_ENTITY_TYPES:
-                # 计算需要移除多少个
-                to_remove = current_count + needed_slots - MAX_ENTITY_TYPES
-                # 从末尾移除（保留前面更重要的具体类型）
-                result["entity_types"] = result["entity_types"][:-to_remove]
-            
             # 添加兜底类型
             result["entity_types"].extend(fallbacks_to_add)
-        
-        # 最终确保不超过限制（防御性编程）
-        if len(result["entity_types"]) > MAX_ENTITY_TYPES:
-            result["entity_types"] = result["entity_types"][:MAX_ENTITY_TYPES]
-        
-        if len(result["edge_types"]) > MAX_EDGE_TYPES:
-            result["edge_types"] = result["edge_types"][:MAX_EDGE_TYPES]
 
         result = strip_location_entity_types_from_ontology(result)
         
