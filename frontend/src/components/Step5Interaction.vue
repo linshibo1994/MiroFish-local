@@ -8,8 +8,7 @@
           <!-- Report Header -->
           <div class="report-header-block">
             <div class="report-meta">
-              <span class="report-tag">预测报告</span>
-              <span class="report-id">ID: {{ reportId || 'REF-2024-X92' }}</span>
+              <span class="report-tag">{{ reportTimeLabel }}</span>
             </div>
             <h1 class="main-title">{{ reportOutline.title }}</h1>
             <p class="sub-title">{{ reportOutline.summary }}</p>
@@ -422,7 +421,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { chatWithReport, getReport, getAgentLog } from '../api/report'
-import { interviewAgents, getSimulationProfilesRealtime, streamAgentChat } from '../api/simulation'
+import { interviewAgents, getRunStatus, getSimulationConfig, getSimulationProfilesRealtime, streamAgentChat } from '../api/simulation'
 import { sanitizeReportContent } from '../utils/reportContent'
 
 const props = defineProps({
@@ -464,6 +463,11 @@ const generatedSections = ref({})
 const collapsedSections = ref(new Set())
 const currentSectionIndex = ref(null)
 const profiles = ref([])
+const simulationTiming = ref({
+  totalRounds: null,
+  minutesPerRound: null,
+  totalHours: null
+})
 
 // Helper Methods
 const isSectionCompleted = (sectionIndex) => {
@@ -473,6 +477,34 @@ const isSectionCompleted = (sectionIndex) => {
 const showTypingIndicator = computed(() => {
   if (!isSending.value) return false
   return chatTarget.value === 'report_agent' || !isAgentStreaming.value
+})
+
+const formatDurationLabel = (hours) => {
+  if (!Number.isFinite(hours) || hours <= 0) return '预测报告'
+  if (Number.isInteger(hours)) return `${hours}小时推演报告`
+
+  const minutes = Math.round(hours * 60)
+  if (minutes < 60) return `${minutes}分钟推演报告`
+
+  const wholeHours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  return remainingMinutes === 0
+    ? `${wholeHours}小时推演报告`
+    : `${wholeHours}小时${remainingMinutes}分钟推演报告`
+}
+
+const reportTimeLabel = computed(() => {
+  const { totalRounds, minutesPerRound, totalHours } = simulationTiming.value
+
+  if (Number.isFinite(totalRounds) && totalRounds > 0 && Number.isFinite(minutesPerRound) && minutesPerRound > 0) {
+    return formatDurationLabel((totalRounds * minutesPerRound) / 60)
+  }
+
+  if (Number.isFinite(totalHours) && totalHours > 0) {
+    return formatDurationLabel(totalHours)
+  }
+
+  return '预测报告'
 })
 
 // Refs
@@ -987,6 +1019,50 @@ const loadAgentLogs = async () => {
   }
 }
 
+const mergeSimulationTiming = (partial = {}) => {
+  simulationTiming.value = {
+    ...simulationTiming.value,
+    ...Object.fromEntries(
+      Object.entries(partial).filter(([, value]) => Number.isFinite(value) && value > 0)
+    )
+  }
+}
+
+const fetchSimulationTiming = async () => {
+  if (!props.simulationId) return
+
+  try {
+    const [statusRes, configRes] = await Promise.allSettled([
+      getRunStatus(props.simulationId),
+      getSimulationConfig(props.simulationId)
+    ])
+
+    if (statusRes.status === 'fulfilled' && statusRes.value?.success && statusRes.value.data) {
+      const status = statusRes.value.data
+      mergeSimulationTiming({
+        totalRounds: Number(status.total_rounds)
+      })
+    }
+
+    if (configRes.status === 'fulfilled' && configRes.value?.success && configRes.value.data) {
+      const timeConfig = configRes.value.data.time_config || {}
+      const minutesPerRound = Number(timeConfig.minutes_per_round)
+      const totalHours = Number(timeConfig.total_simulation_hours)
+      const configRounds = minutesPerRound > 0 && totalHours > 0
+        ? Math.floor((totalHours * 60) / minutesPerRound)
+        : null
+
+      mergeSimulationTiming({
+        minutesPerRound,
+        totalHours,
+        totalRounds: simulationTiming.value.totalRounds || configRounds
+      })
+    }
+  } catch (err) {
+    console.warn('Failed to fetch simulation timing:', err)
+  }
+}
+
 const loadProfiles = async () => {
   if (!props.simulationId) return
   
@@ -1029,7 +1105,14 @@ watch(() => props.reportId, (newId) => {
 }, { immediate: true })
 
 watch(() => props.simulationId, (newId) => {
+  simulationTiming.value = {
+    totalRounds: null,
+    minutesPerRound: null,
+    totalHours: null
+  }
+
   if (newId) {
+    fetchSimulationTiming()
     loadProfiles()
   }
 }, { immediate: true })
@@ -1117,13 +1200,6 @@ watch(() => props.simulationId, (newId) => {
   padding: 4px 8px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-}
-
-.report-id {
-  font-size: 11px;
-  color: #9CA3AF;
-  font-weight: 500;
-  letter-spacing: 0.02em;
 }
 
 .main-title {
