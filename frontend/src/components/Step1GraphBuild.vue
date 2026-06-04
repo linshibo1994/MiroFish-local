@@ -237,10 +237,28 @@
 
             <!-- 参考信息源 -->
             <div v-if="sources.length" class="result-card sources-card">
-              <div class="card-header-row" @click="showSources = !showSources">
+              <button
+                type="button"
+                class="card-header-row sources-header-row"
+                :aria-expanded="showSources"
+                @click="showSources = !showSources"
+              >
                 <span class="card-section-title">参考 {{ sources.length }} 条信息源</span>
-                <button type="button" class="collapse-btn">{{ showSources ? '▲' : '▼' }}</button>
-              </div>
+                <span class="source-toggle-btn">
+                  <span>{{ showSources ? '收起' : '展开' }}</span>
+                  <svg
+                    class="source-toggle-icon"
+                    :class="{ expanded: showSources }"
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <path d="M6 9L12 15L18 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </span>
+              </button>
               <div v-show="showSources" class="sources-list">
                 <a
                   v-for="(source, index) in sources"
@@ -472,7 +490,7 @@ const fileInput = ref(null)
 const keywordTextarea = ref(null)
 const analysisLogPanel = ref(null)
 const selectedOntologyItem = ref(null)
-const showSources = ref(true)
+const showSources = ref(false)
 const showSummary = ref(true)
 const executionLogs = ref([])
 const analysisProgress = ref(0)
@@ -861,6 +879,7 @@ const analyzeSeed = async () => {
   try {
     const data = await analyzeSeedWithFallback()
     seedResult.value = normalizeSeedResult(data)
+    showSources.value = false
     if (suggestions.value.length > 0 && !simulationRequirement.value.trim()) {
       applySuggestion(suggestions.value[0])
     }
@@ -1616,6 +1635,54 @@ onUnmounted(() => {
   cursor: pointer;
   font-size: 12px;
   padding: 0;
+}
+
+.sources-header-row {
+  width: 100%;
+  min-height: 28px;
+  gap: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+}
+
+.source-toggle-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 72px;
+  height: 30px;
+  padding: 0 8px 0 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #8FA4C4;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  transition: color 0.2s, background 0.2s;
+}
+
+.sources-header-row:hover .source-toggle-btn {
+  background: #F3F7FF;
+  color: #6F86AA;
+}
+
+.sources-header-row:focus-visible {
+  outline: 2px solid rgba(22, 119, 255, 0.35);
+  outline-offset: 2px;
+}
+
+.source-toggle-icon {
+  transition: transform 0.2s ease;
+}
+
+.source-toggle-icon.expanded {
+  transform: rotate(180deg);
 }
 
 .summary-content {
