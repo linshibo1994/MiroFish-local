@@ -134,7 +134,7 @@ class SeedAnalysisService:
 输出 JSON，字段：
 - seed_summary_md: Markdown 字符串；如果是联网搜索输入，必须整理成可直接展示和后续图谱抽取使用的完整事件文档；如果是上传文件输入，生成辅助摘要即可。材料不足时请明确说明不足。
 - simulation_suggestions: 2-3 条可用于后续舆情推演的中文建议，每条必须来自材料可支撑的信息；不要使用“模拟”字样，统一使用“推演”“追踪”“研判”等表达。
-- entity_hints: 可能进入图谱的主体名称列表，必须是材料中原文出现过的人、组织、机构、平台或媒体名称。
+- entity_hints: 可能进入图谱的关键实体名称列表，必须是材料中原文出现过的人、组织、机构、平台、媒体或关键群体名称。
 
 输入类型：{input_mode}
 主题：{topic}
@@ -247,13 +247,15 @@ class SeedAnalysisService:
                         "content": f"""请基于以下整理文档返回 JSON：
 {{
   "simulation_suggestions": ["2-3条中文舆情推演建议"],
-  "entity_hints": ["材料原文出现过的人、组织、机构、平台或媒体名称"]
+  "entity_hints": ["材料原文出现过的人、组织、机构、平台、媒体或关键群体名称"]
 }}
 
 要求：
 - simulation_suggestions 必须适合舆论走向、传播路径或公众反应推演。
 - 不要使用“模拟”字样，统一使用“推演”“追踪”“研判”等表达。
 - entity_hints 不超过30个，必须来自文档或材料原文。
+- entity_hints 必须优先覆盖核心人物：受害人/被害人、嫌疑人/犯罪嫌疑人、被告人、当事人、主角、亲属等；这些人物即使不是可发声账号也要保留为图谱实体提示。
+- 小红书、微博、抖音、豆瓣、知乎等媒体/社交平台可以作为平台实体提示，但不要当作个人。
 
 主题：{topic}
 整理文档：
@@ -365,19 +367,77 @@ class SeedAnalysisService:
 
     @classmethod
     def _extract_entity_hints(cls, material: str) -> List[str]:
+        hints: List[str] = []
+
+        for pattern in cls._core_person_hint_patterns():
+            for match in re.findall(pattern, material):
+                candidate = cls._normalize_person_hint(match)
+                if cls._is_valid_person_hint(candidate) and candidate not in hints:
+                    hints.append(candidate)
+                if len(hints) >= 20:
+                    return hints
+
         patterns = [
             r"[\u4e00-\u9fffA-Za-z0-9·（）()]{2,30}(?:公司|集团|大学|学院|政府|委员会|协会|机构|平台|媒体|日报|时报|新闻|法院|部门|医院|学校)",
+            r"(?:小红书|抖音|微博|豆瓣|知乎|快手|微信|哔哩哔哩|B站|b站|TikTok|YouTube|Facebook|Instagram|Twitter|Reddit)",
             r"\b[A-Z][A-Za-z0-9&.\- ]{1,40}(?:Inc|Ltd|LLC|University|College|Agency|Court|Media|News|Platform)\b",
         ]
-        hints: List[str] = []
         for pattern in patterns:
             for match in re.findall(pattern, material):
-                candidate = match.strip(" ，。；;:：、\n\t")
+                candidate = cls._normalize_entity_hint(match)
                 if 2 <= len(candidate) <= 40 and candidate not in hints:
                     hints.append(candidate)
                 if len(hints) >= 20:
                     return hints
         return hints
+
+    @staticmethod
+    def _core_person_hint_patterns() -> List[str]:
+        person_name = r"[\u4e00-\u9fff]{2,4}(?:·[\u4e00-\u9fff]{1,4})?"
+        name_boundary = r"(?=$|[，,。；;、\s]|与|和|是|为|系|被|涉|因|已|将|获|死|遇|失|案|事)"
+        return [
+            rf"(?:受害人|被害人|死者|遇害者|嫌疑人|犯罪嫌疑人|被告人|当事人|丈夫|妻子|女儿|儿子|亲属|家属|律师|证人|主角|配角)\s*({person_name}){name_boundary}",
+            rf"(?<![\u4e00-\u9fff])({person_name}){name_boundary}\s*(?:是|为|系|被指为|被认定为|涉嫌|因|已被|被判|获刑|伏法|死亡|遇害|失踪)",
+            rf"(?<![\u4e00-\u9fff])({person_name})\s*[，,]\s*(?:男|女|丈夫|妻子|受害人|被害人|嫌疑人|犯罪嫌疑人|被告人|当事人)",
+        ]
+
+    @staticmethod
+    def _normalize_entity_hint(value: Any) -> str:
+        if isinstance(value, tuple):
+            value = next((item for item in value if item), "")
+        return str(value or "").strip(" ，。；;:：、（）()[]【】「」“”\"'\n\t")
+
+    @classmethod
+    def _normalize_person_hint(cls, value: Any) -> str:
+        candidate = cls._normalize_entity_hint(value)
+        while len(candidate) > 2 and candidate[0] in {"人", "者"}:
+            candidate = candidate[1:]
+        while len(candidate) > 2 and candidate[-1] in {"与", "和", "是", "为", "系", "因", "被", "将", "已", "于", "向", "对"}:
+            candidate = candidate[:-1]
+        return candidate
+
+    @staticmethod
+    def _is_valid_person_hint(candidate: str) -> bool:
+        if not re.fullmatch(r"[\u4e00-\u9fff]{2,4}(?:·[\u4e00-\u9fff]{1,4})?", candidate or ""):
+            return False
+        if candidate.endswith(("市", "区", "县", "省", "镇", "乡", "村", "路", "街", "苑", "场", "店", "案")):
+            return False
+        blocked = {
+            "嫌疑人",
+            "受害人",
+            "被害人",
+            "当事人",
+            "犯罪嫌疑",
+            "社交平台",
+            "媒体平台",
+            "检察机关",
+            "公安机关",
+            "人民法院",
+            "人民检察",
+        }
+        if candidate in blocked:
+            return False
+        return not any(keyword in candidate for keyword in ("公司", "集团", "法院", "检察", "公安", "媒体", "平台"))
 
     @staticmethod
     def _pick_excerpts(material: str) -> List[str]:

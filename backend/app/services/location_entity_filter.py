@@ -3,6 +3,7 @@
 
 图谱中的实体用于社媒舆论模拟和人设 Agent 构建，纯地点、地址、区域等
 不能独立发声的节点不应进入本体、前端展示或 Agent 构建链路。
+受害人、嫌疑人、当事人等核心人物即使摘要中包含居住地或案发地，也不能被误判为地点。
 """
 
 from __future__ import annotations
@@ -336,6 +337,20 @@ SPEAKING_ACTOR_KEYWORDS = {
     "公安",
     "部门",
     "集团",
+    "受害人",
+    "被害人",
+    "嫌疑人",
+    "犯罪嫌疑人",
+    "被告人",
+    "当事人",
+    "主角",
+    "配角",
+    "亲属",
+    "家属",
+    "证人",
+    "律师",
+    "死者",
+    "伤者",
 }
 
 STRONG_SPEAKING_ACTOR_KEYWORDS = {
@@ -370,6 +385,44 @@ STRONG_SPEAKING_ACTOR_KEYWORDS = {
     "指挥中心",
     "新闻中心",
     "官方",
+    "受害人",
+    "被害人",
+    "嫌疑人",
+    "犯罪嫌疑人",
+    "被告人",
+    "当事人",
+    "主角",
+    "配角",
+    "亲属",
+    "家属",
+    "证人",
+    "律师",
+    "死者",
+    "伤者",
+}
+
+PERSON_SUBJECT_KEYWORDS = {
+    "个人",
+    "人物",
+    "自然人",
+    "受害人",
+    "被害人",
+    "嫌疑人",
+    "犯罪嫌疑人",
+    "被告人",
+    "当事人",
+    "主角",
+    "配角",
+    "亲属",
+    "家属",
+    "丈夫",
+    "妻子",
+    "女儿",
+    "儿子",
+    "证人",
+    "律师",
+    "死者",
+    "伤者",
 }
 
 STRONG_SPEAKING_ACTOR_TYPE_NAMES = {
@@ -416,6 +469,29 @@ STRONG_SPEAKING_ACTOR_TYPE_NAMES = {
     "机构",
     "监管机构",
     "组织/协会",
+    "Victim",
+    "Suspect",
+    "Defendant",
+    "Party",
+    "KeyPerson",
+    "FamilyMember",
+    "Witness",
+    "Lawyer",
+    "受害人",
+    "被害人",
+    "嫌疑人",
+    "犯罪嫌疑人",
+    "被告人",
+    "当事人",
+    "主角",
+    "配角",
+    "核心人物",
+    "亲属",
+    "家属",
+    "证人",
+    "律师",
+    "死者",
+    "伤者",
 }
 
 GENERIC_SPEAKING_ACTOR_TYPES = {
@@ -522,6 +598,9 @@ def is_location_entity_node(node: Any) -> bool:
     ]
 
     if is_known_media_platform_name(name):
+        return False
+
+    if _looks_like_person_subject_node(name, node):
         return False
 
     if _looks_like_physical_place_node(name, node) and not _has_strong_named_actor_evidence(name):
@@ -727,6 +806,59 @@ def _has_strong_speaking_actor_evidence(name: str, node: Any) -> bool:
 
 def _has_strong_named_actor_evidence(name: str) -> bool:
     return any(keyword in name for keyword in STRONG_SPEAKING_ACTOR_KEYWORDS)
+
+
+def _looks_like_person_subject_node(name: str, node: Any) -> bool:
+    """保护被误写入地点上下文的人物节点，避免因摘要包含小区/地址被删除。"""
+    if not _looks_like_chinese_person_name(name):
+        return False
+
+    labels = [
+        str(label).strip()
+        for label in _as_list(_get_value(node, "labels", []))
+        if str(label).strip() and str(label).strip() not in GENERIC_NODE_LABELS
+    ]
+    attributes = _get_value(node, "attributes", {}) or {}
+    type_values = [str(value) for value in _iter_attribute_type_values(attributes)]
+    summary = str(_get_value(node, "summary", "") or "")
+    combined = " ".join([name, *labels, *type_values, summary[:240]])
+
+    return (
+        any(_normalize_type_name(label) in {"person", "个人", "人物", "个人实体", "人"} for label in labels)
+        or any(keyword in combined for keyword in PERSON_SUBJECT_KEYWORDS)
+    )
+
+
+def _looks_like_chinese_person_name(name: str) -> bool:
+    value = str(name or "").strip()
+    if not re.fullmatch(r"[\u4e00-\u9fff]{2,4}", value):
+        return False
+    if len(value) == 4 and not ("·" in value):
+        common_compound_surnames = (
+            "欧阳",
+            "司马",
+            "上官",
+            "诸葛",
+            "东方",
+            "尉迟",
+            "慕容",
+            "长孙",
+            "令狐",
+            "宇文",
+            "司徒",
+            "南宫",
+        )
+        if not value.startswith(common_compound_surnames):
+            return False
+    if value in CHINESE_ADMIN_LOCATION_NAMES:
+        return False
+    if any(keyword in value for keyword in LOCATION_NAME_KEYWORDS):
+        return False
+    if any(keyword in value for keyword in SPEAKING_ACTOR_KEYWORDS):
+        return False
+    if any(keyword in value for keyword in ("公司", "集团", "法院", "检察", "公安", "媒体", "平台", "日报", "新闻")):
+        return False
+    return not value.endswith(LOCATION_NAME_SUFFIXES + ("案", "事件", "官方", "警方"))
 
 
 def _is_strong_speaking_actor_type(type_name: Any) -> bool:

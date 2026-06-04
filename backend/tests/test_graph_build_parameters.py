@@ -83,6 +83,23 @@ def test_ontology_generator_uses_boost_client_by_default(monkeypatch):
     assert result["entity_types"][-1]["name"] == "Organization"
 
 
+def test_ontology_prompt_separates_graph_entities_from_agent_candidates():
+    from app.services.ontology_generator import ONTOLOGY_SYSTEM_PROMPT, OntologyGenerator
+
+    generator = OntologyGenerator.__new__(OntologyGenerator)
+    message = generator._build_user_message(
+        ["被告人许国利与受害人来惠利是案件核心当事人，小红书出现相关讨论。"],
+        "推演公众对案件事实披露的反应",
+        None,
+    )
+
+    assert "图谱实体不等于最终人设 Agent" in ONTOLOGY_SYSTEM_PROMPT
+    assert "受害人/被害人、嫌疑人/被告人、主配角、亲属" in ONTOLOGY_SYSTEM_PROMPT
+    assert "受害人、嫌疑人、被告人、当事人、主配角、亲属等核心人物类型" in ONTOLOGY_SYSTEM_PROMPT
+    assert "不能因为“不一定发声”而被省略" in message
+    assert "小红书、微博、抖音" in message
+
+
 def test_graphiti_async_loop_waits_for_ready_when_thread_is_alive(monkeypatch):
     from app.services import zep_graphiti_impl
 
@@ -1514,6 +1531,39 @@ def test_location_filter_blocks_place_names_even_when_mislabeled_as_person_or_or
     ) is False
 
 
+def test_location_filter_keeps_core_person_entities_with_place_context():
+    from app.services.location_entity_filter import is_location_entity_node
+    from app.services.zep_adapter import GraphNode
+
+    assert is_location_entity_node(
+        GraphNode(
+            "victim-1",
+            "来惠利",
+            ["Entity", "受害人"],
+            "来惠利是案件受害人，生前居住在三堡北苑小区。",
+            {},
+        )
+    ) is False
+    assert is_location_entity_node(
+        GraphNode(
+            "suspect-1",
+            "许国利",
+            ["Entity", "嫌疑人"],
+            "许国利是案件核心嫌疑人，案发地点涉及杭州市江干区。",
+            {},
+        )
+    ) is False
+    assert is_location_entity_node(
+        GraphNode(
+            "person-1",
+            "来女士",
+            ["Entity", "Person"],
+            "来女士是案件当事人，相关材料提到其居住地和小区。",
+            {},
+        )
+    ) is False
+
+
 def test_entity_reader_retypes_media_platforms_and_filters_place_agents():
     from app.services.zep_adapter import GraphEdge, GraphNode
     from app.services.zep_entity_reader import ZepEntityReader
@@ -1629,6 +1679,25 @@ def test_graph_build_api_passes_project_event_context_to_episodes(monkeypatch, t
     assert "法国车手瓦伦丁·德比斯" in captured["extraction_context"]["entity_hints"]
     assert "网易游戏、阴阳师等无关实体即使出现在材料杂讯中也不要入图" in captured["wrapped_episode"]
     assert "张雪驾驶820RR-RS参加相关赛事讨论" in captured["wrapped_episode"]
+
+
+def test_graph_extraction_constraints_keep_core_people_and_media_platforms():
+    wrapped = GraphBuilderService._wrap_chunk_with_event_constraints(
+        "被告人许国利被指控杀害受害人来惠利，小红书和微博出现相关讨论。",
+        {
+            "event_topic": "杭州杀妻案",
+            "simulation_requirement": "推演公众对冷静寻妻和化粪池藏尸强烈反差的情绪演变路径",
+            "entity_hints": ["许国利", "来惠利", "小红书", "微博"],
+            "seed_summary": "事件围绕被告人许国利、受害人来惠利及媒体报道展开。",
+        },
+    )
+
+    assert "核心人物必须优先抽取" in wrapped
+    assert "受害人/被害人、嫌疑人/犯罪嫌疑人、被告人、当事人" in wrapped
+    assert "图谱实体不等于最终人设 Agent" in wrapped
+    assert "优先使用文本中出现的全名作为实体名称" in wrapped
+    assert "必须保留为 MediaPlatform/SocialMediaPlatform/Media" in wrapped
+    assert "被告人许国利被指控杀害受害人来惠利" in wrapped
 
 
 def test_graph_build_api_records_requested_and_effective_batch_plan(monkeypatch, tmp_path):

@@ -372,6 +372,49 @@ def test_seed_suggestions_normalize_simulation_wording():
     )
 
 
+def test_seed_entity_hints_extract_core_people_and_media_platforms():
+    material = """
+    材料显示，被告人许国利与受害人来惠利是案件核心当事人。
+    许国利涉嫌杀害妻子来惠利，案发地涉及三堡北苑小区。
+    小红书、微博、抖音出现相关公共讨论，杭州中院作出判决。
+    """
+
+    hints = SeedAnalysisService._extract_entity_hints(material)
+
+    assert "许国利" in hints
+    assert "来惠利" in hints
+    assert "小红书" in hints
+    assert "微博" in hints
+    assert "抖音" in hints
+    assert "三堡北苑" not in hints
+
+
+def test_seed_auxiliary_prompt_requires_core_people_first():
+    captured = {}
+
+    class FakeLLMClient:
+        def chat_json(self, messages, temperature=0.2, max_tokens=1200):
+            captured["prompt"] = messages[-1]["content"]
+            return {
+                "simulation_suggestions": ["推演公众反应路径"],
+                "entity_hints": ["许国利", "来惠利", "小红书"],
+            }
+
+    service = SeedAnalysisService(llm_client=FakeLLMClient())
+    suggestions, hints = service._generate_web_search_auxiliary(
+        client=FakeLLMClient(),
+        summary="被告人许国利与受害人来惠利是案件核心当事人，小红书出现相关讨论。",
+        material="被告人许国利与受害人来惠利是案件核心当事人，小红书出现相关讨论。",
+        topic="杭州杀妻案",
+    )
+
+    assert suggestions == ["推演公众反应路径"]
+    assert hints == ["许国利", "来惠利", "小红书"]
+    assert "必须优先覆盖核心人物" in captured["prompt"]
+    assert "这些人物即使不是可发声账号也要保留为图谱实体提示" in captured["prompt"]
+    assert "媒体/社交平台可以作为平台实体提示" in captured["prompt"]
+
+
 def test_bailian_web_search_parses_sources():
     raw_text = """
     {
