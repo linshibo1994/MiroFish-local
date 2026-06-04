@@ -1726,16 +1726,16 @@ const displayLogs = computed(() => {
 
 const formatDurationLabel = (hours) => {
   if (!Number.isFinite(hours) || hours <= 0) return '预测报告'
-  if (Number.isInteger(hours)) return `${hours}小时推演报告`
+  if (Number.isInteger(hours)) return `未来${hours}个小时推演报告`
 
   const minutes = Math.round(hours * 60)
-  if (minutes < 60) return `${minutes}分钟推演报告`
+  if (minutes < 60) return `未来${minutes}分钟推演报告`
 
   const wholeHours = Math.floor(minutes / 60)
   const remainingMinutes = minutes % 60
   return remainingMinutes === 0
-    ? `${wholeHours}小时推演报告`
-    : `${wholeHours}小时${remainingMinutes}分钟推演报告`
+    ? `未来${wholeHours}个小时推演报告`
+    : `未来${wholeHours}个小时${remainingMinutes}分钟推演报告`
 }
 
 const reportTimeLabel = computed(() => {
