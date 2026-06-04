@@ -69,7 +69,6 @@
             <span class="pill-step">Step {{ currentStep }}/5</span>
             <span class="pill-name">{{ stepNames[currentStep - 1] }}</span>
             <span class="pill-divider">|</span>
-            <span class="pill-dot" :class="statusClass"></span>
             <span class="pill-status">{{ statusText }}</span>
           </div>
         </div>
@@ -88,9 +87,6 @@
         <header class="app-header workspace-header">
           <div class="header-left">
             <span class="event-title">{{ projectTitle }}</span>
-            <button class="info-icon-btn" title="事件信息">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
-            </button>
           </div>
           <div class="header-center">
             <div class="view-switcher">
@@ -101,7 +97,6 @@
             <span class="step-badge">Step {{ currentStep }}/5</span>
             <span class="step-label">{{ stepNames[currentStep - 1] }}</span>
             <span class="step-divider"></span>
-            <span class="status-dot" :class="statusClass"></span>
             <span class="status-text">{{ statusText }}</span>
           </div>
         </header>
@@ -308,14 +303,6 @@ const rightPanelStyle = computed(() => {
 })
 
 
-const statusClass = computed(() => {
-  if (error.value) return 'error'
-  if (simulationCreating.value) return 'processing'
-  if (currentStep.value === 2) return envSetupStatus.value
-  if (currentPhase.value >= 2) return 'completed'
-  return 'processing'
-})
-
 const statusText = computed(() => {
   if (error.value) return '错误'
   if (simulationCreating.value) return '创建中'
@@ -427,7 +414,7 @@ const handleNewProject = async () => {
 
 const handleOntologyGenerated = async (data) => {
   if (!data?.project_id) {
-    error.value = '本体生成结果缺少 project_id'
+    error.value = '事件生成结果缺少 project_id'
     addLog('Error: ontology result missing project_id.')
     return
   }
@@ -462,11 +449,11 @@ const handleWorkspaceStarted = (data = {}) => {
     project_id: data.project_id || projectData.value?.project_id || currentProjectId.value
   }
   currentPhase.value = 0
-  ontologyProgress.value = { message: '正在生成本体...' }
+  ontologyProgress.value = { message: '正在生成事件...' }
   error.value = ''
   clearPendingUpload()
   pendingUploadState.value = null
-  addLog('切换到图谱构建工作台，等待本体生成完成。')
+  addLog('切换到图谱构建工作台，等待事件生成完成。')
   if (data.ontology_payload) {
     generateOntologyAndBuild(data.ontology_payload, data)
   }
@@ -475,8 +462,8 @@ const handleWorkspaceStarted = (data = {}) => {
 const handleOntologyFailed = (message) => {
   currentPhase.value = -1
   ontologyProgress.value = null
-  error.value = message || '本体生成失败'
-  addLog(`本体生成失败，已返回推演方向确认页: ${error.value}`)
+  error.value = message || '事件生成失败'
+  addLog(`事件生成失败，已返回推演方向确认页: ${error.value}`)
 }
 
 const generateOntologyAndBuild = async (payload, seedSnapshot = {}) => {
@@ -489,7 +476,7 @@ const generateOntologyAndBuild = async (payload, seedSnapshot = {}) => {
     }
     await handleOntologyGenerated(data)
   } catch (err) {
-    const message = err.message || '本体生成失败'
+    const message = err.message || '事件生成失败'
     addLog(`Ontology generation failed: ${message}`)
     handleOntologyFailed(message)
   }
@@ -1039,17 +1026,6 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
 .pill-name { font-weight: 700; color: #1A1A2E; }
 .pill-divider { color: #D1D5DB; }
 
-.pill-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #FFAB91;
-}
-
-.pill-dot.processing { background: #FF5722; animation: pulse 1s infinite; }
-.pill-dot.completed { background: #4CAF50; }
-.pill-dot.error { background: #F44336; }
-
 .pill-status { color: #6B7280; }
 
 /* 二级页顶部流程栏 */
@@ -1181,20 +1157,6 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
   white-space: normal;
 }
 
-.info-icon-btn {
-  width: 24px;
-  height: 24px;
-  border: none;
-  background: transparent;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  color: #9CA3AF;
-  flex-shrink: 0;
-  margin-top: -1px;
-}
-
 .workspace-header .header-center {
   justify-self: center;
   min-width: max-content;
@@ -1250,20 +1212,7 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
   margin: 0 4px;
 }
 
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #CCC;
-}
-
-.status-dot.processing { background: #FF5722; animation: pulse 1s infinite; }
-.status-dot.completed { background: #4CAF50; }
-.status-dot.error { background: #F44336; }
-
 .status-text { color: #6B7280; font-size: 12px; }
-
-@keyframes pulse { 50% { opacity: 0.5; } }
 
 /* 首页内容区 */
 .landing-content {

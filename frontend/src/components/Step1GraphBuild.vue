@@ -268,7 +268,7 @@
             @click="handleGenerateOntology"
           >
             <span v-if="ontologyGenerating" class="spinner-sm"></span>
-            {{ ontologyGenerating ? '正在生成本体...' : '开始推演' }}
+            {{ ontologyGenerating ? '正在生成事件...' : '开始推演' }}
           </button>
         </div>
 
@@ -283,7 +283,7 @@
           <div class="step-card-header">
             <div class="step-info">
               <span class="step-num">01</span>
-              <span class="step-title">本体生成</span>
+              <span class="step-title">事件生成</span>
             </div>
             <div class="step-status">
               <span v-if="currentPhase > 0" class="badge success">已完成</span>
@@ -293,12 +293,12 @@
 
           <div class="step-card-content">
             <p class="description">
-              LLM 分析文档内容与模拟需求，提取出现实种子，自动生成合适的本体结构。
+              LLM 分析文档内容与模拟需求，提取出现实事件，自动生成合适的事件结构。
             </p>
 
             <div v-if="ontologyProgress && currentPhase === 0" class="progress-section">
               <div class="spinner-sm dark"></div>
-              <span>{{ ontologyProgress.message || '正在生成本体...' }}</span>
+              <span>{{ formatEventGenerationMessage(ontologyProgress.message) }}</span>
             </div>
 
             <div v-if="projectData?.ontology" class="ontology-preview">
@@ -383,7 +383,7 @@
 
           <div class="step-card-content">
             <p class="description">
-              基于生成的本体，将文档自动分块后调用 Zep 构建知识图谱，提取实体和关系，并形成时序记忆与社区摘要。
+              基于生成的事件，将文档自动分块后调用 Zep 构建知识图谱，提取事件和关系，并形成时序记忆与社区摘要。
             </p>
             <p v-if="isGraphBuildFailed" class="progress-message error">{{ graphBuildFailureMessage }}</p>
             <p v-else-if="buildProgress?.message" class="progress-message inline">{{ buildProgress.message }}</p>
@@ -574,6 +574,10 @@ const ontologyRelationLabel = (relation = {}) => {
 const ontologyConnectionLabel = (connection = {}, side) => {
   const displayKey = `${side}_display_name`
   return connection[displayKey] || translateEntityType(connection[side])
+}
+
+const formatEventGenerationMessage = (message) => {
+  return (message || '正在生成事件...').replace(/本体/g, '事件').replace(/种子/g, '事件')
 }
 
 const currentProjectId = computed(() => seedResult.value?.project_id || props.projectData?.project_id || '')

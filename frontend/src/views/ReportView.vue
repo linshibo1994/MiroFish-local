@@ -33,10 +33,7 @@
           <span class="step-name">报告生成</span>
         </div>
         <div class="step-divider"></div>
-        <span class="status-indicator" :class="statusClass">
-          <span class="dot"></span>
-          {{ statusText }}
-        </span>
+        <span class="status-indicator">{{ statusText }}</span>
       </div>
     </header>
 
@@ -113,10 +110,6 @@ const rightPanelStyle = computed(() => {
 })
 
 // --- Status Computed ---
-const statusClass = computed(() => {
-  return currentStatus.value
-})
-
 const statusText = computed(() => {
   if (currentStatus.value === 'error') return '错误'
   if (currentStatus.value === 'completed') return '已完成'
@@ -344,19 +337,6 @@ onMounted(() => {
   color: #666;
   font-weight: 500;
 }
-
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #CCC;
-}
-
-.status-indicator.processing .dot { background: #FF9800; animation: pulse 1s infinite; }
-.status-indicator.completed .dot { background: #4CAF50; }
-.status-indicator.error .dot { background: #F44336; }
-
-@keyframes pulse { 50% { opacity: 0.5; } }
 
 @media (max-width: 960px) {
   .app-header {

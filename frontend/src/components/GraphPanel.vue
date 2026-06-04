@@ -280,10 +280,10 @@ const showSimulationFinishedHint = ref(false) // 模拟结束后的提示
 const wasSimulating = ref(false) // 追踪之前是否在模拟中
 
 const emptyStateText = computed(() => {
-  if (props.currentPhase === 0) return '正在生成本体...'
+  if (props.currentPhase === 0) return '正在生成事件...'
   if (props.status === 'failed') return '图谱构建失败，请检查右侧失败原因。'
   if (props.currentPhase === 1) return '正在抽取实体并构建图谱...'
-  return '等待本体生成...'
+  return '等待事件生成...'
 })
 
 const showGraphActivityHint = computed(() => {
