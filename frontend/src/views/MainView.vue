@@ -1,18 +1,6 @@
 <template>
   <div class="main-view" :class="{ 'landing-mode': isLandingMode }">
 
-    <!-- 薄左侧图标栏（始终显示） -->
-    <aside class="icon-sidebar">
-      <div class="icon-sidebar-top">
-        <button class="icon-btn" title="首页" aria-label="首页" @click="startNewSession">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-        </button>
-        <button class="icon-btn" :class="{ active: showHistory }" title="历史记录" aria-label="历史记录" @click="showHistory = !showHistory">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>
-        </button>
-      </div>
-    </aside>
-
     <!-- 历史记录面板（可切换） -->
     <aside class="history-panel" :class="{ visible: showHistory }">
       <div class="history-panel-header">
@@ -59,48 +47,27 @@
     <!-- 主内容区 -->
     <div class="main-content">
 
-      <!-- 首页 Header（简洁模式） -->
-      <header v-if="isLandingMode" class="app-header landing-header">
-        <div class="header-left">
-          <span class="brand">传播推演</span>
+      <!-- 主页面内状态工具条：替代原页面顶栏和左侧导航栏 -->
+      <div class="main-toolbar" :class="{ 'main-toolbar--workspace': !isLandingMode }">
+        <div class="toolbar-left">
+          <span v-if="!isLandingMode" class="event-title">{{ projectTitle }}</span>
+          <div v-if="!isLandingMode" class="view-switcher">
+            <button v-for="mode in viewModes" :key="mode.key" class="switch-btn" :class="{ active: viewMode === mode.key }" @click="viewMode = mode.key">{{ mode.label }}</button>
+          </div>
         </div>
-        <div class="header-right">
-          <div class="status-pill">
+        <div class="toolbar-right">
+          <button type="button" class="history-toggle-btn" :class="{ active: showHistory }" title="历史记录" aria-label="历史记录" @click="showHistory = !showHistory">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>
+            <span>历史记录</span>
+          </button>
+          <div class="status-pill" aria-label="当前流程状态">
             <span class="pill-step">Step {{ currentStep }}/5</span>
             <span class="pill-name">{{ stepNames[currentStep - 1] }}</span>
             <span class="pill-divider">|</span>
             <span class="pill-status">{{ statusText }}</span>
           </div>
         </div>
-      </header>
-
-      <!-- 二级页 Header（完整模式） -->
-      <template v-else>
-        <WorkflowTopbar
-          :currentStep="currentStep"
-          :projectId="projectData?.project_id || currentProjectId"
-          :simulationId="currentSimulationId"
-          :reportId="currentReportId"
-          @missing-report="handleMissingReportNavigation"
-        />
-
-        <header class="app-header workspace-header">
-          <div class="header-left">
-            <span class="event-title">{{ projectTitle }}</span>
-          </div>
-          <div class="header-center">
-            <div class="view-switcher">
-              <button v-for="mode in viewModes" :key="mode.key" class="switch-btn" :class="{ active: viewMode === mode.key }" @click="viewMode = mode.key">{{ mode.label }}</button>
-            </div>
-          </div>
-          <div class="header-right">
-            <span class="step-badge">Step {{ currentStep }}/5</span>
-            <span class="step-label">{{ stepNames[currentStep - 1] }}</span>
-            <span class="step-divider"></span>
-            <span class="status-text">{{ statusText }}</span>
-          </div>
-        </header>
-      </template>
+      </div>
 
       <!-- 首页内容区（Step1 输入/结果阶段） -->
       <div v-if="isLandingMode" class="landing-content">
@@ -173,7 +140,6 @@ import { useRoute, useRouter } from 'vue-router'
 import GraphPanel from '../components/GraphPanel.vue'
 import Step1GraphBuild from '../components/Step1GraphBuild.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
-import WorkflowTopbar from '../components/WorkflowTopbar.vue'
 import { getProject, generateOntology, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
 import { createSimulation, listSimulations } from '../api/simulation'
 import { checkReportStatus } from '../api/report'
@@ -796,54 +762,17 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
   display: flex;
   overflow: hidden;
   font-family: 'Space Grotesk', 'Noto Sans SC', system-ui, sans-serif;
-  background: #FFF;
+  background: #F4F7FC;
+  color: #1A1A2E;
 }
-
-/* 薄左侧图标栏 */
-.icon-sidebar {
-  width: 56px;
-  min-width: 56px;
-  background: #FAFAFA;
-  border-right: 1px solid #EAEAEA;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 0;
-  z-index: 200;
-}
-
-.icon-sidebar-top {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-
-.icon-btn {
-  width: 36px;
-  height: 36px;
-  border: none;
-  background: transparent;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  color: #6B7280;
-  transition: all 0.15s;
-}
-
-.icon-btn:hover { background: #F0F0F0; color: #1A1A2E; }
-.icon-btn.active { background: #EFF6FF; color: #1677FF; }
 
 /* 历史面板 */
 .history-panel {
   width: 0;
   min-width: 0;
   overflow: hidden;
-  background: #FFF;
-  border-right: 1px solid #EAEAEA;
+  background: #F8FAFD;
+  border-right: 1px solid #E2E8F0;
   transition: width 0.25s ease, min-width 0.25s ease;
   display: none;
   flex-direction: column;
@@ -859,7 +788,7 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
 
 .history-panel-header {
   padding: 16px;
-  border-bottom: 1px solid #EAEAEA;
+  border-bottom: 1px solid #E2E8F0;
 }
 
 .new-chat-btn {
@@ -888,7 +817,7 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
 }
 
 .history-section + .history-section {
-  border-top: 1px solid #F0F0F0;
+  border-top: 1px solid #E8EEF6;
   padding-top: 12px;
 }
 
@@ -916,7 +845,7 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
   gap: 4px;
 }
 
-.history-item:hover { background: #F3F4F6; }
+.history-item:hover { background: #EEF4FC; }
 .history-item.active { background: #EFF6FF; }
 
 .history-item-row {
@@ -975,46 +904,79 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  background: #F4F7FC;
+  min-width: 0;
 }
 
-/* Header 通用 */
-.app-header {
-  height: 56px;
-  border-bottom: 1px solid #EAEAEA;
+/* 主页面内状态工具条 */
+.main-toolbar {
+  min-height: 76px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 24px;
-  background: #FFF;
-  z-index: 100;
+  gap: 18px;
+  padding: 16px 32px 6px;
+  background: #F4F7FC;
+  flex-shrink: 0;
+  z-index: 60;
+}
+
+.main-toolbar--workspace {
+  min-height: 86px;
+  padding-bottom: 12px;
+}
+
+.toolbar-left,
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.toolbar-left {
+  gap: 16px;
+  flex: 1;
+}
+
+.toolbar-right {
+  justify-content: flex-end;
+  gap: 12px;
   flex-shrink: 0;
 }
 
-/* 首页 Header */
-.landing-header .header-left { display: flex; align-items: center; }
-
-.landing-header .brand {
-  font-family: 'JetBrains Mono', monospace;
-  font-weight: 800;
-  font-size: 16px;
-  color: #1A1A2E;
-}
-
-.landing-header .header-right {
-  display: flex;
-  align-items: center;
-}
-
+.history-toggle-btn,
 .status-pill {
   display: flex;
   align-items: center;
-  gap: 10px;
+  height: 42px;
   background: #FFF;
-  border: 1px solid #EAEAEA;
-  border-radius: 20px;
-  padding: 8px 20px;
+  border: 1px solid #E2E8F0;
+  border-radius: 999px;
+  box-shadow: 0 10px 28px rgba(30, 58, 138, 0.08);
+}
+
+.history-toggle-btn {
+  gap: 8px;
+  padding: 0 18px;
+  color: #5F6F8A;
   font-size: 13px;
-  box-shadow: 0 1px 6px rgba(0,0,0,0.04);
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.18s ease, color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+  font-family: inherit;
+}
+
+.history-toggle-btn:hover,
+.history-toggle-btn.active {
+  color: #1677FF;
+  border-color: #BBD7FF;
+  background: #F8FBFF;
+}
+
+.status-pill {
+  gap: 10px;
+  padding: 0 22px;
+  font-size: 13px;
 }
 
 .pill-step {
@@ -1028,125 +990,6 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
 
 .pill-status { color: #6B7280; }
 
-/* 二级页顶部流程栏 */
-.workspace-topbar {
-  height: 56px;
-  border-bottom: 1px solid #EAEAEA;
-  background: #FFF;
-  display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto minmax(180px, 1fr);
-  align-items: center;
-  padding: 0 24px;
-  flex-shrink: 0;
-  z-index: 110;
-}
-
-.back-brand-btn {
-  justify-self: start;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  border: none;
-  background: transparent;
-  color: #111827;
-  font-size: 18px;
-  font-weight: 800;
-  cursor: pointer;
-  padding: 8px 4px;
-  transition: color 0.2s;
-}
-
-.back-brand-btn:hover {
-  color: #1677FF;
-}
-
-.workflow-nav {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  min-width: 0;
-  white-space: nowrap;
-}
-
-.workflow-nav-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 12px;
-  color: #9CA3AF;
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.workflow-nav-item.active {
-  color: #1677FF;
-  background: #EFF6FF;
-  box-shadow: 0 8px 20px rgba(22, 119, 255, 0.12);
-  border-radius: 999px;
-  padding: 8px 18px;
-}
-
-.workflow-nav-item.completed {
-  color: #4B5563;
-}
-
-.workflow-nav-arrow {
-  color: #C7CDD8;
-  font-weight: 500;
-}
-
-.topbar-actions {
-  justify-self: end;
-  display: flex;
-  align-items: center;
-  gap: 18px;
-}
-
-.topbar-icon-dot {
-  width: 18px;
-  height: 18px;
-  border: 2px solid #111827;
-  border-radius: 50%;
-  position: relative;
-}
-
-.topbar-icon-dot::after {
-  content: '';
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #EF4444;
-}
-
-.topbar-avatar {
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #2563EB, #A5B4FC);
-}
-
-/* 二级页 Header */
-.workspace-header {
-  min-height: 56px;
-  height: auto;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(180px, 1fr);
-  column-gap: 18px;
-  align-items: center;
-  padding-top: 10px;
-  padding-bottom: 10px;
-}
-
-.workspace-header .header-left {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  min-width: 0;
-}
-
 .event-title {
   font-size: 15px;
   font-weight: 700;
@@ -1155,31 +998,29 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
   min-width: 0;
   overflow-wrap: anywhere;
   white-space: normal;
-}
-
-.workspace-header .header-center {
-  justify-self: center;
-  min-width: max-content;
+  max-width: min(42vw, 620px);
 }
 
 .view-switcher {
   display: flex;
-  background: #F5F5F5;
+  background: #EAF0F8;
   padding: 3px;
-  border-radius: 6px;
+  border-radius: 999px;
   gap: 2px;
+  flex-shrink: 0;
 }
 
 .switch-btn {
   border: none;
   background: transparent;
-  padding: 5px 14px;
+  padding: 7px 14px;
   font-size: 12px;
   font-weight: 600;
-  color: #666;
-  border-radius: 4px;
+  color: #5F6F8A;
+  border-radius: 999px;
   cursor: pointer;
   transition: all 0.2s;
+  font-family: inherit;
 }
 
 .switch-btn.active {
@@ -1187,32 +1028,6 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
   color: #000;
   box-shadow: 0 1px 3px rgba(0,0,0,0.08);
 }
-
-.workspace-header .header-right {
-  display: flex;
-  align-items: center;
-  justify-self: end;
-  gap: 10px;
-  font-size: 13px;
-  white-space: nowrap;
-}
-
-.step-badge {
-  font-family: 'JetBrains Mono', monospace;
-  font-weight: 700;
-  color: #9CA3AF;
-}
-
-.step-label { font-weight: 600; color: #1A1A2E; }
-
-.step-divider {
-  width: 1px;
-  height: 14px;
-  background: #E5E7EB;
-  margin: 0 4px;
-}
-
-.status-text { color: #6B7280; font-size: 12px; }
 
 /* 首页内容区 */
 .landing-content {
@@ -1225,6 +1040,7 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
   flex: 1;
   display: flex;
   overflow: hidden;
+  min-height: 0;
 }
 
 .panel-wrapper {
@@ -1236,60 +1052,47 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
 .panel-wrapper.left { border-right: 1px solid #EAEAEA; }
 
 @media (max-width: 960px) {
-  .workspace-topbar {
-    grid-template-columns: 1fr;
-    height: auto;
-    gap: 10px;
-    padding: 12px 16px;
-  }
-
-  .back-brand-btn,
-  .topbar-actions {
-    display: none;
-  }
-
-  .workflow-nav {
-    overflow-x: auto;
-    justify-content: flex-start;
-  }
-
-  .workspace-header {
-    grid-template-columns: 1fr;
-    gap: 10px;
+  .main-toolbar,
+  .main-toolbar--workspace {
+    min-height: auto;
     align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
     padding: 12px 16px;
   }
 
-  .workspace-header .header-center {
-    justify-self: start;
+  .toolbar-left,
+  .toolbar-right {
+    width: 100%;
+    justify-content: space-between;
+    flex-wrap: wrap;
   }
 
-  .workspace-header .header-right {
-    justify-self: start;
-    flex-wrap: wrap;
-    white-space: normal;
+  .event-title {
+    max-width: 100%;
   }
 }
 
 @media (max-width: 520px) {
-  .app-header.landing-header {
-    height: 56px;
-    padding: 0 12px;
+  .toolbar-right {
     gap: 8px;
   }
 
-  .landing-header .brand {
-    max-width: 72px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 14px;
+  .history-toggle-btn {
+    width: 42px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .history-toggle-btn span {
+    display: none;
   }
 
   .status-pill {
-    max-width: calc(100vw - 136px);
+    flex: 1;
+    min-width: 0;
     gap: 6px;
-    padding: 7px 10px;
+    padding: 0 12px;
     font-size: 12px;
   }
 
