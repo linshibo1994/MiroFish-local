@@ -47,6 +47,15 @@
     <!-- 主内容区 -->
     <div class="main-content">
 
+      <!-- 顶部步骤导航标签 -->
+      <WorkflowTopbar
+        :currentStep="currentStep"
+        :projectId="currentProjectId !== 'new' ? currentProjectId : ''"
+        :simulationId="currentSimulationId"
+        :reportId="currentReportId"
+        @missing-report="handleMissingReportNavigation"
+      />
+
       <!-- 主页面内状态工具条：替代原页面顶栏和左侧导航栏 -->
       <div class="main-toolbar" :class="{ 'main-toolbar--workspace': !isLandingMode }">
         <div class="toolbar-left">
@@ -140,6 +149,7 @@ import { useRoute, useRouter } from 'vue-router'
 import GraphPanel from '../components/GraphPanel.vue'
 import Step1GraphBuild from '../components/Step1GraphBuild.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
+import WorkflowTopbar from '../components/WorkflowTopbar.vue'
 import { getProject, generateOntology, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
 import { createSimulation, listSimulations } from '../api/simulation'
 import { checkReportStatus } from '../api/report'
