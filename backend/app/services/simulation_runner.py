@@ -486,7 +486,7 @@ class SimulationRunner:
         # 初始化运行状态
         time_config = config.get("time_config", {})
         total_hours = time_config.get("total_simulation_hours", 72)
-        minutes_per_round = time_config.get("minutes_per_round", 30)
+        minutes_per_round = time_config.get("minutes_per_round", 60)
         total_rounds = int(total_hours * 60 / minutes_per_round)
         
         # 如果指定了最大轮数，则截断

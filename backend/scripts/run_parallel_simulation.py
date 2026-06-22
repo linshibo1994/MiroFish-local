@@ -1212,7 +1212,7 @@ async def run_twitter_simulation(
     # 主模拟循环
     time_config = config.get("time_config", {})
     total_hours = time_config.get("total_simulation_hours", 72)
-    minutes_per_round = time_config.get("minutes_per_round", 30)
+    minutes_per_round = time_config.get("minutes_per_round", 60)
     total_rounds = (total_hours * 60) // minutes_per_round
     
     # 如果指定了最大轮数，则截断
@@ -1411,7 +1411,7 @@ async def run_reddit_simulation(
     # 主模拟循环
     time_config = config.get("time_config", {})
     total_hours = time_config.get("total_simulation_hours", 72)
-    minutes_per_round = time_config.get("minutes_per_round", 30)
+    minutes_per_round = time_config.get("minutes_per_round", 60)
     total_rounds = (total_hours * 60) // minutes_per_round
     
     # 如果指定了最大轮数，则截断
@@ -1550,7 +1550,7 @@ async def main():
     
     time_config = config.get("time_config", {})
     total_hours = time_config.get('total_simulation_hours', 72)
-    minutes_per_round = time_config.get('minutes_per_round', 30)
+    minutes_per_round = time_config.get('minutes_per_round', 60)
     config_total_rounds = (total_hours * 60) // minutes_per_round
     
     log_manager.info(f"模拟参数:")

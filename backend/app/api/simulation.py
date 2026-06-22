@@ -25,6 +25,10 @@ from ..models.project import ProjectManager
 
 logger = get_logger('mirofish.api.simulation')
 
+SIMULATION_MIN_ROUNDS = 8
+SIMULATION_MAX_ROUNDS = 72
+SIMULATION_ROUND_STEP = 8
+
 
 # Interview prompt 优化前缀
 # 添加此前缀可以避免Agent调用工具，直接用文本回复
@@ -47,6 +51,20 @@ def optimize_interview_prompt(prompt: str) -> str:
     if prompt.startswith(INTERVIEW_PROMPT_PREFIX):
         return prompt
     return f"{INTERVIEW_PROMPT_PREFIX}{prompt}"
+
+
+def validate_max_rounds(value):
+    """校验自定义模拟轮数：8 到 72 轮，且必须按 8 轮递增。"""
+    try:
+        max_rounds = int(value)
+    except (ValueError, TypeError):
+        raise ValueError("max_rounds 必须是有效的整数")
+
+    if max_rounds < SIMULATION_MIN_ROUNDS or max_rounds > SIMULATION_MAX_ROUNDS:
+        raise ValueError(f"max_rounds 必须在 {SIMULATION_MIN_ROUNDS}-{SIMULATION_MAX_ROUNDS} 之间")
+    if max_rounds % SIMULATION_ROUND_STEP != 0:
+        raise ValueError(f"max_rounds 必须是 {SIMULATION_ROUND_STEP} 的倍数")
+    return max_rounds
 
 
 def _resolve_graph_backend(graph_id: str):
@@ -1606,7 +1624,7 @@ def start_simulation():
         {
             "simulation_id": "sim_xxxx",          // 必填，模拟ID
             "platform": "parallel",                // 可选: twitter / reddit / parallel (默认)
-            "max_rounds": 100,                     // 可选: 最大模拟轮数，用于截断过长的模拟
+            "max_rounds": 24,                      // 可选: 最大模拟轮数，8-72且按8轮递增，默认推荐24轮
             "enable_graph_memory_update": false,   // 可选: 是否将Agent活动动态更新到Zep图谱记忆
             "force": false                         // 可选: 强制重新开始（会停止运行中的模拟并清理日志）
         }
@@ -1656,16 +1674,11 @@ def start_simulation():
         # 验证 max_rounds 参数
         if max_rounds is not None:
             try:
-                max_rounds = int(max_rounds)
-                if max_rounds <= 0:
-                    return jsonify({
-                        "success": False,
-                        "error": "max_rounds 必须是正整数"
-                    }), 400
-            except (ValueError, TypeError):
+                max_rounds = validate_max_rounds(max_rounds)
+            except ValueError as e:
                 return jsonify({
                     "success": False,
-                    "error": "max_rounds 必须是有效的整数"
+                    "error": str(e)
                 }), 400
 
         if platform not in ['twitter', 'reddit', 'parallel']:

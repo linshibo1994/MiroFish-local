@@ -28,7 +28,7 @@ def calculate_total_rounds(config: Dict[str, Any]) -> int:
     """根据 time_config 统一计算总轮数。"""
     time_config = config.get("time_config", {}) if isinstance(config, dict) else {}
     total_hours = time_config.get("total_simulation_hours", 72)
-    minutes_per_round = time_config.get("minutes_per_round", 30) or 30
+    minutes_per_round = time_config.get("minutes_per_round", 60) or 60
     return max(1, (total_hours * 60) // minutes_per_round)
 
 

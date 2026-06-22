@@ -85,7 +85,7 @@ class AgentActivityConfig:
 class TimeSimulationConfig:
     """时间模拟配置（基于中国人作息习惯）"""
     # 模拟总时长（模拟小时数）
-    total_simulation_hours: int = 72  # 默认模拟72小时（3天）
+    total_simulation_hours: int = 72  # 默认模拟72小时（3天，上限72轮）
     
     # 每轮代表的时间（模拟分钟）- 默认60分钟（1小时），加快时间流速
     minutes_per_round: int = 60
@@ -607,8 +607,8 @@ class SimulationConfigGenerator:
 }}
 
 字段说明：
-- total_simulation_hours (int): 模拟总时长，24-168小时，突发事件短、持续话题长
-- minutes_per_round (int): 每轮时长，30-120分钟，建议60分钟
+- total_simulation_hours (int): 模拟总时长，固定72小时，对应最多72轮
+- minutes_per_round (int): 每轮时长，固定60分钟（1小时）
 - agents_per_hour_min (int): 每小时最少激活Agent数（取值范围: 1-{max_agents_allowed}）
 - agents_per_hour_max (int): 每小时最多激活Agent数（取值范围: 1-{max_agents_allowed}）
 - peak_hours (int数组): 高峰时段，根据事件参与群体调整
@@ -660,8 +660,8 @@ class SimulationConfigGenerator:
             logger.warning(f"agents_per_hour_min >= max，已修正为 {agents_per_hour_min}")
         
         return TimeSimulationConfig(
-            total_simulation_hours=result.get("total_simulation_hours", 72),
-            minutes_per_round=result.get("minutes_per_round", 60),  # 默认每轮1小时
+            total_simulation_hours=72,
+            minutes_per_round=60,  # 固定每轮1小时，确保72小时对应72轮
             agents_per_hour_min=agents_per_hour_min,
             agents_per_hour_max=agents_per_hour_max,
             peak_hours=result.get("peak_hours", [19, 20, 21, 22]),

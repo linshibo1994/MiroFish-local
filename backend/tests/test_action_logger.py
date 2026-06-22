@@ -42,3 +42,7 @@ def test_platform_logger_total_rounds_respects_minutes_per_round(tmp_path):
     assert entry["event_type"] == "simulation_start"
     assert entry["total_rounds"] == 24
     assert entry["agents_count"] == 2
+
+
+def test_calculate_total_rounds_defaults_to_one_hour_per_round():
+    assert action_logger.calculate_total_rounds({}) == 72
