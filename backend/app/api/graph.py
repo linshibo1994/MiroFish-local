@@ -1402,6 +1402,16 @@ def build_graph():
                             enrichment_error,
                         )
                         enrichment_info["performed"] = False
+
+                    final_node_count = int(enrichment_info.get("final_node_count") or graph_data.get("node_count", 0) or 0)
+                    if final_node_count < entity_target:
+                        raise RuntimeError(
+                            "图谱实体数量未达到最低要求: "
+                            f"当前 {final_node_count}，最低 {entity_target}。"
+                            f"已尝试联网补充，查询数 {len(enrichment_info.get('queries') or [])}，"
+                            f"来源数 {enrichment_info.get('source_count') or 0}。"
+                            f"{'补充错误: ' + enrichment_info.get('error') if enrichment_info.get('error') else ''}"
+                        )
                 
                 # 更新项目状态
                 project.graph_id = graph_id

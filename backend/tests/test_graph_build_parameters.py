@@ -1832,6 +1832,80 @@ def test_graph_build_api_enriches_event_entities_when_below_target(monkeypatch, 
     assert task.progress_detail["entity_enrichment"]["final_node_count"] == 120
 
 
+def test_graph_build_api_fails_when_enrichment_still_below_target(monkeypatch, tmp_path):
+    monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", str(tmp_path))
+    monkeypatch.setattr("app.api.graph.Config.ZEP_BACKEND", "graphiti")
+    monkeypatch.setattr("app.api.graph.Config.GRAPHITI_INGEST_CONCURRENCY", 1)
+    monkeypatch.setattr("app.api.graph.Config.GRAPHITI_EPISODE_BATCH_SIZE", 1)
+    monkeypatch.setattr("app.api.graph.Config.GRAPH_MIN_ENTITY_TARGET", 100)
+    monkeypatch.setattr("app.api.graph.Config.GRAPH_ENTITY_ENRICHMENT_ENABLED", True)
+    monkeypatch.setattr("app.api.graph.Config.GRAPH_ENTITY_ENRICHMENT_QUERY_LIMIT", 1)
+    monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
+
+    class EmptySearchService:
+        def search(self, query, count=None, freshness=None, summary=True):
+            return []
+
+    class FakeBuilder:
+        resolve_batch_plan = staticmethod(GraphBuilderService.resolve_batch_plan)
+
+        def __init__(self, api_key=None, backend=None, build_mode=False):
+            pass
+
+        def create_graph(self, name):
+            return "mirofish_under_target_graph"
+
+        def set_ontology(self, graph_id, ontology):
+            pass
+
+        def add_text_batches(self, graph_id, chunks, batch_size, progress_callback=None, extraction_context=None, concurrency=1):
+            return ["episode_1"]
+
+        def _wait_for_episodes(self, episode_uuids, progress_callback=None):
+            pass
+
+        def get_graph_data(self, graph_id):
+            return {"node_count": 33, "edge_count": 93}
+
+    class InlineThread:
+        def __init__(self, target, daemon=False):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    project = ProjectManager.create_project(name="低实体数测试")
+    project.status = ProjectStatus.ONTOLOGY_GENERATED
+    project.search_query = "低实体数测试事件"
+    project.simulation_requirement = "补充事件相关实体"
+    project.ontology = {
+        "entity_types": [{"name": "Person", "description": "person", "attributes": []}],
+        "edge_types": [],
+    }
+    ProjectManager.save_project(project)
+    ProjectManager.save_extracted_text(project.project_id, "原始文档只包含少量实体。")
+
+    monkeypatch.setattr("app.api.graph.WebSearchProviderFactory.get_provider_name", lambda provider=None: "bailian")
+    monkeypatch.setattr("app.api.graph.WebSearchProviderFactory.create", lambda provider=None: EmptySearchService())
+    monkeypatch.setattr("app.api.graph.GraphBuilderService", FakeBuilder)
+    monkeypatch.setattr("app.api.graph.threading.Thread", InlineThread)
+
+    app = create_app()
+    response = app.test_client().post(
+        "/api/graph/build",
+        json={"project_id": project.project_id, "batch_size": 1, "chunk_size": 300, "concurrency": 1},
+    )
+
+    assert response.status_code == 200
+    task = TaskManager().get_task(response.get_json()["data"]["task_id"])
+    saved_project = ProjectManager.get_project(project.project_id)
+    assert task.status == "failed"
+    assert saved_project.status == ProjectStatus.FAILED
+    assert "图谱实体数量未达到最低要求" in saved_project.error
+    assert task.progress_detail["entity_enrichment"]["initial_node_count"] == 33
+    assert task.progress_detail["entity_enrichment"]["source_count"] == 0
+
+
 def test_graph_extraction_constraints_keep_core_people_and_media_platforms():
     wrapped = GraphBuilderService._wrap_chunk_with_event_constraints(
         "被告人许国利被指控杀害受害人来惠利，小红书和微博出现相关讨论。",
