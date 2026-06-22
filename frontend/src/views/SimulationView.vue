@@ -368,6 +368,7 @@ onMounted(async () => {
 
 .header-left {
   min-width: 0;
+  max-width: min(42vw, 720px);
 }
 
 .event-title {
@@ -472,6 +473,10 @@ onMounted(async () => {
   .header-center,
   .header-right {
     justify-self: start;
+  }
+
+  .header-left {
+    max-width: 100%;
   }
 
   .header-right {
