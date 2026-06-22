@@ -368,8 +368,56 @@ def test_seed_suggestions_normalize_simulation_wording():
     ) == ["可推演事件发酵路径", "推演多方主体回应"]
 
     assert SeedAnalysisService._fallback_suggestions("测试事件", ["主体A"])[0].startswith(
-        "围绕“测试事件”，推演"
+        "追踪测试事件"
     )
+
+
+def test_seed_suggestions_keep_event_focus_short_and_plain():
+    long_text = "追踪小女孩吐槽雷军武汉过早视频的二次传播路径，研判其如何从地方性偶发片段演变为全国性舆论符号，并分析情绪化标签对公众认知的塑造作用。"
+
+    assert SeedAnalysisService._normalize_suggestion_text(long_text) == (
+        "追踪小女孩吐槽雷军武汉过早视频的二次传播路径"
+    )
+
+    material = """
+    雷军在武汉过早时被多人围观拍摄。
+    一名小女孩吐槽吃早餐还要这么多人拍照，引发网友热议。
+    之后相关视频在微博和短视频平台继续传播。
+    """
+    suggestions = SeedAnalysisService._fallback_suggestions("雷军武汉过早事件", ["雷军", "小女孩"], material)
+
+    assert suggestions[0] == "追踪小女孩吐槽吃早餐还要这么多人拍照的二次传播路径"
+    assert "小米汽车" not in "".join(suggestions)
+    assert all(len(suggestion) <= SeedAnalysisService.MAX_SUGGESTION_LENGTH for suggestion in suggestions)
+
+
+def test_seed_suggestions_repair_markdown_structure_fragments():
+    material = """
+    # 雷军武汉过早事件全记录
+    ## 事件概述
+    - 时间：2026年6月15日清晨；6月16日至6月21日（舆情发酵与回应）
+    - 地点：湖北省武汉市武昌区大成路早食街
+    - 核心主体：小米集团创始人雷军、围观群众及一名小女孩
+    - 关键结果：一段小女孩吐槽“吃个早饭还要这么多人拍照，我靠”的视频进一步引爆舆论。
+
+    ### 现场细节与争议萌芽
+    多名市民围观、拍照、请求合影，现场气氛热烈。
+    小女孩吐槽视频在微博和短视频平台传播，引发网友讨论。
+    雷军随后回应称这是流量时代需要承受的代价。
+    """
+    suggestions = SeedAnalysisService._repair_suggestions(
+        [
+            "追踪至6月21日（舆情发酵与回应）-**地点**：湖的二次传播路径",
+            "推演公众对至6月21日（舆情发酵与回应）-**地点**：湖的态度变化",
+        ],
+        topic="雷军武汉过早事件",
+        entity_hints=["雷军", "小女孩"],
+        material=material,
+    )
+
+    assert suggestions[0] == "追踪小女孩吐槽视频的二次传播路径"
+    assert all("地点" not in suggestion for suggestion in suggestions)
+    assert all("**" not in suggestion for suggestion in suggestions)
 
 
 def test_seed_entity_hints_extract_core_people_and_media_platforms():
@@ -410,6 +458,9 @@ def test_seed_auxiliary_prompt_requires_core_people_first():
 
     assert suggestions == ["推演公众反应路径"]
     assert hints == ["许国利", "来惠利", "小红书"]
+    assert "先判断材料里的“事件焦点”" in captured["prompt"]
+    assert "每条建议必须包含材料中出现过的具体锚点" in captured["prompt"]
+    assert "禁止输出脱离事件触发点的方向" in captured["prompt"]
     assert "必须优先覆盖核心人物" in captured["prompt"]
     assert "这些人物即使不是可发声账号也要保留为图谱实体提示" in captured["prompt"]
     assert "媒体/社交平台可以作为平台实体提示" in captured["prompt"]

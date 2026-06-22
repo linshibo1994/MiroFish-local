@@ -27,6 +27,32 @@ class SeedAnalysisService:
     """基于搜索结果或文件文本生成事件摘要和后续模拟建议"""
 
     MAX_MATERIAL_LENGTH = 24000
+    MAX_SUGGESTION_LENGTH = 45
+    SUGGESTION_FOCUS_KEYWORDS = (
+        "吐槽",
+        "质疑",
+        "争议",
+        "投诉",
+        "回应",
+        "辟谣",
+        "道歉",
+        "发酵",
+        "热议",
+        "转发",
+        "曝光",
+        "评论",
+        "围观",
+        "不满",
+        "担忧",
+        "误解",
+    )
+    STRUCTURAL_SUGGESTION_PATTERNS = (
+        r"\*\*[^*]+?\*\*",
+        r"(?:^|[-—])(?:时间|地点|来源|URL|站点|发布时间|阶段|参考来源)[:：]",
+        r"(?:事件发生阶段|舆情发酵与回应|事件概述|当前事件总结|参考来源)",
+        r"^\d{4}年\d{1,2}月\d{1,2}日",
+        r"^至\d{1,2}月\d{1,2}日",
+    )
     WEB_SEARCH_SUMMARY_TEMPLATE = """联网搜索材料需要整理成一份可直接作为“完整事件内容”的中文 Markdown 文档，风格参考深度新闻全记录：
 1. 标题使用“# 事件/主题全记录”，下设“事件概述”先给出时间、地点、核心主体、关键结果。
 2. 按时间线拆成若干阶段，优先使用“## 一、...”和“### 阶段/争议/影响”组织。
@@ -135,7 +161,7 @@ class SeedAnalysisService:
 
 输出 JSON，字段：
 - seed_summary_md: Markdown 字符串；如果是联网搜索输入，必须整理成可直接展示和后续图谱抽取使用的完整事件文档；如果是上传文件输入，生成辅助摘要即可。材料不足时请明确说明不足。
-- simulation_suggestions: 2-3 条可用于后续舆情推演的中文建议，每条必须来自材料可支撑的信息；不要使用“模拟”字样，统一使用“推演”“追踪”“研判”等表达。
+- simulation_suggestions: 2-3 条可用于后续舆情推演的中文建议。每条必须强关联材料中的具体事件触发点、关键插曲、公众吐槽、争议问题或回应动作，避免跳到背景企业、产品线、行业趋势等泛方向；例如材料核心是“小女孩吐槽”，方向就围绕吐槽内容、二次传播和公众反应，不要转成“小米汽车”方向。文字要通俗、简短，每条建议控制在18-36个中文字符左右，最长不超过45个中文字符；不要使用“模拟”字样，统一使用“推演”“追踪”“研判”等表达。
 - entity_hints: 可能进入图谱的关键实体名称列表，必须是材料中原文出现过的人、组织、机构、平台、媒体或关键群体名称。
 
 输入类型：{input_mode}
@@ -157,10 +183,15 @@ class SeedAnalysisService:
         )
 
         summary = str(data.get("seed_summary_md") or "").strip()
-        suggestions = self._clean_suggestion_list(data.get("simulation_suggestions"), limit=3)
         hints = self._filter_entity_hints(
             self._clean_string_list(data.get("entity_hints"), limit=120),
             material,
+        )
+        suggestions = self._repair_suggestions(
+            self._clean_suggestion_list(data.get("simulation_suggestions"), limit=3),
+            topic=topic,
+            entity_hints=hints,
+            material=material,
         )
 
         if not summary:
@@ -221,7 +252,7 @@ class SeedAnalysisService:
         )
 
         if not suggestions:
-            suggestions = self._fallback_suggestions(topic, hints)
+            suggestions = self._fallback_suggestions(topic, hints, f"{summary}\n{material}")
         if not hints:
             hints = self._extract_entity_hints(f"{summary}\n{material}")
 
@@ -253,7 +284,11 @@ class SeedAnalysisService:
 }}
 
 要求：
-- simulation_suggestions 必须适合舆论走向、传播路径或公众反应推演。
+- 先判断材料里的“事件焦点”：优先选择引发关注的具体插曲、吐槽/质疑、争议动作、回应或辟谣，而不是名人/品牌/产品的泛业务方向。
+- simulation_suggestions 必须围绕这个具体焦点，适合舆论走向、传播路径或公众反应推演。
+- 每条建议必须包含材料中出现过的具体锚点（人物、群体、动作、平台、争议词至少一个），让用户一眼看出和事件有关。
+- 文字要通俗、短句化，每条18-36个中文字符左右，最长不超过45个中文字符；不要写长句、套话或学术化表达。
+- 禁止输出脱离事件触发点的方向：不要把“小女孩吐槽”类事件转写成企业产品、汽车业务、资本市场、行业趋势等泛主题。
 - 不要使用“模拟”字样，统一使用“推演”“追踪”“研判”等表达。
 - entity_hints 目标不少于100个；如果材料不足100个，则尽最大可能列出所有与事件相关的具体主体，不要人为截断到少量核心实体。
 - entity_hints 必须优先覆盖核心人物：受害人/被害人、嫌疑人/犯罪嫌疑人、被告人、当事人、主角、亲属等；这些人物即使不是可发声账号也要保留为图谱实体提示。
@@ -269,10 +304,15 @@ class SeedAnalysisService:
                 temperature=0.2,
                 max_tokens=1200,
             )
-            suggestions = self._clean_suggestion_list(data.get("simulation_suggestions"), limit=3)
             hints = self._filter_entity_hints(
                 self._clean_string_list(data.get("entity_hints"), limit=120),
                 f"{summary}\n{material}",
+            )
+            suggestions = self._repair_suggestions(
+                self._clean_suggestion_list(data.get("simulation_suggestions"), limit=3),
+                topic=topic,
+                entity_hints=hints,
+                material=f"{summary}\n{material}",
             )
             return suggestions, hints
         except Exception:
@@ -298,7 +338,7 @@ class SeedAnalysisService:
         ]
         summary_lines.extend([f"- {excerpt}" for excerpt in excerpts] or ["- 材料内容较少，暂无法提炼稳定摘录。"])
 
-        suggestions = self._fallback_suggestions(topic, entity_hints)
+        suggestions = self._fallback_suggestions(topic, entity_hints, material)
         return SeedAnalysisResult(
             seed_summary_md="\n".join(summary_lines),
             simulation_suggestions=suggestions,
@@ -350,15 +390,61 @@ class SeedAnalysisService:
     @classmethod
     def _clean_suggestion_list(cls, value: Any, limit: int) -> List[str]:
         suggestions = cls._clean_string_list(value, limit=limit)
-        return [cls._normalize_suggestion_text(text) for text in suggestions]
+        cleaned = []
+        for text in suggestions:
+            normalized = cls._normalize_suggestion_text(text)
+            if normalized and normalized not in cleaned:
+                cleaned.append(normalized)
+        return cleaned
 
-    @staticmethod
-    def _normalize_suggestion_text(text: str) -> str:
-        return (
-            str(text or "")
+    @classmethod
+    def _normalize_suggestion_text(cls, text: str) -> str:
+        normalized = str(text or "").strip()
+        normalized = re.sub(r"^\s*[-*•\d一二三四五六七八九十]+[.、）)]\s*", "", normalized)
+        normalized = re.sub(r"[*_`]+", "", normalized)
+        normalized = (
+            normalized
             .replace("可模拟", "可推演")
             .replace("模拟", "推演")
         )
+        normalized = re.sub(r"\s+", "", normalized)
+        normalized = normalized.strip(" ，。；;:：、（）()[]【】「」“”\"'\n\t")
+        return cls._limit_suggestion_length(normalized)
+
+    @classmethod
+    def _limit_suggestion_length(cls, text: str) -> str:
+        if len(text) <= cls.MAX_SUGGESTION_LENGTH:
+            return text
+        for separator in ("，", "；", "。", "、", ",", ";", "."):
+            index = text.rfind(separator, 0, cls.MAX_SUGGESTION_LENGTH + 1)
+            if index >= 18:
+                return text[:index].strip(" ，。；;:：、")
+        return text[: cls.MAX_SUGGESTION_LENGTH].strip(" ，。；;:：、")
+
+    @classmethod
+    def _repair_suggestions(
+        cls,
+        suggestions: List[str],
+        topic: str,
+        entity_hints: List[str],
+        material: str,
+    ) -> List[str]:
+        valid = []
+        for suggestion in suggestions:
+            if cls._is_structural_suggestion(suggestion):
+                continue
+            if suggestion and suggestion not in valid:
+                valid.append(suggestion)
+        if valid:
+            return valid[:3]
+        return cls._fallback_suggestions(topic, entity_hints, material)
+
+    @classmethod
+    def _is_structural_suggestion(cls, suggestion: str) -> bool:
+        text = str(suggestion or "").strip()
+        if not text:
+            return True
+        return any(re.search(pattern, text) for pattern in cls.STRUCTURAL_SUGGESTION_PATTERNS)
 
     @staticmethod
     def _filter_entity_hints(hints: Iterable[str], material: str) -> List[str]:
@@ -460,17 +546,106 @@ class SeedAnalysisService:
             excerpts.append(compact[:220])
         return excerpts
 
-    @staticmethod
-    def _fallback_suggestions(topic: str, entity_hints: List[str]) -> List[str]:
+    @classmethod
+    def _fallback_suggestions(cls, topic: str, entity_hints: List[str], material: str = "") -> List[str]:
         subject = topic or "当前材料"
+        focus = cls._extract_event_focus(material) or subject
         if entity_hints:
             joined = "、".join(entity_hints[:3])
             return [
-                f"围绕“{subject}”，推演 {joined} 等主体的信息发布、回应与互动路径。",
-                f"比较“{subject}”中不同主体在事实披露、立场表达和传播节奏上的影响差异。",
-                f"追踪“{subject}”相关信息在关键主体之间扩散、澄清或争议升级的过程。",
+                cls._normalize_suggestion_text(f"追踪{focus}的二次传播路径"),
+                cls._normalize_suggestion_text(f"研判{joined}围绕{focus}的回应"),
+                cls._normalize_suggestion_text(f"推演公众对{focus}的态度变化"),
             ]
         return [
-            f"围绕“{subject}”，推演材料中已出现主体的信息发布、回应与互动路径。",
-            f"比较“{subject}”中不同主体在事实披露、立场表达和传播节奏上的影响差异。",
+            cls._normalize_suggestion_text(f"追踪{focus}的二次传播路径"),
+            cls._normalize_suggestion_text(f"推演公众对{focus}的态度变化"),
         ]
+
+    @classmethod
+    def _extract_event_focus(cls, material: str) -> str:
+        candidates = cls._extract_focus_candidates(material)
+        if not candidates:
+            return ""
+        for keyword in cls.SUGGESTION_FOCUS_KEYWORDS:
+            for candidate in candidates:
+                if keyword in candidate:
+                    return cls._compact_focus_sentence(candidate)
+        return cls._compact_focus_sentence(candidates[0])
+
+    @classmethod
+    def _extract_focus_candidates(cls, material: str) -> List[str]:
+        candidates = []
+        for raw_line in str(material or "").splitlines():
+            line = cls._clean_focus_line(raw_line)
+            if not line:
+                continue
+            for sentence in re.split(r"(?<=[。！？.!?])\s*", line):
+                sentence = sentence.strip()
+                if len(sentence) >= 8 and sentence not in candidates:
+                    candidates.append(sentence)
+        if candidates:
+            return candidates
+
+        compact = re.sub(r"\s+", " ", material or "").strip()
+        return [sentence.strip() for sentence in re.split(r"(?<=[。！？.!?])\s*", compact) if len(sentence.strip()) >= 8]
+
+    @classmethod
+    def _clean_focus_line(cls, line: str) -> str:
+        text = re.sub(r"^\s{0,3}#{1,6}\s*", "", line or "").strip()
+        text = re.sub(r"^\s*[-*•]\s*", "", text).strip()
+        text = re.sub(r"^\s*\d+[.、）)]\s*", "", text).strip()
+        text = re.sub(r"[*_`]+", "", text)
+        text = re.sub(r"https?://\S+", "", text).strip()
+        if not text or re.fullmatch(r"[-|:\s]+", text):
+            return ""
+        if re.match(r"^(检索词|来源|站点|发布时间|URL|参考来源|时间|地点)[:：]", text):
+            return ""
+        text = re.sub(r"^(关键结果|关键插曲|现场细节|舆论争议|官方回应|争议萌芽|背景与行程)[:：]\s*", "", text)
+        if re.fullmatch(r"[一二三四五六七八九十]+、.+", text):
+            return ""
+        return text
+
+    @classmethod
+    def _compact_focus_sentence(cls, sentence: str) -> str:
+        focus = re.sub(r"^[#>\-\s\d、.）)]+", "", sentence or "")
+        focus = re.sub(r"https?://\S+", "", focus)
+        focus = focus.strip(" ，。；;:：、（）()[]【】「」“”\"'\n\t")
+        focus = re.sub(r"^(一|二|两|三|\d+)(段|条|则|篇|个)", "", focus)
+        focus = re.sub(r"^(一|二|两|三|\d+)(名|位|个)", "", focus)
+        short_focus = cls._extract_short_focus_phrase(focus)
+        if short_focus:
+            return short_focus
+        clauses = [clause.strip(" ，。；;:：、") for clause in re.split(r"[，,；;。]", focus) if clause.strip()]
+        focused_clause = next(
+            (clause for clause in clauses if any(keyword in clause for keyword in cls.SUGGESTION_FOCUS_KEYWORDS)),
+            "",
+        )
+        if focused_clause:
+            focus = focused_clause
+        if len(focus) <= 26:
+            return focus
+        for keyword in cls.SUGGESTION_FOCUS_KEYWORDS:
+            index = focus.find(keyword)
+            if index >= 0:
+                start = max(0, index - 12)
+                end = min(len(focus), index + len(keyword) + 12)
+                return focus[start:end].strip(" ，。；;:：、")
+        for separator in ("，", "；", "、", ",", ";"):
+            index = focus.find(separator)
+            if 8 <= index <= 26:
+                return focus[:index].strip(" ，。；;:：、")
+        return focus[:26].strip(" ，。；;:：、")
+
+    @classmethod
+    def _extract_short_focus_phrase(cls, focus: str) -> str:
+        text = re.sub(r"[“”\"']", "", focus or "")
+        patterns = [
+            r"([\u4e00-\u9fff]{1,8}(?:女孩|男孩|女子|男子|老人|网友|市民|游客|顾客|员工|用户|车主|消费者|群众).{0,4}吐槽).{0,40}?视频",
+            r"([\u4e00-\u9fff]{1,8}(?:女孩|男孩|女子|男子|老人|网友|市民|游客|顾客|员工|用户|车主|消费者|群众).{0,4}(?:质疑|投诉|评论)).{0,40}?视频",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return f"{match.group(1)}视频"
+        return ""
