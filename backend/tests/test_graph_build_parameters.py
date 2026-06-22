@@ -1,6 +1,8 @@
 import asyncio
+import sys
 import threading
 import time
+import types
 
 from app.config import Config
 from app import create_app
@@ -157,6 +159,49 @@ def test_graphiti_client_close_is_idempotent(monkeypatch):
     assert client._graphiti is None
     assert client._driver is None
     assert client._initialized is False
+
+
+def test_graphiti_ontology_is_not_used_as_hard_entity_type_constraint(monkeypatch):
+    from app.services import zep_graphiti_impl
+    from app.services.zep_graphiti_impl import GraphitiClient
+
+    captured = {}
+
+    class FakeEpisode:
+        uuid = "episode-open-types"
+
+    class FakeAddResult:
+        episode = FakeEpisode()
+
+    class FakeGraphiti:
+        async def add_episode(self, **kwargs):
+            captured.update(kwargs)
+            return FakeAddResult()
+
+    fake_graphiti_core = types.ModuleType("graphiti_core")
+    fake_graphiti_core.__path__ = []
+    fake_nodes = types.ModuleType("graphiti_core.nodes")
+    fake_nodes.EpisodeType = type("EpisodeType", (), {"text": "text", "message": "message", "json": "json"})
+    monkeypatch.setitem(sys.modules, "graphiti_core", fake_graphiti_core)
+    monkeypatch.setitem(sys.modules, "graphiti_core.nodes", fake_nodes)
+    monkeypatch.setattr(zep_graphiti_impl, "_run_async", lambda coro: asyncio.run(coro))
+
+    client = GraphitiClient("bolt://unused", "neo4j", "password")
+    client._graphiti = FakeGraphiti()
+    client._initialized = True
+    client.set_ontology(
+        ["graph-open"],
+        entities=[{"name": "Person", "attributes": []}],
+        edges=[{"name": "REPORTS_ON", "source_targets": [{"source": "Person", "target": "Organization"}]}],
+    )
+
+    episode_uuid = client.add_episode("graph-open", "材料出现了新的自定义主体类型。")
+
+    assert episode_uuid == "episode-open-types"
+    assert client._ontology_cache["graph-open"]["schema_hints"]["entities"][0]["name"] == "Person"
+    assert captured["entity_types"] is None
+    assert captured["edge_types"] is None
+    assert captured["edge_type_map"] is None
 
 
 def test_graphiti_embedding_throttle_waits_between_requests(monkeypatch):
@@ -1090,7 +1135,9 @@ def test_graph_builder_wraps_chunks_with_event_relevance_constraints(monkeypatch
     assert "事件主题：张雪机车事件" in wrapped
     assert "推演方向：推演赛事争议后续舆情走向" in wrapped
     assert "张雪、张雪机车、法国车手瓦伦丁·德比斯、WSBK、820RR-RS" in wrapped
-    assert "网易游戏、阴阳师等无关实体即使出现在材料杂讯中也不要入图" in wrapped
+    assert "实体数量目标下限为100+" in wrapped
+    assert "实体类型完全开放" in wrapped
+    assert "仅作为背景噪音或广告推荐出现的无关实体可以忽略" in wrapped
     assert "# 文档文本块（唯一事实来源）" in wrapped
     assert "网易游戏广告出现在页面侧栏" in wrapped
 
@@ -1602,6 +1649,7 @@ def test_graph_build_api_passes_project_event_context_to_episodes(monkeypatch, t
     monkeypatch.setattr("app.api.graph.Config.ZEP_BACKEND", "graphiti")
     monkeypatch.setattr("app.api.graph.Config.GRAPHITI_INGEST_CONCURRENCY", 1)
     monkeypatch.setattr("app.api.graph.Config.GRAPHITI_EPISODE_BATCH_SIZE", 1)
+    monkeypatch.setattr("app.api.graph.Config.GRAPH_ENTITY_ENRICHMENT_ENABLED", False)
     monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
 
     captured = {}
@@ -1677,8 +1725,111 @@ def test_graph_build_api_passes_project_event_context_to_episodes(monkeypatch, t
     assert captured["batch_size"] == 1
     assert captured["concurrency"] == 1
     assert "法国车手瓦伦丁·德比斯" in captured["extraction_context"]["entity_hints"]
-    assert "网易游戏、阴阳师等无关实体即使出现在材料杂讯中也不要入图" in captured["wrapped_episode"]
+    assert "实体数量目标下限为100+" in captured["wrapped_episode"]
+    assert "实体类型完全开放" in captured["wrapped_episode"]
     assert "张雪驾驶820RR-RS参加相关赛事讨论" in captured["wrapped_episode"]
+
+
+def test_graph_build_api_enriches_event_entities_when_below_target(monkeypatch, tmp_path):
+    from app.services.bocha_search_service import SearchSource
+
+    monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", str(tmp_path))
+    monkeypatch.setattr("app.api.graph.Config.ZEP_BACKEND", "graphiti")
+    monkeypatch.setattr("app.api.graph.Config.GRAPHITI_INGEST_CONCURRENCY", 1)
+    monkeypatch.setattr("app.api.graph.Config.GRAPHITI_EPISODE_BATCH_SIZE", 1)
+    monkeypatch.setattr("app.api.graph.Config.GRAPH_MIN_ENTITY_TARGET", 100)
+    monkeypatch.setattr("app.api.graph.Config.GRAPH_ENTITY_ENRICHMENT_ENABLED", True)
+    monkeypatch.setattr("app.api.graph.Config.GRAPH_ENTITY_ENRICHMENT_QUERY_LIMIT", 2)
+    monkeypatch.setattr("app.api.graph.Config.GRAPH_ENTITY_ENRICHMENT_SEARCH_COUNT", 2)
+    monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
+
+    captured = {"add_calls": []}
+
+    class FakeSearchService:
+        def search(self, query, count=None, freshness=None, summary=True):
+            captured.setdefault("queries", []).append(query)
+            return [
+                SearchSource(
+                    title="小女孩呕吐槽事件后续",
+                    url=f"https://example.com/{len(captured['queries'])}",
+                    snippet="小女孩、家属、武汉地铁、网友、媒体机构、小米YU7车主参与讨论。",
+                    summary="材料补充了平台、媒体、当事人家属、监管和公众群体等相关实体。",
+                    site_name="示例媒体",
+                )
+            ]
+
+    class FakeBuilder:
+        resolve_batch_plan = staticmethod(GraphBuilderService.resolve_batch_plan)
+
+        def __init__(self, api_key=None, backend=None, build_mode=False):
+            self.graph_reads = 0
+
+        def create_graph(self, name):
+            return "mirofish_enriched_graph"
+
+        def set_ontology(self, graph_id, ontology):
+            pass
+
+        def add_text_batches(self, graph_id, chunks, batch_size, progress_callback=None, extraction_context=None, concurrency=1):
+            captured["add_calls"].append({
+                "chunks": chunks,
+                "extraction_context": extraction_context,
+            })
+            return [f"episode_{len(captured['add_calls'])}"]
+
+        def _wait_for_episodes(self, episode_uuids, progress_callback=None):
+            pass
+
+        def get_graph_data(self, graph_id):
+            self.graph_reads += 1
+            if self.graph_reads == 1:
+                return {"node_count": 33, "edge_count": 93}
+            return {"node_count": 120, "edge_count": 220}
+
+    class InlineThread:
+        def __init__(self, target, daemon=False):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    project = ProjectManager.create_project(name="小女孩呕吐槽视频事件")
+    project.status = ProjectStatus.ONTOLOGY_GENERATED
+    project.search_query = "小女孩呕吐槽视频二次传播"
+    project.simulation_requirement = "追踪地方性偶发片段演变为全国性舆论符号"
+    project.seed_summary_md = "材料围绕小女孩、家属、地铁、媒体和小米YU7车主讨论展开。"
+    project.entity_hints = ["小女孩", "家属", "武汉地铁", "小米YU7车主"]
+    project.ontology = {
+        "entity_types": [{"name": "Person", "description": "person", "attributes": []}],
+        "edge_types": [],
+    }
+    ProjectManager.save_project(project)
+    ProjectManager.save_extracted_text(project.project_id, "原始文档只包含少量实体。")
+
+    monkeypatch.setattr("app.api.graph.WebSearchProviderFactory.get_provider_name", lambda provider=None: "bailian")
+    monkeypatch.setattr("app.api.graph.WebSearchProviderFactory.create", lambda provider=None: FakeSearchService())
+    monkeypatch.setattr("app.api.graph.GraphBuilderService", FakeBuilder)
+    monkeypatch.setattr("app.api.graph.threading.Thread", InlineThread)
+
+    app = create_app()
+    response = app.test_client().post(
+        "/api/graph/build",
+        json={"project_id": project.project_id, "batch_size": 1, "chunk_size": 300, "concurrency": 1},
+    )
+
+    assert response.status_code == 200
+    task = TaskManager().get_task(response.get_json()["data"]["task_id"])
+    enrichment = task.result["entity_enrichment"]
+    assert enrichment["target_node_count"] == 100
+    assert enrichment["initial_node_count"] == 33
+    assert enrichment["final_node_count"] == 120
+    assert enrichment["performed"] is True
+    assert enrichment["source_count"] == 2
+    assert len(captured["add_calls"]) == 2
+    assert "事件相关联网补充材料" in captured["add_calls"][1]["chunks"][0]
+    assert "小女孩呕吐槽事件后续" in captured["add_calls"][1]["chunks"][0]
+    assert "武汉地铁" in captured["add_calls"][1]["extraction_context"]["entity_hints"]
+    assert task.progress_detail["entity_enrichment"]["final_node_count"] == 120
 
 
 def test_graph_extraction_constraints_keep_core_people_and_media_platforms():
@@ -1694,6 +1845,8 @@ def test_graph_extraction_constraints_keep_core_people_and_media_platforms():
 
     assert "核心人物必须优先抽取" in wrapped
     assert "受害人/被害人、嫌疑人/犯罪嫌疑人、被告人、当事人" in wrapped
+    assert "实体数量目标下限为100+" in wrapped
+    assert "实体类型完全开放" in wrapped
     assert "图谱实体不等于最终人设 Agent" in wrapped
     assert "优先使用文本中出现的全名作为实体名称" in wrapped
     assert "必须保留为 MediaPlatform/SocialMediaPlatform/Media" in wrapped
@@ -1705,6 +1858,7 @@ def test_graph_build_api_records_requested_and_effective_batch_plan(monkeypatch,
     monkeypatch.setattr("app.api.graph.Config.ZEP_BACKEND", "graphiti")
     monkeypatch.setattr("app.api.graph.Config.GRAPHITI_EPISODE_BATCH_SIZE", 1)
     monkeypatch.setattr("app.api.graph.Config.GRAPHITI_INGEST_CONCURRENCY", 1)
+    monkeypatch.setattr("app.api.graph.Config.GRAPH_ENTITY_ENRICHMENT_ENABLED", False)
 
     class InlineBuilder:
         resolve_batch_plan = staticmethod(GraphBuilderService.resolve_batch_plan)
@@ -1790,6 +1944,7 @@ def test_graph_build_api_records_single_llm_fallback_observability(monkeypatch, 
     monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", str(tmp_path))
     monkeypatch.setattr("app.api.graph.Config.ZEP_BACKEND", "cloud")
     monkeypatch.setattr("app.api.graph.Config.ZEP_API_KEY", "test-zep-key")
+    monkeypatch.setattr("app.api.graph.Config.GRAPH_ENTITY_ENRICHMENT_ENABLED", False)
 
     class InlineBuilder:
         resolve_batch_plan = staticmethod(GraphBuilderService.resolve_batch_plan)
@@ -1854,6 +2009,7 @@ def test_graph_build_api_records_single_llm_fallback_observability(monkeypatch, 
 def test_graph_build_api_persists_graph_id_for_build_preview(monkeypatch, tmp_path):
     monkeypatch.setattr(ProjectManager, "PROJECTS_DIR", str(tmp_path))
     monkeypatch.setattr("app.api.graph.Config.ZEP_BACKEND", "graphiti")
+    monkeypatch.setattr("app.api.graph.Config.GRAPH_ENTITY_ENRICHMENT_ENABLED", False)
 
     class FailingBuilder:
         resolve_batch_plan = staticmethod(GraphBuilderService.resolve_batch_plan)

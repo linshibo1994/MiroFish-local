@@ -727,8 +727,9 @@ class GraphitiClient(ZepClientAdapter):
         设置图谱本体
 
         Graphiti 不提供与 Zep Cloud 完全等价的图级 ontology 注册接口。
-        当前实现会在应用层归一化 ontology，并在 add_episode/add_episode_batch
-        时作为自定义 entity_types/edge_types/edge_type_map 注入 ingestion。
+        当前实现会缓存 ontology 作为诊断和提示词参考，但不会再把它作为
+        Graphiti ingestion 的硬枚举约束。Step1 事件图谱需要尽可能完整抽取
+        事件相关实体，实体类型不应被本体生成阶段的有限类型集合截断。
 
         仍未对齐的部分：
         - 图级持久化约束/索引管理
@@ -736,15 +737,19 @@ class GraphitiClient(ZepClientAdapter):
         """
         for graph_id in graph_ids:
             self._ontology_cache[graph_id] = {
-                "entities": self._normalize_entity_types(entities),
-                "edges": self._normalize_edge_types(edges),
-                "edge_type_map": self._build_edge_type_map(edges),
+                "entities": {},
+                "edges": {},
+                "edge_type_map": {},
                 "excluded_entity_types": [],
+                "schema_hints": {
+                    "entities": entities or [],
+                    "edges": edges or [],
+                },
             }
             logger.info(
-                f"Ontology 已缓存: graph_id={graph_id}, "
-                f"entity_types={len(self._ontology_cache[graph_id]['entities'])}, "
-                f"edge_types={len(self._ontology_cache[graph_id]['edges'])}"
+                f"Ontology 已缓存为开放抽取提示: graph_id={graph_id}, "
+                f"entity_type_hints={len(entities or [])}, "
+                f"edge_type_hints={len(edges or [])}"
             )
 
     def set_ontology_from_cache(self, graph_id: str, source_client: Any) -> None:

@@ -139,6 +139,135 @@ def _merge_task_progress_detail(task_manager: TaskManager, task_id: str, **updat
     return detail
 
 
+def _dedupe_text_items(items, limit: int = 120) -> list:
+    """按顺序去重文本列表。"""
+    result = []
+    seen = set()
+    for item in items or []:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _build_entity_enrichment_queries(project, graph_name: str) -> list:
+    """根据事件主题、推演方向和已有实体提示生成补充检索词。"""
+    topic = project.search_query or project.name or graph_name or "舆情事件"
+    requirement = project.simulation_requirement or ""
+    hints = " ".join((project.entity_hints or [])[:12])
+    base_query = " ".join(part for part in [topic, requirement, hints] if part).strip()
+    queries = [
+        base_query,
+        f"{topic} 相关人物 机构 媒体 平台 舆论 争议 官方回应",
+        f"{topic} 时间线 当事人 组织 传播路径 评论",
+    ]
+    return _dedupe_text_items(queries, limit=max(1, int(Config.GRAPH_ENTITY_ENRICHMENT_QUERY_LIMIT or 1)))
+
+
+def _search_entity_enrichment_sources(project, graph_name: str) -> tuple[list, list, str]:
+    """联网检索事件相关补充来源，失败时返回空来源和错误摘要。"""
+    if not Config.GRAPH_ENTITY_ENRICHMENT_ENABLED:
+        return [], [], "补充检索已关闭"
+
+    queries = _build_entity_enrichment_queries(project, graph_name)
+    if not queries:
+        return [], [], "未生成有效补充检索词"
+
+    try:
+        provider_name = WebSearchProviderFactory.get_provider_name()
+        search_service = WebSearchProviderFactory.create()
+    except Exception as exc:
+        return queries, [], f"补充检索服务初始化失败: {exc}"
+
+    sources = []
+    seen_urls = set()
+    max_sources = max(1, int(Config.GRAPH_ENTITY_ENRICHMENT_MAX_SOURCES or 1))
+    per_query_count = max(1, int(Config.GRAPH_ENTITY_ENRICHMENT_SEARCH_COUNT or 1))
+    errors = []
+    for query in queries:
+        try:
+            results = search_service.search(query=query, count=per_query_count, summary=True)
+        except Exception as exc:
+            errors.append(f"{query}: {exc}")
+            continue
+        for source in results or []:
+            source_dict = source.to_dict() if hasattr(source, "to_dict") else dict(source or {})
+            url = str(source_dict.get("url") or "").strip()
+            dedupe_key = url or str(source_dict.get("title") or "").strip()
+            if not dedupe_key or dedupe_key in seen_urls:
+                continue
+            seen_urls.add(dedupe_key)
+            source_dict["enrichment_query"] = query
+            source_dict["web_search_provider"] = provider_name
+            sources.append(source_dict)
+            if len(sources) >= max_sources:
+                break
+        if len(sources) >= max_sources:
+            break
+
+    error_summary = "；".join(errors[:3])
+    return queries, sources, error_summary
+
+
+def _build_entity_enrichment_material(project, sources: list, graph_name: str) -> str:
+    """把联网来源压缩为可写入 Graphiti 的补充事件材料。"""
+    if not sources:
+        return ""
+
+    lines = [
+        "# 事件相关联网补充材料",
+        "",
+        "以下材料用于补足原始文档未覆盖的事件相关实体。只抽取与事件主题、推演方向或已知关键实体存在明确关联的主体。",
+        "",
+        f"- 事件主题：{project.search_query or project.name or graph_name}",
+        f"- 推演方向：{project.simulation_requirement or '未提供'}",
+    ]
+    if project.entity_hints:
+        lines.append(f"- 已知关键实体：{'、'.join(project.entity_hints[:80])}")
+    lines.append("")
+
+    for idx, source in enumerate(sources, 1):
+        title = source.get("title") or "未命名来源"
+        url = source.get("url") or ""
+        site_name = source.get("site_name") or source.get("siteName") or ""
+        date_published = source.get("date_published") or source.get("datePublished") or ""
+        query = source.get("enrichment_query") or ""
+        snippet = source.get("snippet") or ""
+        summary = source.get("summary") or ""
+        lines.extend([
+            f"## 补充来源 {idx}: {title}",
+            f"- 检索词：{query}" if query else "",
+            f"- 站点：{site_name}" if site_name else "",
+            f"- 发布时间：{date_published}" if date_published else "",
+            f"- URL：{url}" if url else "",
+            f"- 摘要片段：{snippet}" if snippet else "",
+            f"- 来源总结：{summary}" if summary else "",
+            "",
+        ])
+
+    material = "\n".join(line for line in lines if line is not None).strip()
+    max_chars = max(1000, int(Config.GRAPH_ENTITY_ENRICHMENT_MAX_MATERIAL_CHARS or 1000))
+    return material[:max_chars]
+
+
+def _extend_entity_hints_from_sources(existing_hints: list, sources: list) -> list:
+    """从补充来源摘要中提取更多实体提示。"""
+    material_parts = []
+    for source in sources or []:
+        material_parts.extend([
+            str(source.get("title") or ""),
+            str(source.get("snippet") or ""),
+            str(source.get("summary") or ""),
+            str(source.get("site_name") or source.get("siteName") or ""),
+        ])
+    extracted = SeedAnalysisService._extract_entity_hints("\n".join(material_parts))
+    return _dedupe_text_items([*(existing_hints or []), *extracted], limit=160)
+
+
 def _get_graph_build_llm_observability(builder=None) -> dict:
     """读取图谱构建 LLM 路由观测信息，兼容单模型和未来 Builder 实现。"""
     fallback = {
@@ -1182,6 +1311,97 @@ def build_graph():
                 graph_data_started_at = time.monotonic()
                 graph_data = builder.get_graph_data(graph_id)
                 graph_data_elapsed = time.monotonic() - graph_data_started_at
+                initial_node_count = graph_data.get("node_count", 0)
+                entity_target = max(0, int(Config.GRAPH_MIN_ENTITY_TARGET or 0))
+                enrichment_info = {
+                    "enabled": bool(Config.GRAPH_ENTITY_ENRICHMENT_ENABLED),
+                    "target_node_count": entity_target,
+                    "initial_node_count": initial_node_count,
+                    "performed": False,
+                    "queries": [],
+                    "source_count": 0,
+                    "final_node_count": initial_node_count,
+                    "error": "",
+                }
+
+                if Config.GRAPH_ENTITY_ENRICHMENT_ENABLED and entity_target and initial_node_count < entity_target:
+                    task_manager.update_task(
+                        task_id,
+                        message=f"当前实体数 {initial_node_count}，低于目标 {entity_target}，正在联网补充事件相关材料...",
+                        progress=96,
+                        progress_detail=_merge_task_progress_detail(
+                            task_manager,
+                            task_id,
+                            current_stage="entity_enrichment_search",
+                            entity_enrichment=enrichment_info,
+                        )
+                    )
+                    enrichment_queries, enrichment_sources, enrichment_error = _search_entity_enrichment_sources(project, graph_name)
+                    enrichment_info.update({
+                        "performed": bool(enrichment_sources),
+                        "queries": enrichment_queries,
+                        "source_count": len(enrichment_sources),
+                        "error": enrichment_error,
+                    })
+                    enrichment_material = _build_entity_enrichment_material(project, enrichment_sources, graph_name)
+
+                    if enrichment_material:
+                        enrichment_chunks = TextProcessor.split_text(
+                            enrichment_material,
+                            chunk_size=chunk_size,
+                            overlap=chunk_overlap,
+                        )
+                        enrichment_context = dict(extraction_context)
+                        enrichment_context["entity_hints"] = _extend_entity_hints_from_sources(
+                            extraction_context.get("entity_hints") or [],
+                            enrichment_sources,
+                        )
+                        enrichment_context["seed_summary"] = "\n".join(
+                            part for part in [
+                                extraction_context.get("seed_summary") or "",
+                                "联网补充材料用于补足原始文档未覆盖的事件相关人物、机构、媒体、平台和公众群体。",
+                            ]
+                            if part
+                        )
+
+                        task_manager.update_task(
+                            task_id,
+                            message=f"正在写入 {len(enrichment_sources)} 条联网补充来源，继续扩展图谱实体...",
+                            progress=97,
+                            progress_detail=_merge_task_progress_detail(
+                                task_manager,
+                                task_id,
+                                current_stage="entity_enrichment_ingest",
+                                entity_enrichment=enrichment_info,
+                            )
+                        )
+                        enrichment_started_at = time.monotonic()
+                        enrichment_episode_uuids = builder.add_text_batches(
+                            graph_id,
+                            enrichment_chunks,
+                            batch_size=effective_batch_size,
+                            progress_callback=None,
+                            extraction_context=enrichment_context,
+                            concurrency=effective_concurrency,
+                        )
+                        builder._wait_for_episodes(enrichment_episode_uuids)
+                        enrichment_info["ingest_elapsed_seconds"] = round(time.monotonic() - enrichment_started_at, 1)
+                        enrichment_info["chunk_count"] = len(enrichment_chunks)
+                        enrichment_info["episode_count"] = len(enrichment_episode_uuids)
+
+                        graph_data_started_at = time.monotonic()
+                        graph_data = builder.get_graph_data(graph_id)
+                        graph_data_elapsed = time.monotonic() - graph_data_started_at
+                        enrichment_info["final_node_count"] = graph_data.get("node_count", 0)
+                    else:
+                        build_logger.warning(
+                            "[%s] 实体补充检索未获得可写入材料: graph_id=%s, queries=%s, error=%s",
+                            task_id,
+                            graph_id,
+                            enrichment_queries,
+                            enrichment_error,
+                        )
+                        enrichment_info["performed"] = False
                 
                 # 更新项目状态
                 project.graph_id = graph_id
@@ -1207,6 +1427,12 @@ def build_graph():
                     status=TaskStatus.COMPLETED,
                     message="图谱构建完成",
                     progress=100,
+                    progress_detail=_merge_task_progress_detail(
+                        task_manager,
+                        task_id,
+                        current_stage="completed",
+                        entity_enrichment=enrichment_info,
+                    ),
                     result={
                         "project_id": project_id,
                         "graph_id": graph_id,
@@ -1218,6 +1444,7 @@ def build_graph():
                         "bulk_ingest_enabled": bulk_ingest_enabled,
                         "requested_batch_size": batch_size,
                         "requested_concurrency": graph_build_concurrency,
+                        "entity_enrichment": enrichment_info,
                         "ingest_elapsed_seconds": round(ingest_elapsed, 1),
                         "load_graph_elapsed_seconds": round(graph_data_elapsed, 1),
                         "total_elapsed_seconds": round(total_elapsed, 1),

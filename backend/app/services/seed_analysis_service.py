@@ -159,7 +159,7 @@ class SeedAnalysisService:
         summary = str(data.get("seed_summary_md") or "").strip()
         suggestions = self._clean_suggestion_list(data.get("simulation_suggestions"), limit=3)
         hints = self._filter_entity_hints(
-            self._clean_string_list(data.get("entity_hints"), limit=30),
+            self._clean_string_list(data.get("entity_hints"), limit=120),
             material,
         )
 
@@ -228,7 +228,7 @@ class SeedAnalysisService:
         return SeedAnalysisResult(
             seed_summary_md=summary,
             simulation_suggestions=suggestions[:3],
-            entity_hints=self._filter_entity_hints(hints, f"{summary}\n{material}")[:30],
+            entity_hints=self._filter_entity_hints(hints, f"{summary}\n{material}")[:120],
             seed_metadata={},
         )
 
@@ -255,8 +255,9 @@ class SeedAnalysisService:
 要求：
 - simulation_suggestions 必须适合舆论走向、传播路径或公众反应推演。
 - 不要使用“模拟”字样，统一使用“推演”“追踪”“研判”等表达。
-- entity_hints 不超过30个，必须来自文档或材料原文。
+- entity_hints 目标不少于100个；如果材料不足100个，则尽最大可能列出所有与事件相关的具体主体，不要人为截断到少量核心实体。
 - entity_hints 必须优先覆盖核心人物：受害人/被害人、嫌疑人/犯罪嫌疑人、被告人、当事人、主角、亲属等；这些人物即使不是可发声账号也要保留为图谱实体提示。
+- entity_hints 必须继续覆盖政府/监管、学校/单位、企业/品牌、媒体/自媒体、社交平台、社区/社群、公众群体、专家/KOL、赛事/组织等具体相关主体。
 - 小红书、微博、抖音、豆瓣、知乎等媒体/社交平台可以作为平台实体提示，但不要当作个人。
 
 主题：{topic}
@@ -270,7 +271,7 @@ class SeedAnalysisService:
             )
             suggestions = self._clean_suggestion_list(data.get("simulation_suggestions"), limit=3)
             hints = self._filter_entity_hints(
-                self._clean_string_list(data.get("entity_hints"), limit=30),
+                self._clean_string_list(data.get("entity_hints"), limit=120),
                 f"{summary}\n{material}",
             )
             return suggestions, hints
@@ -376,7 +377,7 @@ class SeedAnalysisService:
                 candidate = cls._normalize_person_hint(match)
                 if cls._is_valid_person_hint(candidate) and candidate not in hints:
                     hints.append(candidate)
-                if len(hints) >= 20:
+                if len(hints) >= 120:
                     return hints
 
         patterns = [
@@ -389,7 +390,7 @@ class SeedAnalysisService:
                 candidate = cls._normalize_entity_hint(match)
                 if 2 <= len(candidate) <= 40 and candidate not in hints:
                     hints.append(candidate)
-                if len(hints) >= 20:
+                if len(hints) >= 120:
                     return hints
         return hints
 
