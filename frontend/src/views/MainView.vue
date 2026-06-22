@@ -29,9 +29,10 @@
 
         <section class="history-section">
           <div class="history-section-title">项目会话</div>
-          <div v-if="sessions.length === 0" class="history-empty">暂无项目会话</div>
+          <div v-if="projectSessionsLoading" class="history-empty">正在加载项目会话...</div>
+          <div v-else-if="projectSessions.length === 0" class="history-empty">暂无项目会话</div>
         <div
-          v-for="session in sessions"
+          v-for="session in projectSessions"
           :key="session.projectId"
           class="history-item"
           :class="{ active: currentProjectId === session.projectId }"
@@ -150,7 +151,7 @@ import GraphPanel from '../components/GraphPanel.vue'
 import Step1GraphBuild from '../components/Step1GraphBuild.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
 import WorkflowTopbar from '../components/WorkflowTopbar.vue'
-import { getProject, generateOntology, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
+import { getProject, generateOntology, buildGraph, getTaskStatus, getGraphData, listProjects } from '../api/graph'
 import { createSimulation, listSimulations } from '../api/simulation'
 import { checkReportStatus } from '../api/report'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
@@ -190,6 +191,10 @@ const envSetupStatus = ref('processing')
 const simulationHistory = ref([])
 const simulationHistoryLoading = ref(false)
 
+// 服务端项目会话列表（替代 localStorage，跨浏览器共享）
+const projectSessions = ref([])
+const projectSessionsLoading = ref(false)
+
 const sessions = ref(getSessions())
 
 const isLandingMode = computed(() => currentStep.value === 1 && currentPhase.value < 0 && !projectData.value?.ontology)
@@ -199,6 +204,30 @@ const projectTitle = computed(() => {
 })
 
 const refreshSessions = () => { sessions.value = getSessions() }
+
+/** 从服务端加载项目列表作为会话历史（跨浏览器共享） */
+const loadProjectSessions = async () => {
+  projectSessionsLoading.value = true
+  try {
+    const res = await listProjects(50)
+    if (res.success && Array.isArray(res.data)) {
+      // 将服务端项目数据映射为会话格式
+      projectSessions.value = res.data.map(p => ({
+        id: p.project_id,
+        title: p.name || '未命名项目',
+        projectId: p.project_id,
+        createdAt: new Date(p.created_at).getTime(),
+        updatedAt: new Date(p.updated_at).getTime()
+      })).sort((a, b) => b.updatedAt - a.updatedAt)
+    }
+  } catch (err) {
+    // 服务端不可用时，回退到 localStorage
+    console.warn('从服务端加载项目列表失败，回退到本地存储:', err.message)
+    projectSessions.value = []
+  } finally {
+    projectSessionsLoading.value = false
+  }
+}
 
 const formatDate = (ts) => {
   if (!ts) return '-'
@@ -740,7 +769,10 @@ const stopGraphPolling = () => {
   activeGraphBuildTaskId = ''
 }
 
-onMounted(() => { initProject() })
+onMounted(() => { initProject(); loadProjectSessions() })
+
+// 打开历史记录面板时刷新服务端项目列表
+watch(showHistory, (visible) => { if (visible) loadProjectSessions() })
 
 watch(() => route.params.projectId, (newId, oldId) => {
   if (newId && newId !== oldId) {

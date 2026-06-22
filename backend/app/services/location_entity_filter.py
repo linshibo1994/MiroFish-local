@@ -125,35 +125,20 @@ LOCATION_NAME_SUFFIXES = (
 )
 
 LOCATION_NAME_KEYWORDS = {
-    "办公楼",
-    "办事处",
     "北苑",
     "北园",
     "菜场",
     "车站",
-    "大厦",
     "东苑",
     "东园",
     "服务区",
-    "公寓",
     "公园",
-    "广场",
     "机场",
-    "街道",
-    "酒店",
-    "路口",
-    "门店",
     "南苑",
     "南园",
-    "商场",
-    "商圈",
-    "市场",
     "西苑",
     "西园",
     "小区",
-    "写字楼",
-    "园区",
-    "苑",
 }
 
 CHINESE_ADMIN_LOCATION_NAMES = {
@@ -516,20 +501,8 @@ PLACE_CONTEXT_KEYWORDS = {
     "住址",
     "地址",
     "地点",
-    "位于",
-    "坐落于",
-    "所在",
     "小区",
-    "商场",
-    "商圈",
-    "商业体",
     "百货",
-    "门店",
-    "店铺",
-    "市场",
-    "广场",
-    "路口",
-    "街道",
     "化粪池",
 }
 
@@ -603,7 +576,7 @@ def is_location_entity_node(node: Any) -> bool:
     if _looks_like_person_subject_node(name, node):
         return False
 
-    if _looks_like_physical_place_node(name, node) and not _has_strong_named_actor_evidence(name):
+    if _looks_like_physical_place_node(name, node) and not _has_strong_speaking_actor_evidence(name, node):
         return True
 
     if _is_name_like_location(name) and not _has_strong_speaking_actor_evidence(name, node):
@@ -892,6 +865,6 @@ def _looks_like_physical_place_node(name: str, node: Any) -> bool:
         return False
 
     return bool(
-        re.search(r"(地址|地点|案发地|案发地点|发生地|居住地|住址).{0,40}(省|市|区|县|路|街|小区|商场|商圈|广场|市场|百货|商业体)", combined)
-        or re.search(r"(小区|商场|商圈|商业体|百货|门店|店铺|市场|广场|路口|街道|化粪池)", combined)
+        re.search(r"(地址|地点|案发地|案发地点|发生地|居住地|住址).{0,40}(省|市|区|县|路|街|小区|百货|化粪池)", combined)
+        or re.search(r"(小区|百货|化粪池)", combined)
     )

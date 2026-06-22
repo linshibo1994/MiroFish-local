@@ -91,7 +91,7 @@ class Config:
     ALLOWED_EXTENSIONS = {'pdf', 'md', 'txt', 'markdown'}
     
     # 文本处理配置
-    DEFAULT_CHUNK_SIZE = int(os.environ.get('DEFAULT_CHUNK_SIZE', '1200'))  # 默认切块大小
+    DEFAULT_CHUNK_SIZE = int(os.environ.get('DEFAULT_CHUNK_SIZE', '2000'))  # 默认切块大小
     DEFAULT_CHUNK_OVERLAP = int(os.environ.get('DEFAULT_CHUNK_OVERLAP', '100'))  # 默认重叠大小
     ONTOLOGY_MAX_TEXT_LENGTH_FOR_LLM = int(os.environ.get('ONTOLOGY_MAX_TEXT_LENGTH_FOR_LLM', '30000'))  # 本体生成传给 LLM 的最大文本长度
     GRAPH_BUILD_BATCH_SIZE = int(os.environ.get('GRAPH_BUILD_BATCH_SIZE', '5'))  # 图谱构建批次大小
@@ -110,7 +110,7 @@ class Config:
     GRAPHITI_LLM_CONCURRENCY = int(os.environ.get('GRAPHITI_LLM_CONCURRENCY', '2'))  # Graphiti 内部 LLM 抽取并发数
     GRAPHITI_LLM_MIN_INTERVAL_SECONDS = float(os.environ.get('GRAPHITI_LLM_MIN_INTERVAL_SECONDS', '0.5'))  # Graphiti LLM 请求最小间隔
     GRAPHITI_LLM_REQUEST_TIMEOUT_SECONDS = float(os.environ.get('GRAPHITI_LLM_REQUEST_TIMEOUT_SECONDS', '120'))  # Graphiti 单次 LLM 请求超时
-    GRAPHITI_LLM_MAX_TOKENS = int(os.environ.get('GRAPHITI_LLM_MAX_TOKENS', '4096'))  # Graphiti LLM 抽取输出上限
+    GRAPHITI_LLM_MAX_TOKENS = int(os.environ.get('GRAPHITI_LLM_MAX_TOKENS', '16384'))  # Graphiti LLM 抽取输出上限，宽松值让 LLM 自行控制
     GRAPHITI_LLM_SMALL_MODEL = os.environ.get('GRAPHITI_LLM_SMALL_MODEL')  # Graphiti 小任务模型（可选）
     GRAPHITI_LLM_TEMPERATURE = float(os.environ.get('GRAPHITI_LLM_TEMPERATURE', '0'))  # Graphiti LLM 抽取温度
     GRAPHITI_EMBEDDING_REQUEST_TIMEOUT_SECONDS = float(os.environ.get('GRAPHITI_EMBEDDING_REQUEST_TIMEOUT_SECONDS', '60'))  # Graphiti 单次 embedding 请求超时
@@ -121,9 +121,9 @@ class Config:
     GRAPHITI_EMBEDDING_DIM = int(os.environ.get('GRAPHITI_EMBEDDING_DIM', '1024'))  # Graphiti embedding 写入维度
     GRAPHITI_EMBEDDING_BATCH_SIZE = int(os.environ.get('GRAPHITI_EMBEDDING_BATCH_SIZE', '10'))  # Graphiti embedding 分块大小
     GRAPHITI_EMBEDDING_MIN_INTERVAL_SECONDS = float(os.environ.get('GRAPHITI_EMBEDDING_MIN_INTERVAL_SECONDS', '0.5'))  # Graphiti embedding 请求最小间隔
-    GRAPH_EXTRACTION_CONTEXT_MAX_SUMMARY_CHARS = int(os.environ.get('GRAPH_EXTRACTION_CONTEXT_MAX_SUMMARY_CHARS', '600'))  # 每个 chunk 注入的事件摘要长度
-    GRAPH_EXTRACTION_CONTEXT_MAX_ENTITY_HINTS = int(os.environ.get('GRAPH_EXTRACTION_CONTEXT_MAX_ENTITY_HINTS', '20'))  # 每个 chunk 注入的实体提示数量
-    GRAPH_EXTRACTION_CONTEXT_MAX_HINT_CHARS = int(os.environ.get('GRAPH_EXTRACTION_CONTEXT_MAX_HINT_CHARS', '400'))  # 每个 chunk 注入的实体提示总长度
+    GRAPH_EXTRACTION_CONTEXT_MAX_SUMMARY_CHARS = int(os.environ.get('GRAPH_EXTRACTION_CONTEXT_MAX_SUMMARY_CHARS', '1500'))  # 每个 chunk 注入的事件摘要长度，放宽以适应复杂事件
+    GRAPH_EXTRACTION_CONTEXT_MAX_ENTITY_HINTS = int(os.environ.get('GRAPH_EXTRACTION_CONTEXT_MAX_ENTITY_HINTS', '100'))  # 每个 chunk 注入的实体提示数量，大幅放宽避免截断
+    GRAPH_EXTRACTION_CONTEXT_MAX_HINT_CHARS = int(os.environ.get('GRAPH_EXTRACTION_CONTEXT_MAX_HINT_CHARS', '2000'))  # 每个 chunk 注入的实体提示总长度，放宽以适应长名称实体
     GRAPH_MEMORY_STOP_TIMEOUT_SECONDS = float(os.environ.get('GRAPH_MEMORY_STOP_TIMEOUT_SECONDS', '3'))  # 图谱记忆写回停止等待秒数
     
     # OASIS模拟配置

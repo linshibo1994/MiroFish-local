@@ -150,3 +150,16 @@ export function getProject(projectId) {
     method: 'get'
   })
 }
+
+/**
+ * 列出所有项目（跨浏览器共享）
+ * @param {Number} limit - 返回数量限制，默认50
+ * @returns {Promise}
+ */
+export function listProjects(limit = 50) {
+  return service({
+    url: '/api/graph/project/list',
+    method: 'get',
+    params: { limit }
+  })
+}

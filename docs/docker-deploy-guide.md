@@ -121,7 +121,7 @@ docker compose logs -f backend       # 后端日志
 docker compose logs -f --tail=100    # 最近 100 行
 
 # 重启单个服务
-docker compose restart backend
+docker compose restart backend frontend
 
 # 更新后重新构建并部署
 git pull origin feat/docker-depoly

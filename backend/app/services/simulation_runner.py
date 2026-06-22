@@ -3,6 +3,7 @@ OASIS模拟运行器
 在后台运行模拟并记录每个Agent的动作，支持实时状态监控
 """
 
+import hashlib
 import os
 import sys
 import json
@@ -64,11 +65,75 @@ def _get_simulation_python() -> str:
     return sys.executable
 
 
-def _probe_simulation_environment(python_executable: Optional[str] = None) -> Dict[str, Any]:
+# 环境探针缓存（文件形式，跨请求持久化，避免 Docker 环境下重复导入 OASIS 耗时过长）
+_PROBE_CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".cache")
+_PROBE_CACHE_TTL_SECONDS = 3600  # 缓存 1 小时
+
+
+def _get_probe_cache_path(sim_python: str) -> str:
+    """生成基于 Python 路径的缓存文件路径。"""
+    # 用 Python 路径的 hash 作为文件名，避免路径中的特殊字符问题
+    key = hashlib.md5(sim_python.encode()).hexdigest()[:16]
+    return os.path.join(_PROBE_CACHE_DIR, f"env_probe_{key}.json")
+
+
+def _load_probe_cache(sim_python: str) -> Optional[Dict[str, Any]]:
+    """加载缓存的环境探针结果（仅在 TTL 内有效）。"""
+    cache_path = _get_probe_cache_path(sim_python)
+    if not os.path.exists(cache_path):
+        return None
+    try:
+        with open(cache_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        age = time.time() - data.get("timestamp", 0)
+        if age < _PROBE_CACHE_TTL_SECONDS and data.get("ok"):
+            logger.info(f"使用缓存的环境探针结果 (age={age:.0f}s): python={sim_python}")
+            return data
+        # 缓存过期或上次检测失败，删除旧缓存
+        if age >= _PROBE_CACHE_TTL_SECONDS:
+            logger.info(f"环境探针缓存已过期 (age={age:.0f}s)，重新探测")
+        try:
+            os.remove(cache_path)
+        except OSError:
+            pass
+    except (json.JSONDecodeError, OSError, KeyError) as e:
+        logger.warning(f"读取环境探针缓存失败: {e}")
+        try:
+            os.remove(cache_path)
+        except OSError:
+            pass
+    return None
+
+
+def _save_probe_cache(sim_python: str, result: Dict[str, Any]):
+    """保存环境探针结果到缓存文件。"""
+    os.makedirs(_PROBE_CACHE_DIR, exist_ok=True)
+    cache_path = _get_probe_cache_path(sim_python)
+    data = {**result, "timestamp": time.time()}
+    try:
+        with open(cache_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        logger.warning(f"保存环境探针缓存失败: {e}")
+
+
+def _probe_simulation_environment(
+    python_executable: Optional[str] = None,
+    use_cache: bool = True,
+) -> Dict[str, Any]:
     """
     检查模拟解释器是否具备运行 OASIS 所需依赖。
 
     返回结构化结果，便于 API 层和日志层复用。
+
+    Args:
+        python_executable: 模拟环境 Python 路径（默认自动探测）
+        use_cache: 是否使用缓存结果（缓存有效期 1 小时）
+
+    注意：在 Docker 等资源受限环境中，camel/oasis 等大型包的导入可能耗时
+    较长（可达 30-60 秒），因此：
+    1. 首次探测成功后缓存 1 小时
+    2. 探测子进程超时设置为 120 秒（适应慢速环境）
     """
     sim_python = python_executable or _get_simulation_python()
 
@@ -79,6 +144,12 @@ def _probe_simulation_environment(python_executable: Optional[str] = None) -> Di
             "missing_modules": list(SIMULATION_REQUIRED_MODULES),
             "error": f"模拟解释器不存在: {sim_python}",
         }
+
+    # 尝试使用缓存（跳过重复的、耗时的导入探测）
+    if use_cache:
+        cached = _load_probe_cache(sim_python)
+        if cached:
+            return cached
 
     probe_code = """
 import importlib
@@ -107,21 +178,43 @@ print(json.dumps({
 sys.exit(0 if not missing and not failures else 1)
 """.strip()
 
+    # 在 Docker 等慢速环境中导入可能超过 30 秒，设置更宽松的超时
+    _PROBE_TIMEOUT_SECONDS = int(os.environ.get('SIMULATION_PROBE_TIMEOUT', '120'))
+
+    logger.info(f"开始环境探针探测 (timeout={_PROBE_TIMEOUT_SECONDS}s): python={sim_python}")
     try:
         result = subprocess.run(
             [sim_python, "-c", probe_code],
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=30,
+            timeout=_PROBE_TIMEOUT_SECONDS,
         )
-    except Exception as e:
-        return {
+    except subprocess.TimeoutExpired as e:
+        error_msg = (
+            f"环境探针子进程超时 ({_PROBE_TIMEOUT_SECONDS}秒)，"
+            f"可能是 Docker 环境资源不足或 OASIS 包导入耗时过长"
+        )
+        logger.warning(error_msg)
+        probe_result = {
             "ok": False,
             "python": sim_python,
-        "missing_modules": list(SIMULATION_REQUIRED_MODULES),
-        "error": f"执行模拟环境预检失败: {e}",
-    }
+            "missing_modules": list(SIMULATION_REQUIRED_MODULES),
+            "error": error_msg,
+        }
+        _save_probe_cache(sim_python, probe_result)
+        return probe_result
+    except Exception as e:
+        error_msg = f"执行模拟环境预检失败: {e}"
+        logger.warning(error_msg)
+        probe_result = {
+            "ok": False,
+            "python": sim_python,
+            "missing_modules": list(SIMULATION_REQUIRED_MODULES),
+            "error": error_msg,
+        }
+        # 执行失败不缓存（可能是临时性错误）
+        return probe_result
 
     payload: Dict[str, Any] = {}
     stdout = (result.stdout or "").strip()
@@ -137,13 +230,22 @@ sys.exit(0 if not missing and not failures else 1)
     failures = payload.get("failures") or {}
     error_text = stderr or stdout or str(failures) or f"模拟环境预检失败，退出码: {result.returncode}"
 
-    return {
+    probe_result = {
         "ok": result.returncode == 0 and not missing_modules and not failures,
         "python": sim_python,
         "missing_modules": missing_modules,
         "failures": failures,
         "error": error_text,
     }
+
+    # 缓存结果（无论成功与否，避免短时间内重复探测）
+    if probe_result["ok"]:
+        _save_probe_cache(sim_python, probe_result)
+        logger.info(f"环境探针通过 (已缓存): python={sim_python}")
+    else:
+        logger.warning(f"环境探针失败: {error_text}")
+
+    return probe_result
 
 
 def _ensure_simulation_environment_ready() -> Dict[str, Any]:
