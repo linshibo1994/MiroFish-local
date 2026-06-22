@@ -61,6 +61,8 @@
       <div class="main-toolbar" :class="{ 'main-toolbar--workspace': !isLandingMode }">
         <div class="toolbar-left">
           <span v-if="!isLandingMode" class="event-title">{{ projectTitle }}</span>
+        </div>
+        <div v-if="!isLandingMode" class="toolbar-center" aria-label="视图切换">
           <div v-if="!isLandingMode" class="view-switcher">
             <button v-for="mode in viewModes" :key="mode.key" class="switch-btn" :class="{ active: viewMode === mode.key }" @click="viewMode = mode.key">{{ mode.label }}</button>
           </div>
@@ -961,6 +963,7 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
   background: #F4F7FC;
   flex-shrink: 0;
   z-index: 60;
+  position: relative;
 }
 
 .main-toolbar--workspace {
@@ -969,6 +972,7 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
 }
 
 .toolbar-left,
+.toolbar-center,
 .toolbar-right {
   display: flex;
   align-items: center;
@@ -978,12 +982,26 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
 .toolbar-left {
   gap: 16px;
   flex: 1;
+  padding-right: 170px;
+}
+
+.toolbar-center {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  justify-content: center;
+  transform: translate(-50%, -50%);
+  z-index: 1;
 }
 
 .toolbar-right {
   justify-content: flex-end;
   gap: 12px;
+  flex: 1;
   flex-shrink: 0;
+  padding-left: 170px;
+  position: relative;
+  z-index: 2;
 }
 
 .history-toggle-btn,
@@ -1104,10 +1122,18 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
   }
 
   .toolbar-left,
+  .toolbar-center,
   .toolbar-right {
     width: 100%;
     justify-content: space-between;
     flex-wrap: wrap;
+    padding: 0;
+  }
+
+  .toolbar-center {
+    position: static;
+    transform: none;
+    justify-content: center;
   }
 
   .event-title {
