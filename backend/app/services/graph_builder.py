@@ -13,6 +13,8 @@ import time
 import threading
 import logging
 import re
+import json
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import Dict, Any, List, Optional, Callable
@@ -31,6 +33,9 @@ from ..utils import llm_routing
 from ..utils.llm_routing import clamp_concurrency, get_preferred_llm_endpoint
 
 logger = logging.getLogger("mirofish.graph_builder")
+
+SIMULATION_MEMORY_LABEL = "未来推演记忆"
+SIMULATION_MEMORY_LABEL_KEY = "FutureSimulationMemory"
 
 
 @dataclass
@@ -1018,18 +1023,42 @@ class GraphBuilderService:
         edges = self.client.get_all_edges(graph_id)
         nodes, edges = self._coalesce_duplicate_entities(nodes, edges)
         nodes, edges = filter_location_entities(nodes, edges)
+        simulation_memory_index = self._load_simulation_memory_index(graph_id)
 
         # 创建节点映射用于获取节点名称
         node_map = {}
         for node in nodes:
             node_map[node.uuid] = node.name or ""
 
+        simulation_node_uuids = set()
+        edge_memory_flags: Dict[str, bool] = {}
+        for edge in edges:
+            is_memory_edge = self._is_simulation_memory_edge(edge, simulation_memory_index)
+            edge_uuid = getattr(edge, "uuid", "") or ""
+            if edge_uuid:
+                edge_memory_flags[edge_uuid] = is_memory_edge
+            if is_memory_edge:
+                source_uuid = getattr(edge, "source_node_uuid", "") or ""
+                target_uuid = getattr(edge, "target_node_uuid", "") or ""
+                if source_uuid:
+                    simulation_node_uuids.add(source_uuid)
+                if target_uuid:
+                    simulation_node_uuids.add(target_uuid)
+
         nodes_data = []
         for node in nodes:
+            is_simulation_memory = (
+                node.uuid in simulation_node_uuids
+                or self._is_simulation_memory_node(node, simulation_memory_index)
+            )
+            labels = node.labels or []
             nodes_data.append({
                 "uuid": node.uuid,
                 "name": node.name,
-                "labels": node.labels or [],
+                "labels": labels,
+                "display_labels": self._build_display_labels(labels, is_simulation_memory),
+                "display_type": SIMULATION_MEMORY_LABEL_KEY if is_simulation_memory else None,
+                "is_simulation_memory": is_simulation_memory,
                 "summary": node.summary or "",
                 "attributes": self._sanitize_display_attributes(node.attributes),
                 "created_at": node.created_at,
@@ -1037,6 +1066,7 @@ class GraphBuilderService:
 
         edges_data = []
         for edge in edges:
+            is_simulation_memory = edge_memory_flags.get(edge.uuid, False)
             edges_data.append({
                 "uuid": edge.uuid,
                 "name": edge.name or "",
@@ -1052,6 +1082,9 @@ class GraphBuilderService:
                 "invalid_at": edge.invalid_at,
                 "expired_at": edge.expired_at,
                 "episodes": edge.episodes or [],
+                "display_labels": self._build_display_labels([], is_simulation_memory),
+                "display_type": SIMULATION_MEMORY_LABEL_KEY if is_simulation_memory else None,
+                "is_simulation_memory": is_simulation_memory,
             })
 
         return {
@@ -1061,6 +1094,170 @@ class GraphBuilderService:
             "node_count": len(nodes_data),
             "edge_count": len(edges_data),
         }
+
+    @classmethod
+    def _build_display_labels(cls, labels: List[str], is_simulation_memory: bool) -> List[str]:
+        """构建仅供前端展示的标签，避免覆盖底层实体类型。"""
+        display_labels = list(labels or [])
+        if is_simulation_memory and SIMULATION_MEMORY_LABEL_KEY not in display_labels:
+            display_labels.append(SIMULATION_MEMORY_LABEL_KEY)
+        return display_labels
+
+    @classmethod
+    def _load_simulation_memory_index(cls, graph_id: str) -> Dict[str, Any]:
+        """
+        从推演写回 outbox 构建展示标记索引。
+
+        outbox 是图谱记忆写回的幂等账本，不改变图谱实体语义；这里仅用于在
+        /api/graph/data 响应中标记哪些节点/边与双平台推演 episode 相关。
+        """
+        index = {
+            "episode_uuids": set(),
+            "terms": set(),
+            "first_sent_at": None,
+        }
+        sim_root = Config.OASIS_SIMULATION_DATA_DIR
+        if not graph_id or not sim_root or not os.path.isdir(sim_root):
+            return index
+
+        for entry in os.scandir(sim_root):
+            if not entry.is_dir():
+                continue
+            outbox_path = os.path.join(entry.path, "graph_memory_outbox.json")
+            if not os.path.exists(outbox_path):
+                continue
+            try:
+                with open(outbox_path, "r", encoding="utf-8") as f:
+                    outbox = json.load(f)
+            except Exception as exc:
+                logger.warning("读取图谱记忆 outbox 失败: path=%s, error=%s", outbox_path, exc)
+                continue
+            if not isinstance(outbox, dict):
+                continue
+
+            for record in outbox.values():
+                if not isinstance(record, dict):
+                    continue
+                if record.get("graph_id") != graph_id or record.get("status") != "sent":
+                    continue
+
+                episode_uuid = record.get("episode_uuid")
+                if episode_uuid:
+                    index["episode_uuids"].add(str(episode_uuid))
+
+                sent_at = cls._parse_simulation_memory_time(record.get("sent_at"))
+                if sent_at and (index["first_sent_at"] is None or sent_at < index["first_sent_at"]):
+                    index["first_sent_at"] = sent_at
+
+                activity = record.get("activity") if isinstance(record.get("activity"), dict) else {}
+                for value in (
+                    record.get("agent_name"),
+                    record.get("payload_preview"),
+                    activity.get("agent_name"),
+                    activity.get("episode_text"),
+                ):
+                    cls._add_simulation_memory_term(index["terms"], value)
+                cls._collect_simulation_memory_terms(index["terms"], activity.get("action_args"))
+
+        return index
+
+    @staticmethod
+    def _parse_simulation_memory_time(value: Any) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            text = str(value).strip()
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            parsed = datetime.fromisoformat(text)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except Exception:
+            return None
+
+    @classmethod
+    def _collect_simulation_memory_terms(cls, terms: set, value: Any) -> None:
+        """递归收集推演动作中的可匹配文本片段。"""
+        if isinstance(value, dict):
+            for item in value.values():
+                cls._collect_simulation_memory_terms(terms, item)
+            return
+        if isinstance(value, list):
+            for item in value:
+                cls._collect_simulation_memory_terms(terms, item)
+            return
+        cls._add_simulation_memory_term(terms, value)
+
+    @classmethod
+    def _add_simulation_memory_term(cls, terms: set, value: Any) -> None:
+        if value is None:
+            return
+        text = cls._normalize_simulation_memory_text(value)
+        if not text:
+            return
+        # 过短词容易误伤普通实体；保留中文/英文实体名和内容片段。
+        if len(text) >= 2:
+            terms.add(text[:120])
+
+    @staticmethod
+    def _normalize_simulation_memory_text(value: Any) -> str:
+        text = str(value).strip()
+        if not text:
+            return ""
+        text = re.sub(r"\s+", "", text)
+        return text
+
+    @classmethod
+    def _is_simulation_memory_edge(cls, edge: Any, index: Dict[str, Any]) -> bool:
+        episode_uuids = index.get("episode_uuids") or set()
+        if episode_uuids:
+            edge_episodes = {str(ep) for ep in (getattr(edge, "episodes", []) or []) if ep}
+            if edge_episodes & episode_uuids:
+                return True
+
+        terms = index.get("terms") or set()
+        if not terms:
+            return False
+        first_sent_at = index.get("first_sent_at")
+        edge_created_at = cls._parse_simulation_memory_time(getattr(edge, "created_at", None))
+        if first_sent_at and edge_created_at and edge_created_at < first_sent_at - timedelta(minutes=5):
+            return False
+        haystack = cls._normalize_simulation_memory_text(
+            " ".join([
+                getattr(edge, "name", "") or "",
+                getattr(edge, "fact", "") or "",
+                str(getattr(edge, "attributes", {}) or ""),
+            ])
+        )
+        return cls._contains_simulation_memory_term(haystack, terms)
+
+    @classmethod
+    def _is_simulation_memory_node(cls, node: Any, index: Dict[str, Any]) -> bool:
+        terms = index.get("terms") or set()
+        if not terms:
+            return False
+        first_sent_at = index.get("first_sent_at")
+        node_created_at = cls._parse_simulation_memory_time(getattr(node, "created_at", None))
+        if first_sent_at and node_created_at and node_created_at < first_sent_at - timedelta(minutes=5):
+            return False
+        haystack = cls._normalize_simulation_memory_text(
+            " ".join([
+                getattr(node, "name", "") or "",
+                getattr(node, "summary", "") or "",
+                str(getattr(node, "attributes", {}) or ""),
+            ])
+        )
+        return cls._contains_simulation_memory_term(haystack, terms)
+
+    @staticmethod
+    def _contains_simulation_memory_term(haystack: str, terms: set) -> bool:
+        if not haystack:
+            return False
+        for term in terms:
+            if term and (term in haystack or haystack in term):
+                return True
+        return False
 
     @classmethod
     def _sanitize_display_attributes(cls, attributes: Optional[Dict[str, Any]]) -> Dict[str, Any]:

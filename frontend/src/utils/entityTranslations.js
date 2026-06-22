@@ -54,7 +54,8 @@ const fallbackEntityTypeMap = {
   COURT: '法院',
   POLITICALPARTY: '政党',
   SOCIALMEDIAPLATFORM: '社交媒体平台',
-  ONLINECOMMUNITY: '在线社区'
+  ONLINECOMMUNITY: '在线社区',
+  FUTURESIMULATIONMEMORY: '未来推演记忆'
 }
 
 const fallbackRelationTypeMap = {

@@ -62,7 +62,7 @@
           <div v-if="selectedItem.type === 'node'" class="detail-content">
             <div class="detail-row">
               <span class="detail-label">名称:</span>
-              <span class="detail-value">{{ selectedItem.data.name }}</span>
+              <span class="detail-value" :title="selectedItem.data.name">{{ formatNodeDetailName(selectedItem.data.name) }}</span>
             </div>
             <div class="detail-row">
               <span class="detail-label">UUID:</span>
@@ -95,10 +95,15 @@
             </div>
             
             <!-- Labels -->
-            <div class="detail-section" v-if="selectedItem.data.labels && selectedItem.data.labels.length > 0">
+            <div class="detail-section" v-if="getNodeDisplayLabels(selectedItem.data).length > 0">
               <div class="section-title">标签:</div>
               <div class="labels-list">
-                <span v-for="label in selectedItem.data.labels" :key="label" class="label-tag">
+                <span
+                  v-for="label in getNodeDisplayLabels(selectedItem.data)"
+                  :key="label"
+                  class="label-tag"
+                  :class="{ 'simulation-memory-label': isSimulationMemoryLabel(label) }"
+                >
                   {{ translateGraphLabel(label) }}
                 </span>
               </div>
@@ -261,6 +266,10 @@ import * as d3 from 'd3'
 import { translateEntityType, translateRelationType } from '../utils/entityTranslations.js'
 import { formatGraphDateTime, getDisplayAttributes, translateGraphLabel } from '../utils/graphDisplay.js'
 
+const SIMULATION_MEMORY_TYPE = 'FutureSimulationMemory'
+const SIMULATION_MEMORY_COLOR = '#9CA3AF'
+const NODE_DETAIL_NAME_LIMIT = 16
+
 const props = defineProps({
   graphData: Object,
   loading: Boolean,
@@ -295,6 +304,30 @@ const selectedNodeAttributes = computed(() => {
   return getDisplayAttributes(selectedItem.value.data?.attributes)
 })
 
+const normalizeTypeKey = (value = '') => String(value || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase()
+
+const isSimulationMemoryLabel = (label) => {
+  return normalizeTypeKey(label) === normalizeTypeKey(SIMULATION_MEMORY_TYPE)
+}
+
+const getNodeDisplayLabels = (node = {}) => {
+  return node.display_labels?.length ? node.display_labels : (node.labels || [])
+}
+
+const getNodeDisplayType = (node = {}) => {
+  return node.display_type || node.labels?.find(l => l !== 'Entity') || 'Entity'
+}
+
+const isSimulationMemoryNode = (node = {}) => {
+  return Boolean(node.is_simulation_memory || isSimulationMemoryLabel(node.display_type))
+}
+
+const formatNodeDetailName = (name = '') => {
+  const chars = Array.from(String(name || ''))
+  if (chars.length <= NODE_DETAIL_NAME_LIMIT) return chars.join('')
+  return chars.slice(0, NODE_DETAIL_NAME_LIMIT).join('') + '…'
+}
+
 // 关闭模拟结束提示
 const dismissFinishedHint = () => {
   showSimulationFinishedHint.value = false
@@ -328,9 +361,13 @@ const entityTypes = computed(() => {
   const colors = ['#FF6B35', '#004E89', '#7B2D8E', '#1A936F', '#C5283D', '#E9724C', '#3498db', '#9b59b6', '#27ae60', '#f39c12']
   
   props.graphData.nodes.forEach(node => {
-    const type = node.labels?.find(l => l !== 'Entity') || 'Entity'
+    const type = getNodeDisplayType(node)
     if (!typeMap[type]) {
-      typeMap[type] = { name: type, count: 0, color: colors[Object.keys(typeMap).length % colors.length] }
+      typeMap[type] = {
+        name: type,
+        count: 0,
+        color: isSimulationMemoryLabel(type) ? SIMULATION_MEMORY_COLOR : colors[Object.keys(typeMap).length % colors.length]
+      }
     }
     typeMap[type].count++
   })
@@ -382,7 +419,8 @@ const renderGraph = () => {
   const nodes = nodesData.map(n => ({
     id: n.uuid,
     name: n.name || 'Unnamed',
-    type: n.labels?.find(l => l !== 'Entity') || 'Entity',
+    type: getNodeDisplayType(n),
+    isSimulationMemory: isSimulationMemoryNode(n),
     rawData: n
   }))
   
@@ -492,7 +530,7 @@ const renderGraph = () => {
   // Color scale
   const colorMap = {}
   entityTypes.value.forEach(t => colorMap[t.name] = t.color)
-  const getColor = (type) => colorMap[type] || '#999'
+  const getColor = (type) => isSimulationMemoryLabel(type) ? SIMULATION_MEMORY_COLOR : (colorMap[type] || '#999')
 
   // Simulation - 根据边数量动态调整节点间距
   const simulation = d3.forceSimulation(nodes)
@@ -681,7 +719,7 @@ const renderGraph = () => {
     .data(nodes)
     .enter().append('circle')
     .attr('r', 10)
-    .attr('fill', d => getColor(d.type))
+    .attr('fill', d => d.isSimulationMemory ? SIMULATION_MEMORY_COLOR : getColor(d.type))
     .attr('stroke', '#fff')
     .attr('stroke-width', 2.5)
     .style('cursor', 'pointer')
@@ -1183,6 +1221,12 @@ input:checked + .slider:before {
   border-radius: 16px;
   font-size: 11px;
   color: #555;
+}
+
+.label-tag.simulation-memory-label {
+  background: #F3F4F6;
+  border-color: #D1D5DB;
+  color: #6B7280;
 }
 
 .episodes-list {

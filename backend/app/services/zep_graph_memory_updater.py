@@ -31,6 +31,9 @@ SIMULATION_DATA_DIR = os.path.join(
     '../../uploads/simulations'
 )
 
+SIMULATION_MEMORY_LABEL = "未来推演记忆"
+SIMULATION_MEMORY_LABEL_KEY = "FutureSimulationMemory"
+
 
 @dataclass
 class AgentActivity:
@@ -81,6 +84,9 @@ class AgentActivity:
             "round_num": self.round_num,
             "timestamp": self.timestamp,
             "activity_id": self.build_activity_id(),
+            "source": "dual_platform_simulation",
+            "memory_label": SIMULATION_MEMORY_LABEL,
+            "memory_label_key": SIMULATION_MEMORY_LABEL_KEY,
             "episode_text": self.to_episode_text(),
         }
     
