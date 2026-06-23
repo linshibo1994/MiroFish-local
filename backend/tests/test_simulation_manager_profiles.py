@@ -63,3 +63,48 @@ def test_get_profiles_supports_legacy_twitter_json(tmp_path, monkeypatch):
     profiles = manager.get_profiles("sim_legacy", platform="twitter")
 
     assert profiles == [{"username": "legacy_user"}]
+
+
+def test_delete_simulation_removes_directory_and_memory_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(SimulationManager, "SIMULATION_DATA_DIR", str(tmp_path))
+
+    manager = SimulationManager()
+    state = SimulationState(
+        simulation_id="sim_delete",
+        project_id="proj_1",
+        graph_id="graph_1",
+        graph_backend="graphiti",
+        status=SimulationStatus.FAILED,
+    )
+    manager._save_simulation_state(state)
+
+    sim_dir = tmp_path / "sim_delete"
+    extra_file = sim_dir / "error.log"
+    extra_file.write_text("failed", encoding="utf-8")
+    assert manager.get_simulation("sim_delete") is not None
+
+    assert manager.delete_simulation("sim_delete") is True
+
+    assert not sim_dir.exists()
+    assert manager.get_simulation("sim_delete") is None
+
+
+def test_delete_simulation_returns_false_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(SimulationManager, "SIMULATION_DATA_DIR", str(tmp_path))
+
+    manager = SimulationManager()
+
+    assert manager.delete_simulation("sim_missing") is False
+
+
+def test_delete_simulation_rejects_path_traversal(tmp_path, monkeypatch):
+    monkeypatch.setattr(SimulationManager, "SIMULATION_DATA_DIR", str(tmp_path))
+
+    manager = SimulationManager()
+
+    try:
+        manager.delete_simulation("../outside")
+    except ValueError as exc:
+        assert "非法的模拟 ID" in str(exc)
+    else:
+        raise AssertionError("预期拒绝路径越界的模拟 ID")

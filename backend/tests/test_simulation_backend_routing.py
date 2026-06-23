@@ -115,3 +115,54 @@ def test_profiles_realtime_separates_expected_total_from_verified_count(tmp_path
     assert data["total_expected"] == 41
     assert data["expected_agents_count"] == 41
     assert data["verified_count"] == 2
+
+
+def test_delete_simulation_removes_history_record_and_files(tmp_path, monkeypatch):
+    app = create_app()
+    client = app.test_client()
+    simulation_id = "sim_delete_me"
+    sim_dir = tmp_path / simulation_id
+    sim_dir.mkdir()
+    (sim_dir / "state.json").write_text(
+        json.dumps(
+            {
+                "simulation_id": simulation_id,
+                "project_id": "proj_delete",
+                "graph_id": "graph_delete",
+                "status": "failed",
+                "created_at": "2026-01-01T00:00:00",
+                "updated_at": "2026-01-01T00:00:00",
+                "error": "历史失败记录",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (sim_dir / "simulation.log").write_text("failed log", encoding="utf-8")
+
+    monkeypatch.setattr(simulation_api.SimulationManager, "SIMULATION_DATA_DIR", str(tmp_path))
+
+    response = client.delete(f"/api/simulation/{simulation_id}")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["success"] is True
+    assert body["data"]["simulation_id"] == simulation_id
+    assert not sim_dir.exists()
+
+    list_response = client.get("/api/simulation/list?project_id=proj_delete")
+    assert list_response.status_code == 200
+    assert list_response.get_json()["data"] == []
+
+
+def test_delete_missing_simulation_returns_404(tmp_path, monkeypatch):
+    app = create_app()
+    client = app.test_client()
+    monkeypatch.setattr(simulation_api.SimulationManager, "SIMULATION_DATA_DIR", str(tmp_path))
+
+    response = client.delete("/api/simulation/sim_missing")
+
+    assert response.status_code == 404
+    body = response.get_json()
+    assert body["success"] is False
+    assert "模拟不存在" in body["error"]

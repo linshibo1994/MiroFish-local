@@ -78,6 +78,14 @@ export const listSimulations = (projectId) => {
 }
 
 /**
+ * 删除单条推演历史记录
+ * @param {string} simulationId
+ */
+export const deleteSimulation = (simulationId) => {
+  return service.delete(`/api/simulation/${simulationId}`)
+}
+
+/**
  * 启动模拟
  * @param {Object} data - { simulation_id, platform?, max_rounds?, enable_graph_memory_update? }
  */

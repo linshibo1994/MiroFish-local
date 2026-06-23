@@ -22,6 +22,16 @@
             <div class="history-item-row">
               <span class="history-item-title">{{ formatSimulationTitle(simulation) }}</span>
               <span class="simulation-status" :class="simulation.status">{{ formatSimulationStatus(simulation.status) }}</span>
+              <button
+                type="button"
+                class="history-delete-btn"
+                :disabled="deletingSimulationId === simulation.simulation_id || isSimulationDeleteDisabled(simulation)"
+                :title="getSimulationDeleteTitle(simulation)"
+                :aria-label="`删除推演记录：${formatSimulationTitle(simulation)}`"
+                @click.stop="confirmDeleteSimulation(simulation)"
+              >
+                ×
+              </button>
             </div>
             <span class="history-item-date">{{ formatDate(simulation.updated_at || simulation.created_at) }}</span>
           </div>
@@ -34,11 +44,23 @@
         <div
           v-for="session in projectSessions"
           :key="session.projectId"
-          class="history-item"
+          class="history-item project-history-item"
           :class="{ active: currentProjectId === session.projectId }"
           @click="navigateToSession(session.projectId)"
         >
-          <span class="history-item-title">{{ session.title }}</span>
+          <div class="history-item-row">
+            <span class="history-item-title">{{ session.title }}</span>
+            <button
+              type="button"
+              class="history-delete-btn"
+              :disabled="deletingProjectId === session.projectId"
+              title="删除项目会话"
+              :aria-label="`删除项目会话：${session.title}`"
+              @click.stop="confirmDeleteProjectSession(session)"
+            >
+              ×
+            </button>
+          </div>
           <span class="history-item-date">{{ formatDate(session.createdAt) }}</span>
         </div>
         </section>
@@ -153,8 +175,8 @@ import GraphPanel from '../components/GraphPanel.vue'
 import Step1GraphBuild from '../components/Step1GraphBuild.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
 import WorkflowTopbar from '../components/WorkflowTopbar.vue'
-import { getProject, generateOntology, buildGraph, getTaskStatus, getGraphData, listProjects } from '../api/graph'
-import { createSimulation, listSimulations } from '../api/simulation'
+import { getProject, generateOntology, buildGraph, getTaskStatus, getGraphData, listProjects, deleteProject } from '../api/graph'
+import { createSimulation, listSimulations, deleteSimulation } from '../api/simulation'
 import { checkReportStatus } from '../api/report'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
 import { getSessions, addSession } from '../store/sessionHistory'
@@ -192,6 +214,8 @@ const simulationCreating = ref(false)
 const envSetupStatus = ref('processing')
 const simulationHistory = ref([])
 const simulationHistoryLoading = ref(false)
+const deletingSimulationId = ref('')
+const deletingProjectId = ref('')
 
 // 服务端项目会话列表（替代 localStorage，跨浏览器共享）
 const projectSessions = ref([])
@@ -267,6 +291,68 @@ const navigateToSimulation = (simulationId) => {
   if (!simulationId) return
   showHistory.value = false
   router.push({ name: 'SimulationRun', params: { simulationId } })
+}
+
+const isSimulationDeleteDisabled = (simulation) => {
+  return ['preparing', 'running'].includes(simulation?.status)
+}
+
+const getSimulationDeleteTitle = (simulation) => {
+  return isSimulationDeleteDisabled(simulation)
+    ? '推演正在准备或运行中，请先停止后再删除'
+    : '删除推演记录'
+}
+
+const confirmDeleteSimulation = async (simulation) => {
+  const simulationId = simulation?.simulation_id
+  if (!simulationId || deletingSimulationId.value || isSimulationDeleteDisabled(simulation)) return
+
+  const title = formatSimulationTitle(simulation)
+  const confirmed = window.confirm(`确定删除推演记录“${title}”吗？\n\n该操作会删除这条推演记录及其本地模拟文件，但不会删除项目和图谱。`)
+  if (!confirmed) return
+
+  deletingSimulationId.value = simulationId
+  try {
+    await deleteSimulation(simulationId)
+    simulationHistory.value = simulationHistory.value.filter(item => item.simulation_id !== simulationId)
+    if (currentSimulationId.value === simulationId) {
+      const reusable = simulationHistory.value.find(item =>
+        ['ready', 'preparing', 'running', 'completed', 'stopped'].includes(item.status)
+      ) || simulationHistory.value[0]
+      currentSimulationId.value = reusable?.simulation_id || ''
+    }
+    addLog(`已删除推演记录: ${simulationId}`)
+  } catch (err) {
+    addLog(`删除推演记录失败: ${err.message}`)
+    window.alert(`删除失败：${err.message}`)
+  } finally {
+    deletingSimulationId.value = ''
+  }
+}
+
+const confirmDeleteProjectSession = async (session) => {
+  const projectId = session?.projectId
+  if (!projectId || deletingProjectId.value) return
+
+  const title = session.title || projectId
+  const confirmed = window.confirm(`确定删除项目会话“${title}”吗？\n\n该操作会删除项目文件，并按后端现有逻辑清理关联图谱；不会自动删除已生成的推演记录。`)
+  if (!confirmed) return
+
+  deletingProjectId.value = projectId
+  try {
+    await deleteProject(projectId)
+    projectSessions.value = projectSessions.value.filter(item => item.projectId !== projectId)
+    addLog(`已删除项目会话: ${projectId}`)
+    if (currentProjectId.value === projectId) {
+      showHistory.value = false
+      router.push('/process/new')
+    }
+  } catch (err) {
+    addLog(`删除项目会话失败: ${err.message}`)
+    window.alert(`删除失败：${err.message}`)
+  } finally {
+    deletingProjectId.value = ''
+  }
 }
 
 const startNewSession = () => {
@@ -910,8 +996,39 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
 
 .history-item-date { font-size: 11px; color: #9CA3AF; }
 
-.simulation-history-item .history-item-title {
+.simulation-history-item .history-item-title,
+.project-history-item .history-item-title {
   flex: 1;
+}
+
+.history-delete-btn {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #9CA3AF;
+  font-size: 18px;
+  line-height: 20px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+
+.simulation-history-item:hover .history-delete-btn,
+.project-history-item:hover .history-delete-btn,
+.history-delete-btn:focus-visible {
+  opacity: 1;
+}
+
+.history-delete-btn:hover:not(:disabled) {
+  background: #FEE2E2;
+  color: #DC2626;
+}
+
+.history-delete-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
 }
 
 .simulation-status {

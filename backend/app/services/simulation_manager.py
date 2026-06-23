@@ -161,6 +161,14 @@ class SimulationManager:
         sim_dir = os.path.join(self.SIMULATION_DATA_DIR, simulation_id)
         os.makedirs(sim_dir, exist_ok=True)
         return sim_dir
+
+    def _resolve_simulation_dir(self, simulation_id: str) -> str:
+        """解析模拟数据目录路径，不主动创建目录。"""
+        base_dir = os.path.abspath(self.SIMULATION_DATA_DIR)
+        sim_dir = os.path.abspath(os.path.join(base_dir, simulation_id))
+        if os.path.commonpath([base_dir, sim_dir]) != base_dir:
+            raise ValueError("非法的模拟 ID")
+        return sim_dir
     
     def _save_simulation_state(self, state: SimulationState):
         """保存模拟状态到文件"""
@@ -179,7 +187,7 @@ class SimulationManager:
         if simulation_id in self._simulations:
             return self._simulations[simulation_id]
         
-        sim_dir = self._get_simulation_dir(simulation_id)
+        sim_dir = self._resolve_simulation_dir(simulation_id)
         state_file = os.path.join(sim_dir, "state.json")
         
         if not os.path.exists(state_file):
@@ -216,6 +224,23 @@ class SimulationManager:
         
         self._simulations[simulation_id] = state
         return state
+
+    def delete_simulation(self, simulation_id: str) -> bool:
+        """删除单个模拟历史记录及其本地文件。"""
+        state = self._load_simulation_state(simulation_id)
+        if not state:
+            self._simulations.pop(simulation_id, None)
+            return False
+
+        sim_dir = self._resolve_simulation_dir(simulation_id)
+        if os.path.isdir(sim_dir):
+            shutil.rmtree(sim_dir)
+        elif os.path.exists(sim_dir):
+            os.remove(sim_dir)
+
+        self._simulations.pop(simulation_id, None)
+        logger.info("删除模拟历史记录: %s", simulation_id)
+        return True
     
     def create_simulation(
         self,
