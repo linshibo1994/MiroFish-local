@@ -30,7 +30,13 @@
                 :aria-label="`删除推演记录：${formatSimulationTitle(simulation)}`"
                 @click.stop="confirmDeleteSimulation(simulation)"
               >
-                ×
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3 6h18" />
+                  <path d="M8 6V4h8v2" />
+                  <path d="M19 6l-1 14H6L5 6" />
+                  <path d="M10 11v5" />
+                  <path d="M14 11v5" />
+                </svg>
               </button>
             </div>
             <span class="history-item-date">{{ formatDate(simulation.updated_at || simulation.created_at) }}</span>
@@ -58,7 +64,13 @@
               :aria-label="`删除项目会话：${session.title}`"
               @click.stop="confirmDeleteProjectSession(session)"
             >
-              ×
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 6h18" />
+                <path d="M8 6V4h8v2" />
+                <path d="M19 6l-1 14H6L5 6" />
+                <path d="M10 11v5" />
+                <path d="M14 11v5" />
+              </svg>
             </button>
           </div>
           <span class="history-item-date">{{ formatDate(session.createdAt) }}</span>
@@ -179,7 +191,7 @@ import { getProject, generateOntology, buildGraph, getTaskStatus, getGraphData, 
 import { createSimulation, listSimulations, deleteSimulation } from '../api/simulation'
 import { checkReportStatus } from '../api/report'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
-import { getSessions, addSession } from '../store/sessionHistory'
+import { getSessions, addSession, removeSession } from '../store/sessionHistory'
 import { loadGraphTypeTranslations } from '../store/graphTypeTranslations'
 import { getProjectDisplayTitle } from '../utils/projectTitle.js'
 
@@ -324,7 +336,7 @@ const confirmDeleteSimulation = async (simulation) => {
     addLog(`已删除推演记录: ${simulationId}`)
   } catch (err) {
     addLog(`删除推演记录失败: ${err.message}`)
-    window.alert(`删除失败：${err.message}`)
+    window.alert(`删除失败：${err.message || '未知错误'}`)
   } finally {
     deletingSimulationId.value = ''
   }
@@ -335,12 +347,14 @@ const confirmDeleteProjectSession = async (session) => {
   if (!projectId || deletingProjectId.value) return
 
   const title = session.title || projectId
-  const confirmed = window.confirm(`确定删除项目会话“${title}”吗？\n\n该操作会删除项目文件，并按后端现有逻辑清理关联图谱；不会自动删除已生成的推演记录。`)
+  const confirmed = window.confirm(`确定删除项目会话“${title}”吗？\n\n该操作会删除项目文件，并按后端现有逻辑清理关联图谱；不会自动删除已生成的推演记录。此操作无法撤销。`)
   if (!confirmed) return
 
   deletingProjectId.value = projectId
   try {
     await deleteProject(projectId)
+    removeSession(projectId)
+    refreshSessions()
     projectSessions.value = projectSessions.value.filter(item => item.projectId !== projectId)
     addLog(`已删除项目会话: ${projectId}`)
     if (currentProjectId.value === projectId) {
@@ -348,8 +362,8 @@ const confirmDeleteProjectSession = async (session) => {
       router.push('/process/new')
     }
   } catch (err) {
-    addLog(`删除项目会话失败: ${err.message}`)
-    window.alert(`删除失败：${err.message}`)
+    addLog(`删除项目会话失败: ${err.message || '未知错误'}`)
+    window.alert(`删除失败：${err.message || '未知错误'}`)
   } finally {
     deletingProjectId.value = ''
   }
@@ -1002,17 +1016,29 @@ onUnmounted(() => { stopPolling(); stopGraphPolling() })
 }
 
 .history-delete-btn {
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border: 0;
   border-radius: 999px;
-  background: transparent;
-  color: #9CA3AF;
-  font-size: 18px;
-  line-height: 20px;
+  background: rgba(248, 250, 252, 0.92);
+  color: #94A3B8;
   cursor: pointer;
-  opacity: 0;
+  opacity: 0.72;
   transition: opacity 0.15s, background 0.15s, color 0.15s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.history-delete-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .simulation-history-item:hover .history-delete-btn,
