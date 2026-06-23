@@ -21,7 +21,7 @@ import threading
 import time
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, Set
 from pydantic import BaseModel, Field
 
 from ..config import Config
@@ -1099,6 +1099,12 @@ class GraphitiClient(ZepClientAdapter):
             logger.debug(f"get_node_edges: graph_id={graph_id}, 节点 uuid={node_uuid} 没有关联的边")
         return [self._graphiti_edge_to_graph_edge(edge) for edge in edges]
 
+    # graphiti EpisodicNode 基类的保留属性名，不能作为自定义实体类型的字段
+    _PROTECTED_ATTRIBUTE_NAMES: ClassVar[Set[str]] = {
+        "uuid", "name", "group_id", "created_at", "labels",
+        "summary", "source", "source_description",
+    }
+
     def _normalize_entity_types(
         self,
         entities: Optional[Dict[str, Any]] = None,
@@ -1117,6 +1123,14 @@ class GraphitiClient(ZepClientAdapter):
             for attr in entity_def.get("attributes", []):
                 attr_name = attr.get("name")
                 if not attr_name:
+                    continue
+                # 过滤 graphiti 保留属性名，避免 EntityTypeValidationError
+                if attr_name in self._PROTECTED_ATTRIBUTE_NAMES:
+                    logger.debug(
+                        "跳过实体类型 %s 的保留属性: %s",
+                        entity_def["name"],
+                        attr_name,
+                    )
                     continue
                 annotations[attr_name] = Optional[str]
                 attrs[attr_name] = Field(default=None, description=attr.get("description", attr_name))
