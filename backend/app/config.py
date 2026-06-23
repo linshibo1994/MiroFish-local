@@ -91,7 +91,7 @@ class Config:
     ALLOWED_EXTENSIONS = {'pdf', 'md', 'txt', 'markdown'}
     
     # 文本处理配置
-    DEFAULT_CHUNK_SIZE = int(os.environ.get('DEFAULT_CHUNK_SIZE', '2000'))  # 默认切块大小
+    DEFAULT_CHUNK_SIZE = int(os.environ.get('DEFAULT_CHUNK_SIZE', '4000'))  # 默认切块大小
     DEFAULT_CHUNK_OVERLAP = int(os.environ.get('DEFAULT_CHUNK_OVERLAP', '100'))  # 默认重叠大小
     ONTOLOGY_MAX_TEXT_LENGTH_FOR_LLM = int(os.environ.get('ONTOLOGY_MAX_TEXT_LENGTH_FOR_LLM', '30000'))  # 本体生成传给 LLM 的最大文本长度
     GRAPH_BUILD_BATCH_SIZE = int(os.environ.get('GRAPH_BUILD_BATCH_SIZE', '5'))  # 图谱构建批次大小
