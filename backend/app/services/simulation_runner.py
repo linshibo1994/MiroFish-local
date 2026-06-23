@@ -22,6 +22,7 @@ from queue import Queue
 from ..config import Config
 from ..utils.logger import get_logger
 from .zep_graph_memory_updater import ZepGraphMemoryManager
+from .zep_factory import get_zep_client
 from .simulation_ipc import SimulationIPCClient, CommandType, IPCResponse
 
 logger = get_logger('mirofish.simulation_runner')
@@ -540,6 +541,54 @@ class SimulationRunner:
             json.dump(data, f, ensure_ascii=False, indent=2)
         
         cls._run_states[state.simulation_id] = state
+
+    @classmethod
+    def _capture_graph_memory_baseline(
+        cls,
+        simulation_id: str,
+        graph_id: str,
+        backend: Optional[str] = None,
+    ) -> bool:
+        """在 Step 3 启动前保存当前图谱节点，用于区分推演新增节点。"""
+        try:
+            client = get_zep_client(backend=backend)
+            node_uuids = sorted({
+                str(node.uuid)
+                for node in client.get_all_nodes(graph_id)
+                if getattr(node, "uuid", None)
+            })
+            sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+            os.makedirs(sim_dir, exist_ok=True)
+            baseline_path = os.path.join(sim_dir, "graph_memory_baseline.json")
+            temporary_path = f"{baseline_path}.tmp"
+            with open(temporary_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "graph_id": graph_id,
+                        "captured_at": datetime.now().astimezone().isoformat(),
+                        "node_uuids": node_uuids,
+                    },
+                    f,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            os.replace(temporary_path, baseline_path)
+            logger.info(
+                "已保存推演前图谱节点基线: simulation_id=%s, graph_id=%s, node_count=%s",
+                simulation_id,
+                graph_id,
+                len(node_uuids),
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "保存推演前图谱节点基线失败，将在图谱展示时使用历史时间戳降级判断: "
+                "simulation_id=%s, graph_id=%s, error=%s",
+                simulation_id,
+                graph_id,
+                exc,
+            )
+            return False
     
     @classmethod
     def start_simulation(
@@ -614,6 +663,9 @@ class SimulationRunner:
                 raise ValueError("启用图谱记忆更新时必须提供 graph_id")
             
             try:
+                cls._capture_graph_memory_baseline(
+                    simulation_id, graph_id, backend=graph_backend
+                )
                 updater_error = []
 
                 def create_graph_memory_updater():
@@ -1396,6 +1448,7 @@ class SimulationRunner:
         # 要删除的文件列表（包括数据库文件）
         files_to_delete = [
             "run_state.json",
+            "graph_memory_baseline.json",
             "simulation.log",
             "stdout.log",
             "stderr.log",

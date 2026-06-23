@@ -10,6 +10,7 @@
 import os
 import uuid
 import time
+import atexit
 import threading
 import logging
 import re
@@ -33,6 +34,48 @@ from ..utils import llm_routing
 from ..utils.llm_routing import clamp_concurrency, get_preferred_llm_endpoint
 
 logger = logging.getLogger("mirofish.graph_builder")
+
+# 跟踪当前活跃的图谱构建操作数量，用于检测进程关闭时是否需要快速失败
+_active_graph_operations = 0
+_active_graph_operations_lock = threading.Lock()
+
+
+def _is_graph_builder_shutting_down() -> bool:
+    """检查图谱构建器是否正在关闭（例如 Flask 热重载触发）。"""
+    with _active_graph_operations_lock:
+        return _active_graph_operations < 0
+
+
+def _enter_graph_operation() -> None:
+    """标记一个图谱操作开始。"""
+    global _active_graph_operations
+    with _active_graph_operations_lock:
+        if _active_graph_operations >= 0:
+            _active_graph_operations += 1
+
+
+def _leave_graph_operation() -> None:
+    """标记一个图谱操作结束。"""
+    global _active_graph_operations
+    with _active_graph_operations_lock:
+        if _active_graph_operations > 0:
+            _active_graph_operations -= 1
+
+
+def _shutdown_graph_operations() -> None:
+    """强制标记所有图谱操作为关闭状态（由 atexit 或进程退出时调用）。"""
+    global _active_graph_operations
+    with _active_graph_operations_lock:
+        if _active_graph_operations > 0:
+            logger.warning(
+                "进程正在关闭，仍有 %s 个活跃图谱操作将被中断。"
+                "这通常由 Flask 热重载（检测到文件修改）或服务器关闭触发。",
+                _active_graph_operations,
+            )
+        _active_graph_operations = -1  # 负数表示正在关闭
+
+
+atexit.register(_shutdown_graph_operations)
 
 SIMULATION_MEMORY_LABEL = "未来推演记忆"
 SIMULATION_MEMORY_LABEL_KEY = "FutureSimulationMemory"
@@ -291,14 +334,21 @@ class GraphBuilderService:
         extraction_context: Optional[Dict[str, Any]] = None,
     ):
         """图谱构建工作线程"""
+        _enter_graph_operation()
         try:
+            if _is_graph_builder_shutting_down():
+                raise RuntimeError(
+                    "图谱构建已取消：服务器正在关闭（可能是 Flask 热重载触发了进程重启）。"
+                    "请等待当前图谱构建完成后再修改代码文件，或重启服务后重试。"
+                )
+
             self.task_manager.update_task(
                 task_id,
                 status=TaskStatus.PROCESSING,
                 progress=5,
                 message="开始构建图谱..."
             )
-            
+
             # 1. 创建图谱
             graph_id = self.create_graph(graph_name)
             self.task_manager.update_task(
@@ -306,7 +356,7 @@ class GraphBuilderService:
                 progress=10,
                 message=f"图谱已创建: {graph_id}"
             )
-            
+
             # 2. 设置本体
             self.set_ontology(graph_id, ontology)
             self.task_manager.update_task(
@@ -314,7 +364,7 @@ class GraphBuilderService:
                 progress=15,
                 message="本体已设置"
             )
-            
+
             # 3. 文本分块
             chunks = TextProcessor.split_text(text, chunk_size, chunk_overlap)
             total_chunks = len(chunks)
@@ -323,7 +373,7 @@ class GraphBuilderService:
                 progress=20,
                 message=f"文本已分割为 {total_chunks} 个块"
             )
-            
+
             # 4. 分批发送数据
             episode_uuids = self.add_text_batches(
                 graph_id, chunks, batch_size,
@@ -335,14 +385,14 @@ class GraphBuilderService:
                 extraction_context=extraction_context or {"event_topic": graph_name},
                 concurrency=concurrency,
             )
-            
+
             # 5. 等待Zep处理完成
             self.task_manager.update_task(
                 task_id,
                 progress=60,
                 message="等待图谱服务处理数据..."
             )
-            
+
             self._wait_for_episodes(
                 episode_uuids,
                 lambda msg, prog: self.task_manager.update_task(
@@ -351,27 +401,29 @@ class GraphBuilderService:
                     message=msg
                 )
             )
-            
+
             # 6. 获取图谱信息
             self.task_manager.update_task(
                 task_id,
                 progress=90,
                 message="获取图谱信息..."
             )
-            
+
             graph_info = self._get_graph_info(graph_id)
-            
+
             # 完成
             self.task_manager.complete_task(task_id, {
                 "graph_id": graph_id,
                 "graph_info": graph_info.to_dict(),
                 "chunks_processed": total_chunks,
             })
-            
+
         except Exception as e:
             import traceback
             error_msg = f"{str(e)}\n{traceback.format_exc()}"
             self.task_manager.fail_task(task_id, error_msg)
+        finally:
+            _leave_graph_operation()
     
     def create_graph(self, name: str) -> str:
         """创建图谱（公开方法）"""
@@ -616,6 +668,12 @@ class GraphBuilderService:
 
         def submit_batch(batch_index: int, start_index: int, batch_chunks: List[str]) -> List[str]:
             batch_num = batch_index + 1
+            # 检查进程是否正在关闭（如 Flask 热重载触发）
+            if _is_graph_builder_shutting_down():
+                raise RuntimeError(
+                    "图谱批次提交已取消：服务器正在关闭（可能是 Flask 热重载触发了进程重启）。"
+                    "请等待当前图谱构建完成后再修改代码文件。"
+                )
             batch_started_at = time.monotonic()
             if use_worker_clients:
                 endpoint = self._select_llm_endpoint_from_pool(
@@ -667,6 +725,24 @@ class GraphBuilderService:
                 try:
                     batch_uuids, route_name, model_name, batch_elapsed = run_with_endpoint(endpoint)
                 except Exception as first_exc:
+                    # 致命错误（进程关闭、事件循环死亡等）跳过路由切换重试，直接抛出
+                    _is_shutdown = False
+                    try:
+                        from .zep_graphiti_impl import _is_fatal_error
+                        _is_shutdown = _is_fatal_error(first_exc)
+                    except Exception:
+                        pass
+                    if _is_shutdown:
+                        logger.error(
+                            "图谱批次遇到不可恢复的致命错误（进程可能正在关闭），跳过路由切换: graph_id=%s, batch=%s/%s, route=%s, model=%s",
+                            graph_id,
+                            batch_num,
+                            total_batches,
+                            route_name,
+                            model_name,
+                        )
+                        raise
+
                     alternate_endpoint = None
                     if (
                         use_worker_clients
@@ -892,7 +968,7 @@ class GraphBuilderService:
 抽取指导规则（建议性，非强制性）：
 1. 优先抽取“文档文本块”中明确出现，且与事件主题、事件事实或推演方向存在关联的实体节点。不确定关联性的实体也建议保留，由后续阶段进一步筛选。
 2. 图谱实体不等于最终人设 Agent；抽取阶段必须优先保留事件关键实体，Agent 生成阶段会另行过滤地点、重标媒体平台。
-3. 实体数量目标下限为100+；不是只抽核心节点，而是尽最大可能抽取与事件相关的所有具体主体，没有最高数量限制。
+3. 实体数量目标下限为50+；不是只抽核心节点，而是尽最大可能抽取与事件相关的所有具体主体，没有最高数量限制。
 4. 实体类型完全开放，不受本体中已列类型限制；如果文本里出现新的主体类型，请按语义创建更具体的新类型，不要强行塞进少数预设类型。
 5. 尽量完整覆盖政府/监管、单位、机构、企业/品牌、媒体、组织/协会、意见领袖/网红、社区、公众、主配角、网民/个人、以及事件角色（受害人、嫌疑人、目击者、家属等）等关键具体相关主体。
 6. 核心人物必须优先抽取：受害人/被害人、嫌疑人/犯罪嫌疑人、被告人、当事人、主角/配角、死者、伤者、亲属、证人、律师等，只要文档文本块出现并与事件有关，就不能因为其不一定发声而忽略。
@@ -1032,35 +1108,49 @@ class GraphBuilderService:
         for node in nodes:
             node_map[node.uuid] = node.name or ""
 
-        simulation_node_uuids = set()
-        edge_memory_flags: Dict[str, bool] = {}
+        simulation_node_sources: Dict[str, List[Dict[str, Any]]] = {}
+        edge_memory_sources: Dict[str, List[Dict[str, Any]]] = {}
         for edge in edges:
-            is_memory_edge = self._is_simulation_memory_edge(edge, simulation_memory_index)
+            memory_sources = self._get_simulation_memory_sources_for_edge(
+                edge, simulation_memory_index
+            )
             edge_uuid = getattr(edge, "uuid", "") or ""
             if edge_uuid:
-                edge_memory_flags[edge_uuid] = is_memory_edge
-            if is_memory_edge:
+                edge_memory_sources[edge_uuid] = memory_sources
+            if memory_sources:
                 source_uuid = getattr(edge, "source_node_uuid", "") or ""
                 target_uuid = getattr(edge, "target_node_uuid", "") or ""
                 if source_uuid:
-                    simulation_node_uuids.add(source_uuid)
+                    simulation_node_sources.setdefault(source_uuid, []).extend(memory_sources)
                 if target_uuid:
-                    simulation_node_uuids.add(target_uuid)
+                    simulation_node_sources.setdefault(target_uuid, []).extend(memory_sources)
 
         nodes_data = []
         for node in nodes:
-            is_simulation_memory = (
-                node.uuid in simulation_node_uuids
-                or self._is_simulation_memory_node(node, simulation_memory_index)
+            memory_sources = self._unique_simulation_memory_sources(
+                simulation_node_sources.get(node.uuid, [])
+                + self._get_simulation_memory_sources_for_node(
+                    node, simulation_memory_index
+                )
+            )
+            is_simulation_memory = bool(memory_sources)
+            is_new_simulation_memory = self._is_new_simulation_memory_node(
+                node, memory_sources
             )
             labels = node.labels or []
+            display_type = (
+                SIMULATION_MEMORY_LABEL_KEY
+                if is_new_simulation_memory
+                else self._get_node_display_type(labels)
+            )
             nodes_data.append({
                 "uuid": node.uuid,
                 "name": node.name,
                 "labels": labels,
                 "display_labels": self._build_display_labels(labels, is_simulation_memory),
-                "display_type": SIMULATION_MEMORY_LABEL_KEY if is_simulation_memory else None,
+                "display_type": display_type,
                 "is_simulation_memory": is_simulation_memory,
+                "is_new_simulation_memory": is_new_simulation_memory,
                 "summary": node.summary or "",
                 "attributes": self._sanitize_display_attributes(node.attributes),
                 "created_at": node.created_at,
@@ -1068,7 +1158,7 @@ class GraphBuilderService:
 
         edges_data = []
         for edge in edges:
-            is_simulation_memory = edge_memory_flags.get(edge.uuid, False)
+            is_simulation_memory = bool(edge_memory_sources.get(edge.uuid, []))
             edges_data.append({
                 "uuid": edge.uuid,
                 "name": edge.name or "",
@@ -1089,12 +1179,22 @@ class GraphBuilderService:
                 "is_simulation_memory": is_simulation_memory,
             })
 
+        # 统计实体类型分布
+        entity_type_counts: Dict[str, int] = {}
+        for nd in nodes_data:
+            _dt = nd.get("display_type")
+            if not _dt:
+                _labels = nd.get("labels")
+                _dt = _labels[0] if _labels else "Entity"
+            entity_type_counts[_dt] = entity_type_counts.get(_dt, 0) + 1
+
         return {
             "graph_id": graph_id,
             "nodes": nodes_data,
             "edges": edges_data,
             "node_count": len(nodes_data),
             "edge_count": len(edges_data),
+            "entity_types": entity_type_counts,
         }
 
     @classmethod
@@ -1106,6 +1206,14 @@ class GraphBuilderService:
         return display_labels
 
     @classmethod
+    def _get_node_display_type(cls, labels: List[str]) -> str:
+        """保留节点的原始实体类型，推演标签不能替代原有类型。"""
+        for label in labels or []:
+            if label not in cls.GENERIC_NODE_LABELS:
+                return label
+        return "Entity"
+
+    @classmethod
     def _load_simulation_memory_index(cls, graph_id: str) -> Dict[str, Any]:
         """
         从推演写回 outbox 构建展示标记索引。
@@ -1113,11 +1221,7 @@ class GraphBuilderService:
         outbox 是图谱记忆写回的幂等账本，不改变图谱实体语义；这里仅用于在
         /api/graph/data 响应中标记哪些节点/边与双平台推演 episode 相关。
         """
-        index = {
-            "episode_uuids": set(),
-            "terms": set(),
-            "first_sent_at": None,
-        }
+        index = {"sources": []}
         sim_root = Config.OASIS_SIMULATION_DATA_DIR
         if not graph_id or not sim_root or not os.path.isdir(sim_root):
             return index
@@ -1125,6 +1229,14 @@ class GraphBuilderService:
         for entry in os.scandir(sim_root):
             if not entry.is_dir():
                 continue
+            source = {
+                "episode_uuids": set(),
+                "terms": set(),
+                "first_sent_at": None,
+                "baseline_node_uuids": cls._load_simulation_memory_baseline(
+                    entry.path, graph_id
+                ),
+            }
             outbox_path = os.path.join(entry.path, "graph_memory_outbox.json")
             if not os.path.exists(outbox_path):
                 continue
@@ -1145,11 +1257,14 @@ class GraphBuilderService:
 
                 episode_uuid = record.get("episode_uuid")
                 if episode_uuid:
-                    index["episode_uuids"].add(str(episode_uuid))
+                    source["episode_uuids"].add(str(episode_uuid))
 
                 sent_at = cls._parse_simulation_memory_time(record.get("sent_at"))
-                if sent_at and (index["first_sent_at"] is None or sent_at < index["first_sent_at"]):
-                    index["first_sent_at"] = sent_at
+                if sent_at and (
+                    source["first_sent_at"] is None
+                    or sent_at < source["first_sent_at"]
+                ):
+                    source["first_sent_at"] = sent_at
 
                 activity = record.get("activity") if isinstance(record.get("activity"), dict) else {}
                 for value in (
@@ -1158,10 +1273,36 @@ class GraphBuilderService:
                     activity.get("agent_name"),
                     activity.get("episode_text"),
                 ):
-                    cls._add_simulation_memory_term(index["terms"], value)
-                cls._collect_simulation_memory_terms(index["terms"], activity.get("action_args"))
+                    cls._add_simulation_memory_term(source["terms"], value)
+                cls._collect_simulation_memory_terms(
+                    source["terms"], activity.get("action_args")
+                )
+
+            if source["episode_uuids"] or source["terms"]:
+                index["sources"].append(source)
 
         return index
+
+    @classmethod
+    def _load_simulation_memory_baseline(
+        cls, simulation_dir: str, graph_id: str
+    ) -> Optional[set]:
+        """读取 Step 3 启动前的节点快照；缺失时由时间戳逻辑兼容历史记录。"""
+        baseline_path = os.path.join(simulation_dir, "graph_memory_baseline.json")
+        if not os.path.exists(baseline_path):
+            return None
+        try:
+            with open(baseline_path, "r", encoding="utf-8") as f:
+                baseline = json.load(f)
+        except Exception as exc:
+            logger.warning("读取图谱记忆基线失败: path=%s, error=%s", baseline_path, exc)
+            return None
+        if not isinstance(baseline, dict) or baseline.get("graph_id") != graph_id:
+            return None
+        node_uuids = baseline.get("node_uuids")
+        if not isinstance(node_uuids, list):
+            return None
+        return {str(node_uuid) for node_uuid in node_uuids if node_uuid}
 
     @staticmethod
     def _parse_simulation_memory_time(value: Any) -> Optional[datetime]:
@@ -1211,20 +1352,18 @@ class GraphBuilderService:
         return text
 
     @classmethod
-    def _is_simulation_memory_edge(cls, edge: Any, index: Dict[str, Any]) -> bool:
-        episode_uuids = index.get("episode_uuids") or set()
-        if episode_uuids:
-            edge_episodes = {str(ep) for ep in (getattr(edge, "episodes", []) or []) if ep}
-            if edge_episodes & episode_uuids:
-                return True
-
-        terms = index.get("terms") or set()
-        if not terms:
-            return False
-        first_sent_at = index.get("first_sent_at")
-        edge_created_at = cls._parse_simulation_memory_time(getattr(edge, "created_at", None))
-        if first_sent_at and edge_created_at and edge_created_at < first_sent_at - timedelta(minutes=5):
-            return False
+    def _get_simulation_memory_sources_for_edge(
+        cls, edge: Any, index: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """找出与边匹配的推演写回来源。"""
+        edge_episodes = {
+            str(episode)
+            for episode in (getattr(edge, "episodes", []) or [])
+            if episode
+        }
+        edge_created_at = cls._parse_simulation_memory_time(
+            getattr(edge, "created_at", None)
+        )
         haystack = cls._normalize_simulation_memory_text(
             " ".join([
                 getattr(edge, "name", "") or "",
@@ -1232,17 +1371,25 @@ class GraphBuilderService:
                 str(getattr(edge, "attributes", {}) or ""),
             ])
         )
-        return cls._contains_simulation_memory_term(haystack, terms)
+        matched_sources = []
+        for source in index.get("sources", []):
+            if edge_episodes & (source.get("episode_uuids") or set()):
+                matched_sources.append(source)
+                continue
+            if cls._matches_simulation_memory_terms(
+                haystack, edge_created_at, source
+            ):
+                matched_sources.append(source)
+        return cls._unique_simulation_memory_sources(matched_sources)
 
     @classmethod
-    def _is_simulation_memory_node(cls, node: Any, index: Dict[str, Any]) -> bool:
-        terms = index.get("terms") or set()
-        if not terms:
-            return False
-        first_sent_at = index.get("first_sent_at")
-        node_created_at = cls._parse_simulation_memory_time(getattr(node, "created_at", None))
-        if first_sent_at and node_created_at and node_created_at < first_sent_at - timedelta(minutes=5):
-            return False
+    def _get_simulation_memory_sources_for_node(
+        cls, node: Any, index: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """找出仅通过内容匹配的推演记忆节点来源。"""
+        node_created_at = cls._parse_simulation_memory_time(
+            getattr(node, "created_at", None)
+        )
         haystack = cls._normalize_simulation_memory_text(
             " ".join([
                 getattr(node, "name", "") or "",
@@ -1250,7 +1397,70 @@ class GraphBuilderService:
                 str(getattr(node, "attributes", {}) or ""),
             ])
         )
+        return cls._unique_simulation_memory_sources([
+            source
+            for source in index.get("sources", [])
+            if cls._matches_simulation_memory_terms(haystack, node_created_at, source)
+        ])
+
+    @classmethod
+    def _matches_simulation_memory_terms(
+        cls,
+        haystack: str,
+        item_created_at: Optional[datetime],
+        source: Dict[str, Any],
+    ) -> bool:
+        terms = source.get("terms") or set()
+        if not terms:
+            return False
+        first_sent_at = source.get("first_sent_at")
+        if (
+            first_sent_at
+            and item_created_at
+            and item_created_at < first_sent_at - timedelta(minutes=5)
+        ):
+            return False
         return cls._contains_simulation_memory_term(haystack, terms)
+
+    @staticmethod
+    def _unique_simulation_memory_sources(
+        sources: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """按来源对象去重，避免同一轮推演被节点和边重复计入。"""
+        unique_sources = []
+        seen_source_ids = set()
+        for source in sources:
+            source_id = id(source)
+            if source_id in seen_source_ids:
+                continue
+            seen_source_ids.add(source_id)
+            unique_sources.append(source)
+        return unique_sources
+
+    @classmethod
+    def _is_new_simulation_memory_node(
+        cls, node: Any, sources: List[Dict[str, Any]]
+    ) -> bool:
+        """
+        判断节点是否由推演新增。
+
+        新推演使用启动前快照精确判断；旧推演没有快照时，退化为节点创建时间与
+        首次写回时间的比较，避免将明确早于推演的节点置灰。
+        """
+        node_uuid = str(getattr(node, "uuid", "") or "")
+        node_created_at = cls._parse_simulation_memory_time(
+            getattr(node, "created_at", None)
+        )
+        for source in sources:
+            baseline_node_uuids = source.get("baseline_node_uuids")
+            if baseline_node_uuids is not None:
+                if node_uuid not in baseline_node_uuids:
+                    return True
+                continue
+            first_sent_at = source.get("first_sent_at")
+            if first_sent_at and node_created_at and node_created_at >= first_sent_at:
+                return True
+        return False
 
     @staticmethod
     def _contains_simulation_memory_term(haystack: str, terms: set) -> bool:

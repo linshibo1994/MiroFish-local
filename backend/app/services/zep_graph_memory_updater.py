@@ -34,6 +34,18 @@ SIMULATION_DATA_DIR = os.path.join(
 SIMULATION_MEMORY_LABEL = "未来推演记忆"
 SIMULATION_MEMORY_LABEL_KEY = "FutureSimulationMemory"
 
+# 双平台推演 episode 字段汉化映射（避免 graphiti LLM 从 JSON payload 中提取英文实体名）
+# 仅用于 graphiti backend 的 episode data 序列化，不影响内部追踪字段
+EPISODE_FIELD_HANIZATION_MAP = {
+    "platform": {
+        "twitter": "推特平台",
+        "reddit": "Reddit社区",
+    },
+    "source": {
+        "dual_platform_simulation": "双平台推演",
+    },
+}
+
 
 @dataclass
 class AgentActivity:
@@ -471,13 +483,20 @@ class ZepGraphMemoryUpdater:
         reference_time = parse_iso_datetime(activity.timestamp)
 
         if self.backend == "graphiti":
+            # 汉化 episode payload 中的英文字段值（如 platform、source），
+            # 避免 graphiti LLM 从 JSON payload 中提取英文实体名
+            graphiti_payload = dict(payload)
+            for field, mapping in EPISODE_FIELD_HANIZATION_MAP.items():
+                original = graphiti_payload.get(field)
+                if original and original in mapping:
+                    graphiti_payload[field] = mapping[original]
             return {
                 "activity_id": activity_id,
-                "data": json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                "data": json.dumps(graphiti_payload, ensure_ascii=False, sort_keys=True),
                 "episode_type": "json",
                 "reference_time": reference_time,
                 "reference_time_iso": reference_time.isoformat(),
-                "payload_preview": payload["episode_text"],
+                "payload_preview": graphiti_payload["episode_text"],
             }
 
         return {

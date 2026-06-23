@@ -97,8 +97,9 @@ def test_ontology_prompt_separates_graph_entities_from_agent_candidates():
 
     assert "图谱实体不等于最终人设 Agent" in ONTOLOGY_SYSTEM_PROMPT
     assert "受害人/被害人、嫌疑人/被告人、主配角、亲属" in ONTOLOGY_SYSTEM_PROMPT
-    assert "受害人、嫌疑人、被告人、当事人、主配角、亲属等核心人物类型" in ONTOLOGY_SYSTEM_PROMPT
-    assert "不能因为“不一定发声”而被省略" in message
+    # 核心人物类型应无条件保留，事件角色类型按事件性质条件使用
+    assert "核心人物类型（当事人、主角、配角、关键个人）" in ONTOLOGY_SYSTEM_PROMPT
+    assert "涉及刑事/法律/争议事件" in message
     assert "小红书、微博、抖音" in message
 
 
@@ -199,9 +200,12 @@ def test_graphiti_ontology_is_not_used_as_hard_entity_type_constraint(monkeypatc
 
     assert episode_uuid == "episode-open-types"
     assert client._ontology_cache["graph-open"]["schema_hints"]["entities"][0]["name"] == "Person"
-    assert captured["entity_types"] is None
-    assert captured["edge_types"] is None
-    assert captured["edge_type_map"] is None
+    # 本体类型应作为自定义类型传给 Graphiti（提供丰富类型参考），但不作为硬枚举约束
+    assert captured["entity_types"] is not None
+    assert "Person" in captured["entity_types"]
+    assert captured["edge_types"] is not None
+    assert "REPORTS_ON" in captured["edge_types"]
+    assert captured["edge_type_map"] is not None
 
 
 def test_graphiti_embedding_throttle_waits_between_requests(monkeypatch):
@@ -1135,7 +1139,7 @@ def test_graph_builder_wraps_chunks_with_event_relevance_constraints(monkeypatch
     assert "事件主题：张雪机车事件" in wrapped
     assert "推演方向：推演赛事争议后续舆情走向" in wrapped
     assert "张雪、张雪机车、法国车手瓦伦丁·德比斯、WSBK、820RR-RS" in wrapped
-    assert "实体数量目标下限为100+" in wrapped
+    assert "实体数量目标下限为50+" in wrapped
     assert "实体类型完全开放" in wrapped
     assert "仅作为背景噪音或广告推荐出现的无关实体可以忽略" in wrapped
     assert "# 文档文本块（唯一事实来源）" in wrapped
@@ -1725,7 +1729,7 @@ def test_graph_build_api_passes_project_event_context_to_episodes(monkeypatch, t
     assert captured["batch_size"] == 1
     assert captured["concurrency"] == 1
     assert "法国车手瓦伦丁·德比斯" in captured["extraction_context"]["entity_hints"]
-    assert "实体数量目标下限为100+" in captured["wrapped_episode"]
+    assert "实体数量目标下限为50+" in captured["wrapped_episode"]
     assert "实体类型完全开放" in captured["wrapped_episode"]
     assert "张雪驾驶820RR-RS参加相关赛事讨论" in captured["wrapped_episode"]
 
@@ -1737,7 +1741,7 @@ def test_graph_build_api_enriches_event_entities_when_below_target(monkeypatch, 
     monkeypatch.setattr("app.api.graph.Config.ZEP_BACKEND", "graphiti")
     monkeypatch.setattr("app.api.graph.Config.GRAPHITI_INGEST_CONCURRENCY", 1)
     monkeypatch.setattr("app.api.graph.Config.GRAPHITI_EPISODE_BATCH_SIZE", 1)
-    monkeypatch.setattr("app.api.graph.Config.GRAPH_MIN_ENTITY_TARGET", 100)
+    monkeypatch.setattr("app.api.graph.Config.GRAPH_MIN_ENTITY_TARGET", 50)
     monkeypatch.setattr("app.api.graph.Config.GRAPH_ENTITY_ENRICHMENT_ENABLED", True)
     monkeypatch.setattr("app.api.graph.Config.GRAPH_ENTITY_ENRICHMENT_QUERY_LIMIT", 2)
     monkeypatch.setattr("app.api.graph.Config.GRAPH_ENTITY_ENRICHMENT_SEARCH_COUNT", 2)
@@ -1820,7 +1824,7 @@ def test_graph_build_api_enriches_event_entities_when_below_target(monkeypatch, 
     assert response.status_code == 200
     task = TaskManager().get_task(response.get_json()["data"]["task_id"])
     enrichment = task.result["entity_enrichment"]
-    assert enrichment["target_node_count"] == 100
+    assert enrichment["target_node_count"] == 50
     assert enrichment["initial_node_count"] == 33
     assert enrichment["final_node_count"] == 120
     assert enrichment["performed"] is True
@@ -1837,7 +1841,7 @@ def test_graph_build_api_fails_when_enrichment_still_below_target(monkeypatch, t
     monkeypatch.setattr("app.api.graph.Config.ZEP_BACKEND", "graphiti")
     monkeypatch.setattr("app.api.graph.Config.GRAPHITI_INGEST_CONCURRENCY", 1)
     monkeypatch.setattr("app.api.graph.Config.GRAPHITI_EPISODE_BATCH_SIZE", 1)
-    monkeypatch.setattr("app.api.graph.Config.GRAPH_MIN_ENTITY_TARGET", 100)
+    monkeypatch.setattr("app.api.graph.Config.GRAPH_MIN_ENTITY_TARGET", 50)
     monkeypatch.setattr("app.api.graph.Config.GRAPH_ENTITY_ENRICHMENT_ENABLED", True)
     monkeypatch.setattr("app.api.graph.Config.GRAPH_ENTITY_ENRICHMENT_QUERY_LIMIT", 1)
     monkeypatch.setattr("app.services.graph_builder.time.sleep", lambda seconds: None)
@@ -1919,7 +1923,7 @@ def test_graph_extraction_constraints_keep_core_people_and_media_platforms():
 
     assert "核心人物必须优先抽取" in wrapped
     assert "受害人/被害人、嫌疑人/犯罪嫌疑人、被告人、当事人" in wrapped
-    assert "实体数量目标下限为100+" in wrapped
+    assert "实体数量目标下限为50+" in wrapped
     assert "实体类型完全开放" in wrapped
     assert "图谱实体不等于最终人设 Agent" in wrapped
     assert "优先使用文本中出现的全名作为实体名称" in wrapped

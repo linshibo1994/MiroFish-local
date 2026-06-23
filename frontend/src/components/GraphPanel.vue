@@ -318,8 +318,10 @@ const getNodeDisplayType = (node = {}) => {
   return node.display_type || node.labels?.find(l => l !== 'Entity') || 'Entity'
 }
 
-const isSimulationMemoryNode = (node = {}) => {
-  return Boolean(node.is_simulation_memory || isSimulationMemoryLabel(node.display_type))
+const isNewSimulationMemoryNode = (node = {}) => {
+  return Boolean(
+    node.is_new_simulation_memory || isSimulationMemoryLabel(node.display_type)
+  )
 }
 
 const formatNodeDetailName = (name = '') => {
@@ -420,7 +422,7 @@ const renderGraph = () => {
     id: n.uuid,
     name: n.name || 'Unnamed',
     type: getNodeDisplayType(n),
-    isSimulationMemory: isSimulationMemoryNode(n),
+    isNewSimulationMemory: isNewSimulationMemoryNode(n),
     rawData: n
   }))
   
@@ -719,7 +721,7 @@ const renderGraph = () => {
     .data(nodes)
     .enter().append('circle')
     .attr('r', 10)
-    .attr('fill', d => d.isSimulationMemory ? SIMULATION_MEMORY_COLOR : getColor(d.type))
+    .attr('fill', d => d.isNewSimulationMemory ? SIMULATION_MEMORY_COLOR : getColor(d.type))
     .attr('stroke', '#fff')
     .attr('stroke-width', 2.5)
     .style('cursor', 'pointer')

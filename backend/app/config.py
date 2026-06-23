@@ -124,7 +124,7 @@ class Config:
     GRAPH_EXTRACTION_CONTEXT_MAX_SUMMARY_CHARS = int(os.environ.get('GRAPH_EXTRACTION_CONTEXT_MAX_SUMMARY_CHARS', '1500'))  # 每个 chunk 注入的事件摘要长度，放宽以适应复杂事件
     GRAPH_EXTRACTION_CONTEXT_MAX_ENTITY_HINTS = int(os.environ.get('GRAPH_EXTRACTION_CONTEXT_MAX_ENTITY_HINTS', '100'))  # 每个 chunk 注入的实体提示数量，大幅放宽避免截断
     GRAPH_EXTRACTION_CONTEXT_MAX_HINT_CHARS = int(os.environ.get('GRAPH_EXTRACTION_CONTEXT_MAX_HINT_CHARS', '2000'))  # 每个 chunk 注入的实体提示总长度，放宽以适应长名称实体
-    GRAPH_MIN_ENTITY_TARGET = int(os.environ.get('GRAPH_MIN_ENTITY_TARGET', '100'))  # Step1 图谱构建的事件相关实体目标下限
+    GRAPH_MIN_ENTITY_TARGET = int(os.environ.get('GRAPH_MIN_ENTITY_TARGET', '50'))  # Step1 图谱构建的事件相关实体目标下限
     GRAPH_ENTITY_ENRICHMENT_ENABLED = os.environ.get('GRAPH_ENTITY_ENRICHMENT_ENABLED', 'true').lower() in {'1', 'true', 'yes', 'on'}  # 低于实体目标时是否联网补充材料继续建图
     GRAPH_ENTITY_ENRICHMENT_QUERY_LIMIT = int(os.environ.get('GRAPH_ENTITY_ENRICHMENT_QUERY_LIMIT', '3'))  # 实体补充检索最多派生查询数
     GRAPH_ENTITY_ENRICHMENT_SEARCH_COUNT = int(os.environ.get('GRAPH_ENTITY_ENRICHMENT_SEARCH_COUNT', '10'))  # 每个补充查询抓取来源数

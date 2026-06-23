@@ -73,6 +73,34 @@ def _is_quota_exhausted_error(exc: Exception) -> bool:
     )
 
 
+def _is_fatal_error(exc: Exception) -> bool:
+    """识别不可恢复的致命错误（进程关闭、事件循环死亡等），这类错误重试无效。"""
+    for current in _iter_exception_chain(exc):
+        text = str(current)
+        # ThreadPoolExecutor 关闭后无法调度新任务
+        if "cannot schedule new futures after shutdown" in text:
+            return True
+        # 事件循环已关闭
+        if "event loop is closed" in text.lower():
+            return True
+        # asyncio 事件循环关闭
+        if isinstance(current, RuntimeError) and "shutdown" in text.lower():
+            return True
+    return False
+
+
+def _is_connection_error(exc: Exception) -> bool:
+    """识别网络连接错误（可通过切换路由重试）。"""
+    for current in _iter_exception_chain(exc):
+        class_name = current.__class__.__name__
+        if class_name in ("APIConnectionError", "ConnectionError", "ConnectTimeout"):
+            return True
+        text = str(current).lower()
+        if "connection" in text and ("error" in text or "refused" in text or "reset" in text or "timeout" in text):
+            return True
+    return False
+
+
 def _normalize_reference_time(reference_time: Optional[Any]) -> Optional[datetime]:
     """兼容 API 层传入的 datetime 或 ISO 时间字符串。"""
     if reference_time is None or isinstance(reference_time, datetime):
@@ -167,6 +195,12 @@ def _run_async(coro):
     这样 Neo4j driver 始终绑定到同一个循环，避免跨循环问题。
     """
     loop = _ensure_async_loop()
+    if loop.is_closed():
+        raise RuntimeError(
+            "Graphiti 异步事件循环已关闭，无法执行操作。"
+            "可能原因：Flask 热重载触发了进程重启，或服务器正在关闭。"
+            "请等待当前图谱构建完成后再修改代码文件，或重启服务后重试。"
+        )
     future = asyncio.run_coroutine_threadsafe(coro, loop)
     timeout = max(60, int(Config.GRAPHITI_OPERATION_TIMEOUT_SECONDS or 900))
     try:
@@ -174,6 +208,15 @@ def _run_async(coro):
     except FutureTimeoutError as exc:
         future.cancel()
         raise TimeoutError(f"Graphiti 异步操作超过 {timeout} 秒未返回") from exc
+    except RuntimeError as exc:
+        # 捕获 "cannot schedule new futures after shutdown" 等关闭错误，提供更清晰的提示
+        if _is_fatal_error(exc):
+            raise RuntimeError(
+                "Graphiti 异步操作失败：后台事件循环或线程池已关闭。"
+                "这通常是因为 Flask 热重载（检测到文件修改）或服务器关闭触发了进程重启。"
+                "请等待当前图谱构建完成后再修改代码文件，或重启服务后重试。"
+            ) from exc
+        raise
 
 
 async def _throttle_embedding_request(operation: str, item_count: int) -> None:
@@ -297,6 +340,15 @@ async def _call_with_graphiti_rate_limit_retry(
                 f"Graphiti {operation} 单次请求超过 {request_timeout:g} 秒未返回"
             ) from exc
         except Exception as exc:
+            # 致命错误（进程关闭、事件循环死亡等）不重试，直接抛出
+            if _is_fatal_error(exc):
+                logger.error(
+                    "Graphiti %s 遇到不可恢复的致命错误（进程可能正在关闭），跳过重试: items=%s, error=%s",
+                    operation,
+                    item_count,
+                    exc,
+                )
+                raise
             if not _is_rate_limit_error(exc) or _is_quota_exhausted_error(exc) or attempt >= max_retries:
                 raise
             delay = retry_seconds * (attempt + 1)
@@ -727,19 +779,22 @@ class GraphitiClient(ZepClientAdapter):
         设置图谱本体
 
         Graphiti 不提供与 Zep Cloud 完全等价的图级 ontology 注册接口。
-        当前实现会缓存 ontology 作为诊断和提示词参考，但不会再把它作为
-        Graphiti ingestion 的硬枚举约束。Step1 事件图谱需要尽可能完整抽取
-        事件相关实体，实体类型不应被本体生成阶段的有限类型集合截断。
+        本体会作为自定义实体/边类型注入 Graphiti episode ingestion，
+        为 LLM 抽取提供丰富的类型参考；同时 Graphiti 仍允许 LLM 根据
+        文本内容动态创建新的实体类型，不会将类型列表作为硬枚举约束。
 
         仍未对齐的部分：
         - 图级持久化约束/索引管理
         - 更严格的 schema 校验与冲突检测
         """
         for graph_id in graph_ids:
+            normalized_entities = self._normalize_entity_types(entities)
+            normalized_edges = self._normalize_edge_types(edges)
+            edge_type_map = self._build_edge_type_map(edges)
             self._ontology_cache[graph_id] = {
-                "entities": {},
-                "edges": {},
-                "edge_type_map": {},
+                "entities": normalized_entities,
+                "edges": normalized_edges,
+                "edge_type_map": edge_type_map,
                 "excluded_entity_types": [],
                 "schema_hints": {
                     "entities": entities or [],
@@ -747,9 +802,10 @@ class GraphitiClient(ZepClientAdapter):
                 },
             }
             logger.info(
-                f"Ontology 已缓存为开放抽取提示: graph_id={graph_id}, "
-                f"entity_type_hints={len(entities or [])}, "
-                f"edge_type_hints={len(edges or [])}"
+                f"Ontology 已缓存: graph_id={graph_id}, "
+                f"entity_types={len(normalized_entities)}, "
+                f"edge_types={len(normalized_edges)}, "
+                f"edge_type_map_keys={len(edge_type_map)}"
             )
 
     def set_ontology_from_cache(self, graph_id: str, source_client: Any) -> None:
