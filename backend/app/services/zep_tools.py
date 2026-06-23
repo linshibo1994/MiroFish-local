@@ -14,6 +14,7 @@ Zep检索工具服务
 
 import time
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
@@ -1378,17 +1379,16 @@ class ZepToolsService:
         INTERVIEW_PROMPT_PREFIX = "结合你的人设、所有的过往记忆与行动，不调用任何工具直接用文本回复我："
         optimized_prompt = f"{INTERVIEW_PROMPT_PREFIX}{combined_prompt}"
         
-        # Step 4: 调用真实的采访API（不指定platform，默认双平台同时采访）
+        # Step 4: 优先调用真实的采访API；IPC不可用时降级为基于人设的问卷回答
+        interviews_request = [
+            {
+                "agent_id": agent_idx,
+                "prompt": optimized_prompt
+            }
+            for agent_idx in selected_indices
+        ]
+
         try:
-            # 构建批量采访列表（不指定platform，双平台采访）
-            interviews_request = []
-            for agent_idx in selected_indices:
-                interviews_request.append({
-                    "agent_id": agent_idx,
-                    "prompt": optimized_prompt  # 使用优化后的prompt
-                    # 不指定platform，API会在twitter和reddit两个平台都采访
-                })
-            
             logger.info(f"调用批量采访API（双平台）: {len(interviews_request)} 个Agent")
             
             # 调用 SimulationRunner 的批量采访方法（不传platform，双平台采访）
@@ -1405,70 +1405,63 @@ class ZepToolsService:
             if not api_result.get("success", False):
                 error_msg = api_result.get("error", "未知错误")
                 logger.warning(f"采访API返回失败: {error_msg}")
-                result.summary = f"采访API调用失败：{error_msg}。请检查OASIS模拟环境状态。"
-                return result
-            
-            # Step 5: 解析API返回结果，构建AgentInterview对象
-            # 双平台模式返回格式: {"twitter_0": {...}, "reddit_0": {...}, "twitter_1": {...}, ...}
-            api_data = api_result.get("result", {})
-            results_dict = api_data.get("results", {}) if isinstance(api_data, dict) else {}
-            
-            for i, agent_idx in enumerate(selected_indices):
-                agent = selected_agents[i]
-                agent_name = agent.get("realname", agent.get("username", f"Agent_{agent_idx}"))
-                agent_role = agent.get("profession", "未知")
-                agent_bio = agent.get("bio", "")
-                
-                # 获取该Agent在两个平台的采访结果
-                twitter_result = results_dict.get(f"twitter_{agent_idx}", {})
-                reddit_result = results_dict.get(f"reddit_{agent_idx}", {})
-                
-                twitter_response = twitter_result.get("response", "")
-                reddit_response = reddit_result.get("response", "")
-                
-                # 合并两个平台的回答
-                response_parts = []
-                if twitter_response:
-                    response_parts.append(f"【Twitter平台回答】\n{twitter_response}")
-                if reddit_response:
-                    response_parts.append(f"【Reddit平台回答】\n{reddit_response}")
-                
-                if response_parts:
-                    response_text = "\n\n".join(response_parts)
-                else:
-                    response_text = "[无回复]"
-                
-                # 提取关键引言（从两个平台的回答中）
-                import re
-                combined_responses = f"{twitter_response} {reddit_response}"
-                key_quotes = re.findall(r'[""「」『』]([^""「」『』]{10,100})[""「」『』]', combined_responses)
-                if not key_quotes:
-                    sentences = combined_responses.split('。')
-                    key_quotes = [s.strip() + '。' for s in sentences if len(s.strip()) > 20][:3]
-                
-                interview = AgentInterview(
-                    agent_name=agent_name,
-                    agent_role=agent_role,
-                    agent_bio=agent_bio[:1000],  # 扩大bio长度限制
-                    question=combined_prompt,
-                    response=response_text,
-                    key_quotes=key_quotes[:5]
+                api_result = self._fallback_interview_agents_from_profiles(
+                    simulation_id=simulation_id,
+                    interviews_request=interviews_request,
+                    fallback_reason=error_msg,
                 )
-                result.interviews.append(interview)
+
+            self._append_api_interviews_to_result(
+                result=result,
+                api_result=api_result,
+                selected_agents=selected_agents,
+                selected_indices=selected_indices,
+                combined_prompt=combined_prompt,
+            )
             
-            result.interviewed_count = len(result.interviews)
-            
-        except ValueError as e:
-            # 模拟环境未运行
-            logger.warning(f"采访API调用失败（环境未运行？）: {e}")
-            result.summary = f"采访失败：{str(e)}。模拟环境可能已关闭，请确保OASIS环境正在运行。"
-            return result
+        except (ValueError, TimeoutError) as e:
+            logger.warning(f"采访API不可用，切换到profile问卷降级: {e}")
+            try:
+                api_result = self._fallback_interview_agents_from_profiles(
+                    simulation_id=simulation_id,
+                    interviews_request=interviews_request,
+                    fallback_reason=str(e),
+                )
+                self._append_api_interviews_to_result(
+                    result=result,
+                    api_result=api_result,
+                    selected_agents=selected_agents,
+                    selected_indices=selected_indices,
+                    combined_prompt=combined_prompt,
+                )
+            except Exception as fallback_e:
+                logger.error(f"profile问卷降级失败: {fallback_e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                result.summary = f"采访失败：{str(e)}；profile问卷降级也失败：{fallback_e}"
+                return result
         except Exception as e:
-            logger.error(f"采访API调用异常: {e}")
+            logger.error(f"采访API调用异常，切换到profile问卷降级: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            result.summary = f"采访过程发生错误：{str(e)}"
-            return result
+            try:
+                api_result = self._fallback_interview_agents_from_profiles(
+                    simulation_id=simulation_id,
+                    interviews_request=interviews_request,
+                    fallback_reason=str(e),
+                )
+                self._append_api_interviews_to_result(
+                    result=result,
+                    api_result=api_result,
+                    selected_agents=selected_agents,
+                    selected_indices=selected_indices,
+                    combined_prompt=combined_prompt,
+                )
+            except Exception as fallback_e:
+                logger.error(f"profile问卷降级失败: {fallback_e}")
+                logger.error(traceback.format_exc())
+                result.summary = f"采访过程发生错误：{str(e)}；profile问卷降级也失败：{fallback_e}"
+                return result
         
         # Step 6: 生成采访摘要
         if result.interviews:
@@ -1479,6 +1472,84 @@ class ZepToolsService:
         
         logger.info(f"InterviewAgents完成: 采访了 {result.interviewed_count} 个Agent（双平台）")
         return result
+
+    def _fallback_interview_agents_from_profiles(
+        self,
+        simulation_id: str,
+        interviews_request: List[Dict[str, Any]],
+        fallback_reason: str,
+    ) -> Dict[str, Any]:
+        """当OASIS IPC采访不可用时，复用Step5的人设问卷能力生成可用回答。"""
+        from .agent_dialogue_service import AgentDialogueService
+
+        logger.info(
+            "使用profile问卷降级生成采访结果: simulation_id=%s, count=%s, reason=%s",
+            simulation_id,
+            len(interviews_request),
+            fallback_reason,
+        )
+        return AgentDialogueService(llm_client=self.llm).interview_agents_from_profiles(
+            simulation_id=simulation_id,
+            interviews=interviews_request,
+            platform="reddit",
+            fallback_reason=fallback_reason,
+        )
+
+    def _append_api_interviews_to_result(
+        self,
+        result: InterviewResult,
+        api_result: Dict[str, Any],
+        selected_agents: List[Dict[str, Any]],
+        selected_indices: List[int],
+        combined_prompt: str,
+    ) -> None:
+        """把真实IPC采访或profile降级采访的API结果转换为报告工具内部结构。"""
+        api_data = api_result.get("result", {}) if isinstance(api_result, dict) else {}
+        results_dict = api_data.get("results", {}) if isinstance(api_data, dict) else {}
+        result_source = api_data.get("source") if isinstance(api_data, dict) else None
+
+        for i, agent_idx in enumerate(selected_indices):
+            agent = selected_agents[i]
+            agent_name = agent.get("realname", agent.get("username", f"Agent_{agent_idx}"))
+            agent_role = agent.get("profession", "未知")
+            agent_bio = agent.get("bio", "")
+
+            twitter_result = results_dict.get(f"twitter_{agent_idx}", {})
+            reddit_result = results_dict.get(f"reddit_{agent_idx}", {})
+
+            twitter_response = twitter_result.get("response", "")
+            reddit_response = reddit_result.get("response", "")
+
+            response_parts = []
+            if twitter_response:
+                response_parts.append(f"【Twitter平台回答】\n{twitter_response}")
+            if reddit_response:
+                response_parts.append(f"【Reddit平台回答】\n{reddit_response}")
+
+            if response_parts:
+                response_text = "\n\n".join(response_parts)
+                if result_source == "profile_llm":
+                    response_text = f"【profile问卷降级回答】\n{response_text}"
+            else:
+                response_text = "[无回复]"
+
+            combined_responses = f"{twitter_response} {reddit_response}"
+            key_quotes = re.findall(r'[""「」『』]([^""「」『』]{10,100})[""「」『』]', combined_responses)
+            if not key_quotes:
+                sentences = combined_responses.split('。')
+                key_quotes = [s.strip() + '。' for s in sentences if len(s.strip()) > 20][:3]
+
+            interview = AgentInterview(
+                agent_name=agent_name,
+                agent_role=agent_role,
+                agent_bio=agent_bio[:1000],
+                question=combined_prompt,
+                response=response_text,
+                key_quotes=key_quotes[:5]
+            )
+            result.interviews.append(interview)
+
+        result.interviewed_count = len(result.interviews)
     
     def _load_agent_profiles(self, simulation_id: str) -> List[Dict[str, Any]]:
         """加载模拟的Agent人设文件"""
