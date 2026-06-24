@@ -32,6 +32,7 @@ from .location_entity_filter import (
 )
 from ..utils import llm_routing
 from ..utils.llm_routing import clamp_concurrency, get_preferred_llm_endpoint
+from ..utils.neo4j_errors import format_neo4j_auth_error, is_neo4j_auth_error
 
 logger = logging.getLogger("mirofish.graph_builder")
 
@@ -641,6 +642,8 @@ class GraphBuilderService:
                     message = timeout_text
                 else:
                     message = f"批次 {batch_num} 写入超过 Graphiti 超时限制"
+            elif is_neo4j_auth_error(exc):
+                message = format_neo4j_auth_error(exc)
             else:
                 exception_text = " ".join(iter_exception_messages(exc)).lower()
                 if (
@@ -732,14 +735,15 @@ class GraphBuilderService:
                         _is_shutdown = _is_fatal_error(first_exc)
                     except Exception:
                         pass
-                    if _is_shutdown:
+                    if _is_shutdown or is_neo4j_auth_error(first_exc):
                         logger.error(
-                            "图谱批次遇到不可恢复的致命错误（进程可能正在关闭），跳过路由切换: graph_id=%s, batch=%s/%s, route=%s, model=%s",
+                            "图谱批次遇到不可通过 LLM 路由切换恢复的错误，跳过路由切换: graph_id=%s, batch=%s/%s, route=%s, model=%s, error=%s",
                             graph_id,
                             batch_num,
                             total_batches,
                             route_name,
                             model_name,
+                            first_exc,
                         )
                         raise
 

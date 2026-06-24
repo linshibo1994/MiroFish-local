@@ -285,6 +285,34 @@ def _summarize_graphiti_llm_request(args: tuple, kwargs: Dict[str, Any], llm_cli
     }
 
 
+def _ensure_graphiti_json_instruction(args: tuple, kwargs: Dict[str, Any]) -> None:
+    """兼容要求 JSON 模式提示词必须包含 json 字样的 OpenAI-compatible 服务。"""
+    messages = kwargs.get("messages")
+    if messages is None and args:
+        messages = args[0]
+    if not messages:
+        return
+
+    try:
+        has_json_instruction = any(
+            "json" in ((getattr(message, "content", "") or "").lower())
+            for message in messages
+        )
+    except TypeError:
+        return
+    if has_json_instruction:
+        return
+
+    instruction = "\n\n请只返回有效 JSON（json）内容，不能包含 Markdown 代码块或额外解释。"
+    for message in messages:
+        if getattr(message, "role", None) == "system":
+            message.content = f"{message.content or ''}{instruction}"
+            return
+
+    first_message = messages[0]
+    first_message.content = f"{getattr(first_message, 'content', '') or ''}{instruction}"
+
+
 async def _call_with_graphiti_rate_limit_retry(
     factory,
     operation: str,
@@ -398,6 +426,7 @@ def _create_graphiti_llm_rate_limit_wrapper(base_llm_client: Any) -> Any:
                 return await self._llm_client._generate_response(*args, **kwargs)
 
             async def generate_response(self, *args, **kwargs) -> Dict[str, Any]:
+                _ensure_graphiti_json_instruction(args, kwargs)
                 request_detail = _summarize_graphiti_llm_request(args, kwargs, self._llm_client)
                 async with self._semaphore:
                     return await _call_with_graphiti_rate_limit_retry(
