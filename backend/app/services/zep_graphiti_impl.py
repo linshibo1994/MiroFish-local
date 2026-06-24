@@ -621,6 +621,8 @@ class GraphitiClient(ZepClientAdapter):
                 from .graphiti_patch import apply_patch
                 apply_patch()
 
+                self._verify_neo4j_connectivity()
+
                 llm_client = self._llm_client
                 if llm_client is None:
                     llm_client = self._build_default_llm_client()
@@ -666,6 +668,32 @@ class GraphitiClient(ZepClientAdapter):
             except Exception as e:
                 logger.error(f"Graphiti 初始化失败: {e}")
                 raise
+
+    def _verify_neo4j_connectivity(self) -> None:
+        """初始化 Graphiti 前先验证一次 Neo4j 凭证，避免索引并发初始化刷爆认证限流。"""
+        from neo4j import GraphDatabase
+        from ..utils.neo4j_errors import format_neo4j_auth_error, is_neo4j_auth_error
+
+        driver = None
+        try:
+            driver = GraphDatabase.driver(
+                self.neo4j_uri,
+                auth=(self.neo4j_user, self.neo4j_password),
+                connection_timeout=5,
+            )
+            driver.verify_connectivity()
+        except Exception as exc:
+            if is_neo4j_auth_error(exc):
+                logger.error(
+                    "Neo4j 连接预检失败: uri=%s, user=%s, error=%s",
+                    self.neo4j_uri,
+                    self.neo4j_user,
+                    format_neo4j_auth_error(exc),
+                )
+            raise
+        finally:
+            if driver is not None:
+                driver.close()
 
     def _build_default_llm_client(self) -> Any:
         """
