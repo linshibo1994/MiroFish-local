@@ -1,7 +1,7 @@
 <template>
   <div class="graph-panel">
     <div class="panel-header">
-      <span class="panel-title">图谱关系可视化</span>
+      <span class="panel-title">智能体关系可视化</span>
       <!-- 顶部工具栏 (Internal Top Right) -->
       <div class="header-tools">
         <button class="tool-btn" @click="$emit('refresh')" :disabled="loading" title="刷新图谱">
@@ -240,7 +240,7 @@
 
     <!-- 底部图例 (Bottom Left) -->
     <div v-if="graphData && entityTypes.length" class="graph-legend">
-      <span class="legend-title">实体类型</span>
+      <span class="legend-title">智能体类型</span>
       <div class="legend-items">
         <div class="legend-item" v-for="type in entityTypes" :key="type.name">
           <span class="legend-dot" :style="{ background: type.color }"></span>

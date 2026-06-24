@@ -207,7 +207,7 @@ const viewModes = [
 const showHistory = ref(false)
 
 const currentStep = ref(1)
-const stepNames = ['图谱构建', '环境搭建', '双平台推演', '生成报告', '深入对话']
+const stepNames = ['群体构建', '环境搭建', '双平台推演', '生成报告', '深入对话']
 
 const currentProjectId = ref(route.params.projectId)
 const loading = ref(false)

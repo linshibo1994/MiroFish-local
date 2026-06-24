@@ -19,47 +19,6 @@
           <p class="description">
             新建模拟实例，拉取模拟世界参数模版
           </p>
-
-          <div v-if="activeSimulationId" class="info-card">
-            <div class="info-row">
-              <span class="info-label">前端版本</span>
-              <span class="info-value mono">{{ BUILD_INFO.gitSha }} / {{ BUILD_INFO.buildTime }}</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">项目ID</span>
-              <span class="info-value mono">{{ projectData?.project_id }}</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">图谱ID</span>
-              <span class="info-value mono">{{ projectData?.graph_id }}</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">模拟ID</span>
-              <span class="info-value mono">{{ activeSimulationId }}</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">任务ID</span>
-              <span class="info-value mono">{{ taskId || '异步任务已完成' }}</span>
-            </div>
-          </div>
-          <div v-else class="info-card">
-            <div class="info-row">
-              <span class="info-label">前端版本</span>
-              <span class="info-value mono">{{ BUILD_INFO.gitSha }} / {{ BUILD_INFO.buildTime }}</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">项目ID</span>
-              <span class="info-value mono">{{ projectData?.project_id || '等待项目数据' }}</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">图谱ID</span>
-              <span class="info-value mono">{{ projectData?.graph_id || '等待图谱构建完成' }}</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">模拟ID</span>
-              <span class="info-value mono">尚未创建</span>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -601,7 +560,6 @@ import {
   getSimulationProfilesRealtime,
   getSimulationConfigRealtime 
 } from '../api/simulation'
-import { BUILD_INFO } from '../utils/buildInfo'
 import { translateEntityType, translateRelationType } from '../utils/entityTranslations.js'
 import {
   SIMULATION_ROUND_LIMITS,

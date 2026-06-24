@@ -45,7 +45,7 @@ const emit = defineEmits(['missing-report'])
 const router = useRouter()
 
 const steps = [
-  { index: 1, label: '图谱构建' },
+  { index: 1, label: '群体构建' },
   { index: 2, label: '环境搭建' },
   { index: 3, label: '双平台推演' },
   { index: 4, label: '生成报告' },
