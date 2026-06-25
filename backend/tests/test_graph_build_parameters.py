@@ -404,6 +404,43 @@ def test_graphiti_llm_rate_limit_wrapper_throttles_and_retries(monkeypatch):
     assert sleeps == [20, 0.5]
 
 
+def test_graphiti_llm_wrapper_wraps_top_level_list_for_single_list_response_model(monkeypatch):
+    from app.services import zep_graphiti_impl
+    from graphiti_core.llm_client.config import LLMConfig
+    from pydantic import BaseModel
+
+    class FakeItem(BaseModel):
+        name: str
+
+    class FakeItems(BaseModel):
+        extracted_entities: list[FakeItem]
+
+    class FakeLLM:
+        config = LLMConfig(model="fake-model", temperature=0, max_tokens=128)
+        model = "fake-model"
+        small_model = None
+        temperature = 0
+        max_tokens = 128
+
+        def set_tracer(self, tracer):
+            self.tracer = tracer
+
+        async def generate_response(self, *args, **kwargs):
+            return [{"name": "雷军"}]
+
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_LLM_MIN_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_RATE_LIMIT_MAX_RETRIES", 0)
+
+    wrapped = zep_graphiti_impl._create_graphiti_llm_rate_limit_wrapper(FakeLLM())
+
+    async def run_call():
+        return await wrapped.generate_response([], response_model=FakeItems)
+
+    result = asyncio.run(run_call())
+
+    assert result == {"extracted_entities": [{"name": "雷军"}]}
+
+
 def test_graphiti_quota_exhausted_error_does_not_retry(monkeypatch):
     from app.services import zep_graphiti_impl
     from graphiti_core.llm_client.errors import RateLimitError
@@ -1936,6 +1973,7 @@ def test_graph_build_api_records_requested_and_effective_batch_plan(monkeypatch,
     monkeypatch.setattr("app.api.graph.Config.ZEP_BACKEND", "graphiti")
     monkeypatch.setattr("app.api.graph.Config.GRAPHITI_EPISODE_BATCH_SIZE", 1)
     monkeypatch.setattr("app.api.graph.Config.GRAPHITI_INGEST_CONCURRENCY", 1)
+    monkeypatch.setattr("app.api.graph.Config.GRAPHITI_USE_BULK_INGEST", False)
     monkeypatch.setattr("app.api.graph.Config.GRAPH_ENTITY_ENRICHMENT_ENABLED", False)
 
     class InlineBuilder:

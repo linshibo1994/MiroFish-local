@@ -21,7 +21,7 @@ import threading
 import time
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
-from typing import Any, ClassVar, Dict, List, Optional, Set
+from typing import Any, ClassVar, Dict, List, Optional, Set, get_origin
 from pydantic import BaseModel, Field
 
 from ..config import Config
@@ -313,6 +313,49 @@ def _ensure_graphiti_json_instruction(args: tuple, kwargs: Dict[str, Any]) -> No
     first_message.content = f"{getattr(first_message, 'content', '') or ''}{instruction}"
 
 
+def _get_response_model_arg(args: tuple, kwargs: Dict[str, Any]) -> Optional[type[BaseModel]]:
+    """兼容 Graphiti generate_response 的关键字和位置参数调用。"""
+    response_model = kwargs.get("response_model")
+    if response_model is None and len(args) >= 2:
+        response_model = args[1]
+    if isinstance(response_model, type) and issubclass(response_model, BaseModel):
+        return response_model
+    return None
+
+
+def _normalize_graphiti_response_model_payload(
+    payload: Any,
+    response_model: Optional[type[BaseModel]],
+) -> Any:
+    """
+    兼容部分 OpenAI-compatible 服务忽略结构化输出外层对象的情况。
+
+    Graphiti 的抽取 prompt 通常要求返回形如 {"extracted_entities": [...]} 的对象；
+    个别模型会直接返回顶层数组，导致 Graphiti 后续执行 Model(**payload) 时 TypeError。
+    对“仅包含一个列表字段”的 Pydantic schema，可以安全地补回外层字段。
+    """
+    if response_model is None or not isinstance(payload, list):
+        return payload
+
+    model_fields = getattr(response_model, "model_fields", {}) or {}
+    list_fields = []
+    for field_name, field_info in model_fields.items():
+        annotation = getattr(field_info, "annotation", None)
+        if get_origin(annotation) in {list, List}:
+            list_fields.append(field_name)
+
+    if len(model_fields) == 1 and len(list_fields) == 1:
+        field_name = list_fields[0]
+        logger.warning(
+            "Graphiti LLM 返回顶层数组，已按 response_model=%s 包装为字段 %s",
+            getattr(response_model, "__name__", str(response_model)),
+            field_name,
+        )
+        return {field_name: payload}
+
+    return payload
+
+
 async def _call_with_graphiti_rate_limit_retry(
     factory,
     operation: str,
@@ -428,9 +471,15 @@ def _create_graphiti_llm_rate_limit_wrapper(base_llm_client: Any) -> Any:
             async def generate_response(self, *args, **kwargs) -> Dict[str, Any]:
                 _ensure_graphiti_json_instruction(args, kwargs)
                 request_detail = _summarize_graphiti_llm_request(args, kwargs, self._llm_client)
+                response_model = _get_response_model_arg(args, kwargs)
+
+                async def call_llm():
+                    payload = await self._llm_client.generate_response(*args, **kwargs)
+                    return _normalize_graphiti_response_model_payload(payload, response_model)
+
                 async with self._semaphore:
                     return await _call_with_graphiti_rate_limit_retry(
-                        lambda: self._llm_client.generate_response(*args, **kwargs),
+                        call_llm,
                         operation="llm.generate_response",
                         item_count=1,
                         request_detail=request_detail,
