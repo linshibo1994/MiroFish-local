@@ -321,7 +321,7 @@
 
             <div v-if="projectData?.ontology" class="ontology-preview">
               <div class="tags-container" :class="{ dimmed: selectedOntologyItem }">
-                <span class="tag-label">生成的实体类型</span>
+                <span class="tag-label">生成的智能体类型</span>
                 <div class="tags-list">
                   <span
                     v-for="entity in projectData.ontology.entity_types"
@@ -409,7 +409,7 @@
             <div class="stats-grid">
               <div class="stat-card">
                 <span class="stat-value">{{ graphStats.nodes }}</span>
-                <span class="stat-label">实体节点</span>
+                <span class="stat-label">智能体节点</span>
               </div>
               <div class="stat-card">
                 <span class="stat-value">{{ graphStats.edges }}</span>
@@ -417,7 +417,7 @@
               </div>
               <div class="stat-card">
                 <span class="stat-value">{{ graphStats.types }}</span>
-                <span class="stat-label">实体类型数</span>
+                <span class="stat-label">智能体类型数</span>
               </div>
             </div>
           </div>

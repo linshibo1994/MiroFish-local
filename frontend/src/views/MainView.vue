@@ -200,7 +200,7 @@ const router = useRouter()
 
 const viewMode = ref('split')
 const viewModes = [
-  { key: 'graph', label: '图谱' },
+  { key: 'graph', label: '群体' },
   { key: 'split', label: '双栏' },
   { key: 'workbench', label: '工作台' }
 ]
