@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 import threading
 import time
@@ -439,6 +440,83 @@ def test_graphiti_llm_wrapper_wraps_top_level_list_for_single_list_response_mode
     result = asyncio.run(run_call())
 
     assert result == {"extracted_entities": [{"name": "雷军"}]}
+
+
+def test_graphiti_llm_wrapper_retries_without_response_format(monkeypatch):
+    from app.services import zep_graphiti_impl
+    from graphiti_core.llm_client.config import LLMConfig
+
+    class FakeMessage:
+        def __init__(self, role, content):
+            self.role = role
+            self.content = content
+
+    class FakeChoice:
+        message = type("Message", (), {"content": json.dumps({"ok": True})})()
+
+    class FakeResponse:
+        choices = [FakeChoice()]
+
+    class FakeCompletions:
+        def __init__(self, calls):
+            self.calls = calls
+
+        async def create(self, **kwargs):
+            self.calls.append(kwargs)
+            assert "response_format" not in kwargs
+            return FakeResponse()
+
+    class FakeChat:
+        def __init__(self, calls):
+            self.completions = FakeCompletions(calls)
+
+    class FakeOpenAIClient:
+        def __init__(self, calls):
+            self.chat = FakeChat(calls)
+
+    class FakeLLM:
+        config = LLMConfig(model="deepseek-v4-flash", temperature=0, max_tokens=128)
+        model = "deepseek-v4-flash"
+        small_model = None
+        temperature = 0
+        max_tokens = 128
+
+        def __init__(self):
+            self.calls = []
+            self.client = FakeOpenAIClient(self.calls)
+
+        def set_tracer(self, tracer):
+            self.tracer = tracer
+
+        def _clean_input(self, content):
+            return content
+
+        async def generate_response(self, *args, **kwargs):
+            error = RuntimeError(
+                "Error code: 400 - {'error': {'message': 'This response_format type is unavailable now'}}"
+            )
+            error.status_code = 400
+            raise error
+
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_LLM_MIN_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr("app.services.zep_graphiti_impl.Config.GRAPHITI_RATE_LIMIT_MAX_RETRIES", 0)
+
+    fake_llm = FakeLLM()
+    wrapped = zep_graphiti_impl._create_graphiti_llm_rate_limit_wrapper(fake_llm)
+    messages = [
+        FakeMessage("system", "你是结构化抽取助手。"),
+        FakeMessage("user", "抽取实体。"),
+    ]
+
+    async def run_call():
+        return await wrapped.generate_response(messages)
+
+    result = asyncio.run(run_call())
+
+    assert result == {"ok": True}
+    assert len(fake_llm.calls) == 1
+    assert fake_llm.calls[0]["model"] == "deepseek-v4-flash"
+    assert "JSON" in messages[0].content
 
 
 def test_graphiti_quota_exhausted_error_does_not_retry(monkeypatch):

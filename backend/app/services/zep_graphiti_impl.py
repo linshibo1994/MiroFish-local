@@ -15,6 +15,7 @@ Ontology 会在应用层归一化后注入 Graphiti episode ingestion，用于�
 
 import asyncio
 import inspect
+import json
 import logging
 import os
 import threading
@@ -97,6 +98,23 @@ def _is_connection_error(exc: Exception) -> bool:
             return True
         text = str(current).lower()
         if "connection" in text and ("error" in text or "refused" in text or "reset" in text or "timeout" in text):
+            return True
+    return False
+
+
+def _is_response_format_unsupported_error(exc: Exception) -> bool:
+    """识别 OpenAI-compatible 服务不支持 response_format 的 400 错误。"""
+    for current in _iter_exception_chain(exc):
+        status_code = getattr(current, "status_code", None)
+        text = str(current).lower()
+        if status_code == 400 and "response_format" in text and (
+            "unavailable" in text
+            or "unsupported" in text
+            or "not support" in text
+            or "not supported" in text
+        ):
+            return True
+        if "response_format" in text and "unavailable" in text:
             return True
     return False
 
@@ -356,6 +374,52 @@ def _normalize_graphiti_response_model_payload(
     return payload
 
 
+async def _generate_response_without_response_format(
+    llm_client: Any,
+    *args,
+    **kwargs,
+) -> Dict[str, Any]:
+    """
+    兼容不支持 response_format 的 OpenAI-compatible LLM。
+
+    graphiti-core 0.25.x 的 OpenAIGenericClient 会无条件传 response_format；
+    部分兼容端点会因此返回 400。这里复用同一批 messages/model 参数，
+    去掉 response_format 再请求一次，并由本地解析 JSON。
+    """
+    messages = kwargs.get("messages")
+    if messages is None and args:
+        messages = args[0]
+    if not messages:
+        raise ValueError("Graphiti LLM fallback 缺少 messages")
+
+    max_tokens = kwargs.get("max_tokens")
+    if max_tokens is None and len(args) >= 3:
+        max_tokens = args[2]
+    if max_tokens is None:
+        max_tokens = getattr(llm_client, "max_tokens", None)
+
+    openai_messages = []
+    clean_input = getattr(llm_client, "_clean_input", lambda value: value)
+    for message in messages:
+        role = getattr(message, "role", None)
+        content = clean_input(getattr(message, "content", "") or "")
+        if role in {"system", "user", "assistant"}:
+            openai_messages.append({"role": role, "content": content})
+
+    client = getattr(llm_client, "client", None)
+    if client is None:
+        raise ValueError("Graphiti LLM fallback 缺少 OpenAI client")
+
+    response = await client.chat.completions.create(
+        model=getattr(llm_client, "model", None),
+        messages=openai_messages,
+        temperature=getattr(llm_client, "temperature", 0),
+        max_tokens=max_tokens,
+    )
+    content = response.choices[0].message.content or ""
+    return json.loads(content)
+
+
 async def _call_with_graphiti_rate_limit_retry(
     factory,
     operation: str,
@@ -474,7 +538,21 @@ def _create_graphiti_llm_rate_limit_wrapper(base_llm_client: Any) -> Any:
                 response_model = _get_response_model_arg(args, kwargs)
 
                 async def call_llm():
-                    payload = await self._llm_client.generate_response(*args, **kwargs)
+                    try:
+                        payload = await self._llm_client.generate_response(*args, **kwargs)
+                    except Exception as exc:
+                        if not _is_response_format_unsupported_error(exc):
+                            raise
+                        logger.warning(
+                            "Graphiti LLM 端点不支持 response_format，改用提示词约束 JSON 后重试: model=%s, prompt=%s",
+                            request_detail.get("model"),
+                            request_detail.get("prompt_name"),
+                        )
+                        payload = await _generate_response_without_response_format(
+                            self._llm_client,
+                            *args,
+                            **kwargs,
+                        )
                     return _normalize_graphiti_response_model_payload(payload, response_model)
 
                 async with self._semaphore:
