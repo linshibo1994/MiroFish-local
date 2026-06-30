@@ -1,6 +1,7 @@
 import pytest
 
-from app.services.zep_graphiti_impl import GraphitiClient, _ensure_graphiti_json_instruction
+from app.services.graphiti_llm_adapter import ensure_graphiti_json_instruction
+from app.services.zep_graphiti_impl import GraphitiClient
 from app.utils.neo4j_errors import format_neo4j_auth_error, is_neo4j_auth_error
 
 
@@ -20,7 +21,7 @@ def test_graphiti_json_instruction_is_appended_when_missing():
         DummyMessage("user", "抽取实体和关系。"),
     ]
 
-    _ensure_graphiti_json_instruction((messages,), {})
+    ensure_graphiti_json_instruction((messages,), {})
 
     assert "JSON" in messages[0].content
     assert "Markdown" in messages[0].content
@@ -33,7 +34,7 @@ def test_graphiti_json_instruction_keeps_existing_json_prompt():
         DummyMessage("user", "抽取实体和关系。"),
     ]
 
-    _ensure_graphiti_json_instruction((messages,), {})
+    ensure_graphiti_json_instruction((messages,), {})
 
     assert messages[0].content == "Return a valid json object."
 

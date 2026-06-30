@@ -15,18 +15,25 @@ Ontology 会在应用层归一化后注入 Graphiti episode ingestion，用于�
 
 import asyncio
 import inspect
-import json
 import logging
 import os
-import re
 import threading
 import time
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
-from typing import Any, ClassVar, Dict, List, Optional, Set, get_args, get_origin
+from typing import Any, ClassVar, Dict, List, Optional, Set
 from pydantic import BaseModel, Field
 
 from ..config import Config
+from .graphiti_llm_adapter import (
+    ensure_graphiti_json_instruction,
+    generate_response_without_response_format,
+    get_response_model_arg,
+    is_response_format_unsupported_error,
+    is_retryable_llm_response_error,
+    iter_exception_chain,
+    normalize_graphiti_response_model_payload,
+)
 from .zep_adapter import (
     ZepClientAdapter,
     GraphNode,
@@ -55,14 +62,7 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     return False
 
 
-def _iter_exception_chain(exc: Exception):
-    """遍历异常链，兼容 Graphiti 包装后的上游 OpenAI 异常。"""
-    seen = set()
-    current = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        yield current
-        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+_iter_exception_chain = iter_exception_chain
 
 
 def _is_quota_exhausted_error(exc: Exception) -> bool:
@@ -101,32 +101,6 @@ def _is_connection_error(exc: Exception) -> bool:
         if "connection" in text and ("error" in text or "refused" in text or "reset" in text or "timeout" in text):
             return True
     return False
-
-
-def _is_response_format_unsupported_error(exc: Exception) -> bool:
-    """识别 OpenAI-compatible 服务不支持 response_format 的 400 错误。"""
-    for current in _iter_exception_chain(exc):
-        status_code = getattr(current, "status_code", None)
-        text = str(current).lower()
-        if status_code == 400 and "response_format" in text and (
-            "unavailable" in text
-            or "unsupported" in text
-            or "not support" in text
-            or "not supported" in text
-        ):
-            return True
-        if "response_format" in text and "unavailable" in text:
-            return True
-    return False
-
-
-class GraphitiLLMInvalidJSONError(RuntimeError):
-    """Graphiti LLM fallback 返回了无法解析的 JSON。"""
-
-
-def _is_retryable_llm_response_error(exc: Exception) -> bool:
-    """识别 LLM 临时返回不可解析内容的错误。"""
-    return any(isinstance(current, GraphitiLLMInvalidJSONError) for current in _iter_exception_chain(exc))
 
 
 def _normalize_reference_time(reference_time: Optional[Any]) -> Optional[datetime]:
@@ -313,262 +287,6 @@ def _summarize_graphiti_llm_request(args: tuple, kwargs: Dict[str, Any], llm_cli
     }
 
 
-def _ensure_graphiti_json_instruction(args: tuple, kwargs: Dict[str, Any]) -> None:
-    """兼容要求 JSON 模式提示词必须包含 json 字样的 OpenAI-compatible 服务。"""
-    messages = kwargs.get("messages")
-    if messages is None and args:
-        messages = args[0]
-    if not messages:
-        return
-
-    try:
-        has_json_instruction = any(
-            "json" in ((getattr(message, "content", "") or "").lower())
-            for message in messages
-        )
-    except TypeError:
-        return
-    if has_json_instruction:
-        return
-
-    instruction = "\n\n请只返回有效 JSON（json）内容，不能包含 Markdown 代码块或额外解释。"
-    for message in messages:
-        if getattr(message, "role", None) == "system":
-            message.content = f"{message.content or ''}{instruction}"
-            return
-
-    first_message = messages[0]
-    first_message.content = f"{getattr(first_message, 'content', '') or ''}{instruction}"
-
-
-def _get_response_model_arg(args: tuple, kwargs: Dict[str, Any]) -> Optional[type[BaseModel]]:
-    """兼容 Graphiti generate_response 的关键字和位置参数调用。"""
-    response_model = kwargs.get("response_model")
-    if response_model is None and len(args) >= 2:
-        response_model = args[1]
-    if isinstance(response_model, type) and issubclass(response_model, BaseModel):
-        return response_model
-    return None
-
-
-def _normalize_graphiti_response_model_payload(
-    payload: Any,
-    response_model: Optional[type[BaseModel]],
-) -> Any:
-    """
-    兼容部分 OpenAI-compatible 服务忽略结构化输出外层对象的情况。
-
-    Graphiti 的抽取 prompt 通常要求返回形如 {"extracted_entities": [...]} 的对象；
-    个别模型会直接返回顶层数组，导致 Graphiti 后续执行 Model(**payload) 时 TypeError。
-    对“仅包含一个列表字段”的 Pydantic schema，可以安全地补回外层字段。
-    """
-    if response_model is None:
-        return payload
-
-    model_fields = getattr(response_model, "model_fields", {}) or {}
-    list_fields = []
-    for field_name, field_info in model_fields.items():
-        annotation = getattr(field_info, "annotation", None)
-        if get_origin(annotation) in {list, List}:
-            list_fields.append(field_name)
-
-    if len(model_fields) == 1 and len(list_fields) == 1:
-        field_name = list_fields[0]
-        items = None
-        if isinstance(payload, list):
-            items = payload
-        elif isinstance(payload, dict):
-            items = payload.get(field_name)
-            if items is None:
-                items = _pick_graphiti_compatible_list(payload, field_name)
-
-        if isinstance(items, list):
-            normalized_items = _normalize_graphiti_list_items(
-                items,
-                field_name=field_name,
-                response_model=response_model,
-            )
-            if isinstance(payload, dict) and field_name in payload and payload[field_name] is normalized_items:
-                return payload
-            if not isinstance(payload, list):
-                logger.warning(
-                    "Graphiti LLM 返回字段名与 schema 不一致，已归一化为字段 %s: response_model=%s",
-                    field_name,
-                    getattr(response_model, "__name__", str(response_model)),
-                )
-            else:
-                logger.warning(
-                    "Graphiti LLM 返回顶层数组，已按 response_model=%s 包装为字段 %s",
-                    getattr(response_model, "__name__", str(response_model)),
-                    field_name,
-                )
-            return {field_name: normalized_items}
-
-    return payload
-
-
-def _pick_graphiti_compatible_list(payload: Dict[str, Any], field_name: str) -> Optional[List[Any]]:
-    """从常见同义字段中提取 Graphiti schema 需要的列表。"""
-    candidate_keys_by_field = {
-        "extracted_entities": ("nodes", "entities", "entity_list", "extracted_nodes"),
-        "edges": ("relations", "relationships", "extracted_edges", "facts"),
-    }
-    for key in candidate_keys_by_field.get(field_name, ()):
-        value = payload.get(key)
-        if isinstance(value, list):
-            return value
-
-    list_values = [value for value in payload.values() if isinstance(value, list)]
-    if len(list_values) == 1:
-        return list_values[0]
-    return None
-
-
-def _normalize_graphiti_list_items(
-    items: List[Any],
-    *,
-    field_name: str,
-    response_model: type[BaseModel],
-) -> List[Any]:
-    """归一化 DeepSeek 等模型常见字段别名，降低 schema 校验失败率。"""
-    item_model = _get_single_list_item_model(response_model)
-    if item_model is None:
-        return items
-
-    required_fields = set((getattr(item_model, "model_fields", {}) or {}).keys())
-    normalized = []
-    changed = False
-    for item in items:
-        if not isinstance(item, dict):
-            normalized.append(item)
-            continue
-        next_item = dict(item)
-        if field_name == "extracted_entities":
-            changed = _copy_first_present(next_item, "name", ("entity_name", "title", "label")) or changed
-            changed = _copy_first_present(next_item, "entity_type_id", ("type_id", "entity_type_index")) or changed
-        elif field_name == "edges":
-            changed = _copy_first_present(next_item, "relation_type", ("relation", "relation_name", "predicate", "type")) or changed
-            changed = _copy_first_present(next_item, "source_entity_id", ("source_id", "source", "source_entity", "from")) or changed
-            changed = _copy_first_present(next_item, "target_entity_id", ("target_id", "target", "target_entity", "to")) or changed
-            changed = _copy_first_present(next_item, "fact", ("description", "summary", "relationship")) or changed
-        normalized.append(next_item)
-
-    if changed:
-        logger.warning(
-            "Graphiti LLM 返回列表项字段名与 schema 不一致，已归一化: response_model=%s, field=%s, required=%s",
-            getattr(response_model, "__name__", str(response_model)),
-            field_name,
-            sorted(required_fields),
-        )
-    return normalized
-
-
-def _get_single_list_item_model(response_model: type[BaseModel]) -> Optional[type[BaseModel]]:
-    """获取单列表字段的元素模型。"""
-    model_fields = getattr(response_model, "model_fields", {}) or {}
-    if len(model_fields) != 1:
-        return None
-    field_info = next(iter(model_fields.values()))
-    annotation = getattr(field_info, "annotation", None)
-    if get_origin(annotation) not in {list, List}:
-        return None
-    args = get_args(annotation)
-    if not args:
-        return None
-    item_model = args[0]
-    if isinstance(item_model, type) and issubclass(item_model, BaseModel):
-        return item_model
-    return None
-
-
-def _copy_first_present(item: Dict[str, Any], target_key: str, source_keys: tuple[str, ...]) -> bool:
-    """若目标字段缺失，从候选字段中复制第一个非空值。"""
-    if item.get(target_key) not in (None, ""):
-        return False
-    for source_key in source_keys:
-        value = item.get(source_key)
-        if value not in (None, ""):
-            item[target_key] = value
-            return True
-    return False
-
-
-def _parse_graphiti_llm_json_content(content: str) -> Dict[str, Any] | List[Any]:
-    """解析不支持 response_format 端点返回的 JSON 内容。"""
-    text = (content or "").strip()
-    if not text:
-        raise GraphitiLLMInvalidJSONError("Graphiti LLM fallback 返回空内容，无法解析 JSON")
-
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\s*```$", "", text).strip()
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as first_exc:
-        start_candidates = [index for index in (text.find("{"), text.find("[")) if index >= 0]
-        end_candidates = [index for index in (text.rfind("}"), text.rfind("]")) if index >= 0]
-        if start_candidates and end_candidates:
-            start = min(start_candidates)
-            end = max(end_candidates)
-            if start < end:
-                candidate = text[start:end + 1]
-                try:
-                    return json.loads(candidate)
-                except json.JSONDecodeError:
-                    pass
-        preview = text[:200].replace("\n", "\\n")
-        raise GraphitiLLMInvalidJSONError(
-            f"Graphiti LLM fallback 返回非 JSON 内容，无法解析: preview={preview!r}"
-        ) from first_exc
-
-
-async def _generate_response_without_response_format(
-    llm_client: Any,
-    *args,
-    **kwargs,
-) -> Dict[str, Any]:
-    """
-    兼容不支持 response_format 的 OpenAI-compatible LLM。
-
-    graphiti-core 0.25.x 的 OpenAIGenericClient 会无条件传 response_format；
-    部分兼容端点会因此返回 400。这里复用同一批 messages/model 参数，
-    去掉 response_format 再请求一次，并由本地解析 JSON。
-    """
-    messages = kwargs.get("messages")
-    if messages is None and args:
-        messages = args[0]
-    if not messages:
-        raise ValueError("Graphiti LLM fallback 缺少 messages")
-
-    max_tokens = kwargs.get("max_tokens")
-    if max_tokens is None and len(args) >= 3:
-        max_tokens = args[2]
-    if max_tokens is None:
-        max_tokens = getattr(llm_client, "max_tokens", None)
-
-    openai_messages = []
-    clean_input = getattr(llm_client, "_clean_input", lambda value: value)
-    for message in messages:
-        role = getattr(message, "role", None)
-        content = clean_input(getattr(message, "content", "") or "")
-        if role in {"system", "user", "assistant"}:
-            openai_messages.append({"role": role, "content": content})
-
-    client = getattr(llm_client, "client", None)
-    if client is None:
-        raise ValueError("Graphiti LLM fallback 缺少 OpenAI client")
-
-    response = await client.chat.completions.create(
-        model=getattr(llm_client, "model", None),
-        messages=openai_messages,
-        temperature=getattr(llm_client, "temperature", 0),
-        max_tokens=max_tokens,
-    )
-    content = response.choices[0].message.content or ""
-    return _parse_graphiti_llm_json_content(content)
-
-
 async def _call_with_graphiti_rate_limit_retry(
     factory,
     operation: str,
@@ -633,7 +351,7 @@ async def _call_with_graphiti_rate_limit_retry(
                     exc,
                 )
                 raise
-            retryable_response_error = operation.startswith("llm.") and _is_retryable_llm_response_error(exc)
+            retryable_response_error = operation.startswith("llm.") and is_retryable_llm_response_error(exc)
             if (
                 not (_is_rate_limit_error(exc) or retryable_response_error)
                 or _is_quota_exhausted_error(exc)
@@ -698,27 +416,27 @@ def _create_graphiti_llm_rate_limit_wrapper(base_llm_client: Any) -> Any:
                 return await self._llm_client._generate_response(*args, **kwargs)
 
             async def generate_response(self, *args, **kwargs) -> Dict[str, Any]:
-                _ensure_graphiti_json_instruction(args, kwargs)
+                ensure_graphiti_json_instruction(args, kwargs)
                 request_detail = _summarize_graphiti_llm_request(args, kwargs, self._llm_client)
-                response_model = _get_response_model_arg(args, kwargs)
+                response_model = get_response_model_arg(args, kwargs)
 
                 async def call_llm():
                     try:
                         payload = await self._llm_client.generate_response(*args, **kwargs)
                     except Exception as exc:
-                        if not _is_response_format_unsupported_error(exc):
+                        if not is_response_format_unsupported_error(exc):
                             raise
                         logger.warning(
                             "Graphiti LLM 端点不支持 response_format，改用提示词约束 JSON 后重试: model=%s, prompt=%s",
                             request_detail.get("model"),
                             request_detail.get("prompt_name"),
                         )
-                        payload = await _generate_response_without_response_format(
+                        payload = await generate_response_without_response_format(
                             self._llm_client,
                             *args,
                             **kwargs,
                         )
-                    return _normalize_graphiti_response_model_payload(payload, response_model)
+                    return normalize_graphiti_response_model_payload(payload, response_model)
 
                 async with self._semaphore:
                     return await _call_with_graphiti_rate_limit_retry(
