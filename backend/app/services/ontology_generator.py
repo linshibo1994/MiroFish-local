@@ -8,7 +8,8 @@ import logging
 import time
 from typing import Dict, Any, List, Optional
 from ..config import Config
-from ..utils.llm_client import LLMClient
+from ..utils.llm_client import LLMClient, LLMRequestError
+from ..utils.llm_routing import get_boost_llm_endpoint, get_default_llm_endpoint
 from .location_entity_filter import strip_location_entity_types_from_ontology
 
 
@@ -195,7 +196,7 @@ class OntologyGenerator:
     
     def __init__(self, llm_client: Optional[LLMClient] = None):
         # 本体生成是 Step1 的同步长请求，优先走 boost 端点降低等待时间。
-        self.llm_client = llm_client or LLMClient(prefer_boost=True)
+        self.llm_client = llm_client
     
     def generate(
         self,
@@ -239,7 +240,7 @@ class OntologyGenerator:
 
         # 调用LLM
         llm_started_at = time.monotonic()
-        result = self.llm_client.chat_json(
+        result = self._chat_json_with_fallback(
             messages=messages,
             temperature=0.3,
             max_tokens=6000
@@ -259,6 +260,69 @@ class OntologyGenerator:
         )
         
         return result
+
+    def _chat_json_with_fallback(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+    ) -> Dict[str, Any]:
+        """优先使用 boost LLM，失败时回退默认 LLM。"""
+        if self.llm_client:
+            return self.llm_client.chat_json(
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+
+        clients = []
+        boost_endpoint = get_boost_llm_endpoint()
+        base_endpoint = get_default_llm_endpoint()
+        if boost_endpoint:
+            clients.append(LLMClient(
+                api_key=boost_endpoint.api_key,
+                base_url=boost_endpoint.base_url,
+                model=boost_endpoint.model,
+            ))
+            clients[-1].route_name = boost_endpoint.route_name
+        clients.append(LLMClient(
+            api_key=base_endpoint.api_key,
+            base_url=base_endpoint.base_url,
+            model=base_endpoint.model,
+        ))
+        clients[-1].route_name = base_endpoint.route_name
+
+        last_error: Optional[LLMRequestError] = None
+        for index, client in enumerate(clients):
+            try:
+                logger.info("调用 LLM 生成本体: route=%s, model=%s", client.route_name, client.model)
+                return client.chat_json(
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+            except LLMRequestError as exc:
+                last_error = exc
+                has_next = index < len(clients) - 1
+                if has_next:
+                    logger.warning(
+                        "本体生成 LLM 路由失败，尝试回退: route=%s, retryable=%s, error=%s",
+                        exc.route_name or client.route_name,
+                        exc.retryable,
+                        exc,
+                    )
+                    continue
+                logger.error(
+                    "本体生成 LLM 路由全部失败: route=%s, retryable=%s, error=%s",
+                    exc.route_name or client.route_name,
+                    exc.retryable,
+                    exc,
+                )
+                raise
+
+        if last_error:
+            raise last_error
+        raise LLMRequestError("LLM 路由不可用，请检查模型配置", status_code=502)
     
     # 传给 LLM 的文本最大长度；只影响本体分析，不影响图谱构建原文。
     MAX_TEXT_LENGTH_FOR_LLM = max(1000, int(Config.ONTOLOGY_MAX_TEXT_LENGTH_FOR_LLM or 30000))

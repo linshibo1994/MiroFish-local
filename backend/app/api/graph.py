@@ -19,6 +19,7 @@ from ..services.seed_analysis_service import SeedAnalysisService
 from ..services.web_search_provider import WebSearchProviderFactory
 from ..services.text_processor import TextProcessor
 from ..utils.file_parser import FileParser
+from ..utils.llm_client import LLMRequestError
 from ..utils.logger import get_logger
 from ..utils.llm_routing import get_graph_build_llm_endpoint_pool
 from ..utils.neo4j_errors import format_neo4j_auth_error, is_neo4j_auth_error
@@ -552,6 +553,19 @@ def create_seed_from_web_search():
             "success": False,
             "error": str(exc)
         }), 400
+    except LLMRequestError as e:
+        logger.error(
+            "本体/seed 阶段 LLM 调用失败: route=%s, retryable=%s, error=%s",
+            e.route_name,
+            e.retryable,
+            e,
+        )
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "error_code": "llm_request_failed",
+            "retryable": e.retryable
+        }), e.status_code
     except Exception as e:
         return jsonify({
             "success": False,
@@ -818,6 +832,19 @@ def generate_ontology():
             }
         })
         
+    except LLMRequestError as e:
+        logger.error(
+            "本体生成 LLM 调用失败: route=%s, retryable=%s, error=%s",
+            e.route_name,
+            e.retryable,
+            e,
+        )
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "error_code": "llm_request_failed",
+            "retryable": e.retryable
+        }), e.status_code
     except Exception as e:
         return jsonify({
             "success": False,
